@@ -71,6 +71,11 @@ def _message(record):
     return record.get("errorMessage") or ""
 
 
+def _state(record):
+    """(trackedDownloadState, trackedDownloadStatus); unmatched items may lack both."""
+    return record.get("trackedDownloadState", ""), record.get("trackedDownloadStatus", "")
+
+
 def _samples(config):
     try:
         records, up = _fetch(config), 1
@@ -79,11 +84,11 @@ def _samples(config):
         records, up = [], 0
     app = config.app
     yield "arr_queue_up", {"app": app}, up
-    counts = Counter((r.get("trackedDownloadState", ""), r.get("trackedDownloadStatus", "")) for r in records)
+    counts = Counter(_state(r) for r in records)
     for (state, status), n in sorted(counts.items()):
         yield "arr_queue_items", {"app": app, "state": state, "status": status}, n
     for r in records:
-        state, status = r.get("trackedDownloadState", ""), r.get("trackedDownloadStatus", "")
+        state, status = _state(r)
         if state not in STUCK_STATES and status not in STUCK_STATUSES:
             continue
         item = {"app": app, "id": r.get("id", ""), "title": (r.get("title") or "")[:LABEL_LIMIT]}

@@ -85,17 +85,22 @@ def free_port():
         return s.getsockname()[1]
 
 
+def target(url, app="sonarr", api_key="key", port="0"):
+    return Config.from_env({"ARR_URL": url, "ARR_API_KEY": api_key, "ARR_APP": app, "PORT": port, "TIMEOUT": "2"})
+
+
 @contextmanager
-def exporter(arr, app="sonarr", api_key="key", url=None):
-    config = Config.from_env(
-        {"ARR_URL": url or arr.url, "ARR_API_KEY": api_key, "ARR_APP": app, "PORT": "0", "TIMEOUT": "2"}
-    )
+def running(config):
     server = serve(config)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{server.server_port}"
     finally:
         server.shutdown()
+
+
+def exporter(arr, app="sonarr", api_key="key", url=None):
+    return running(target(url or arr.url, app, api_key))
 
 
 def get(url):
@@ -181,10 +186,14 @@ def test_reports_the_app_down_when_it_rejects_the_api_key(fake_arr, capsys):
     assert "wrong" not in err
 
 
-def test_reports_only_up_for_an_empty_queue(fake_arr):
+def test_reports_only_up_when_the_queue_has_no_records(fake_arr):
     with exporter(fake_arr(None)) as exporter_url:
         body = get(f"{exporter_url}/metrics")[2]
-    assert body == DOWN.replace("} 0", "} 1")
+    assert body == (
+        "# HELP arr_queue_up 1 if the app's queue API answered.\n"
+        "# TYPE arr_queue_up gauge\n"
+        'arr_queue_up{app="sonarr"} 1\n'
+    )
 
 
 def test_answers_404_off_metrics_and_healthz(fake_arr):
@@ -196,15 +205,11 @@ def test_answers_404_off_metrics_and_healthz(fake_arr):
 
 def test_healthcheck_passes_only_while_serving_and_leaves_the_app_alone(fake_arr):
     arr = fake_arr([])
-    config = Config.from_env({"ARR_URL": arr.url, "ARR_API_KEY": "key", "ARR_APP": "sonarr", "PORT": str(free_port())})
+    config = target(arr.url, port=str(free_port()))
     assert healthcheck(config) == 1
-    server = serve(config)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
+    with running(config) as exporter_url:
         assert healthcheck(config) == 0
-        assert get(f"http://127.0.0.1:{config.port}/healthz")[2] == "ok\n"
-    finally:
-        server.shutdown()
+        assert get(f"{exporter_url}/healthz")[2] == "ok\n"
     assert arr.requests == []
 
 
@@ -213,8 +218,9 @@ def test_configuration_comes_from_the_environment_with_documented_defaults():
     assert Config.from_env(required) == Config(
         url="http://radarr:7878", api_key="k", app="radarr", port=9713, timeout=10.0
     )
-    assert Config.from_env({**required, "PORT": "9200", "TIMEOUT": "3"}).port == 9200
-    assert Config.from_env({**required, "PORT": "9200", "TIMEOUT": "3"}).timeout == 3.0
+    assert Config.from_env({**required, "PORT": "9200", "TIMEOUT": "3"}) == Config(
+        url="http://radarr:7878", api_key="k", app="radarr", port=9200, timeout=3.0
+    )
 
 
 def test_refuses_to_start_without_the_target(capsys):

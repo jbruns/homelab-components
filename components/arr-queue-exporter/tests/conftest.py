@@ -10,7 +10,7 @@ def fake_arr():
     """Start stand-ins for a Sonarr/Radarr API: fake_arr(records) -> server; server.url, server.requests."""
     servers = []
 
-    def start(records=None, status=200, api_key="key"):
+    def start(records=None, api_key="key"):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 server.requests.append((self.path, self.headers.get("X-Api-Key")))
@@ -19,7 +19,7 @@ def fake_arr():
                 elif not self.path.startswith("/api/v3/queue?"):
                     code, body = 404, b""
                 else:
-                    code, body = status, json.dumps({"page": 1, "records": records}).encode()
+                    code, body = 200, json.dumps({"page": 1, "records": records}).encode()
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
