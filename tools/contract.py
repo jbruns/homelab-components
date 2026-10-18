@@ -39,6 +39,11 @@ def _docker(*args):
     return subprocess.run(["docker", *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
+def remove_container(container):
+    """Remove a container with its anonymous volumes (e.g. dind's /var/lib/docker), so test runs leave none behind."""
+    subprocess.run(["docker", "rm", "--force", "--volumes", container], capture_output=True)
+
+
 def _wait_ready(url, container):
     deadline = time.monotonic() + READY_TIMEOUT
     while time.monotonic() < deadline:
@@ -66,7 +71,7 @@ def _start(spec):
         url = f"http://127.0.0.1:{host_port}"
         _wait_ready(url + spec.ready_path, container)
     except BaseException:
-        subprocess.run(["docker", "rm", "--force", container], capture_output=True)
+        remove_container(container)
         raise
     return container, RunningUpstream(name=spec.name, image=image, url=url, env=dict(spec.env))
 
@@ -76,7 +81,7 @@ def _running_upstreams():
     running = {}
     yield running
     for container, _ in running.values():
-        subprocess.run(["docker", "rm", "--force", container], capture_output=True)
+        remove_container(container)
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 import pytest
 
-from tools.components import affected_components, parse_release_tag
+from tools.components import affected_components, all_components, parse_release_tag
 
 COMPONENTS = ["_template", "arr-queue-exporter", "sabnzbd-status-exporter"]
 
@@ -27,3 +27,12 @@ def test_a_release_tag_names_the_component_and_its_semver():
 def test_a_malformed_or_unreleasable_tag_is_rejected(tag):
     with pytest.raises(ValueError):
         parse_release_tag(tag)
+
+
+def test_a_component_whose_readme_was_deleted_still_gets_tested(tmp_path):
+    (tmp_path / "with-readme" / "src").mkdir(parents=True)
+    (tmp_path / "with-readme" / "README.md").write_text("# with-readme\n")
+    (tmp_path / "without-readme" / "src").mkdir(parents=True)
+    components = all_components(tmp_path)
+    assert components == ["with-readme", "without-readme"]
+    assert affected_components(["components/without-readme/README.md"], components) == ["without-readme"]

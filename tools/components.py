@@ -31,8 +31,9 @@ SHARED_PATHS = (
 _RELEASE_TAG = re.compile(r"^(?P<component>[a-z0-9][a-z0-9-]*)-v(?P<version>\d+\.\d+\.\d+)$")
 
 
-def all_components():
-    return sorted(p.name for p in COMPONENTS_DIR.iterdir() if p.is_dir() and (p / "README.md").is_file())
+def all_components(components_dir=COMPONENTS_DIR):
+    """Every Component folder, whether or not it is complete; the checks report what is missing."""
+    return sorted(p.name for p in components_dir.iterdir() if p.is_dir() and not p.name.startswith((".", "__")))
 
 
 def affected_components(changed_paths, components):
