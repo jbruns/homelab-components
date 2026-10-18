@@ -53,8 +53,8 @@ def health_of(docker, *names):
     return in_dind(docker, "inspect", "--format", "{{.State.Health.Status}}", *names)
 
 
-def scrape(docker, **config):
-    return Collector(Config(docker_host=docker.url, port=0, timeout=10, **config)).collect()
+def scrape(docker, **env):
+    return Collector(Config.from_env({"DOCKER_HOST": docker.url, **env})).collect()
 
 
 def healthy_lines(metrics):
@@ -63,7 +63,6 @@ def healthy_lines(metrics):
 
 @pytest.mark.contract
 def test_reports_health_checks_of_containers_a_real_docker_runs(dind_containers):
-    config = {"container_labels": ("tier",), "ignore_label": "example.ignore"}
     expected = [
         'container_healthy{container="0123456789ab_web",stack="contract",tier=""} 1',
         'container_healthy{container="healthy",stack="contract",tier="critical"} 1',
@@ -71,7 +70,7 @@ def test_reports_health_checks_of_containers_a_real_docker_runs(dind_containers)
         'container_healthy{container="stopped-checked",stack="contract",tier=""} 0',
         'container_healthy{container="unhealthy",stack="contract",tier=""} 0',
     ]
-    metrics = scrape(dind_containers, **config)
+    metrics = scrape(dind_containers, CONTAINER_LABELS="tier", IGNORE_LABEL="example.ignore")
     assert "container_health_up 1\n" in metrics
     assert healthy_lines(metrics) == expected
 

@@ -1,8 +1,8 @@
 """Prometheus exporter for Docker health-check status.
 
-Neither cAdvisor nor the Docker engine exports whether a container's own health check reports healthy, so this
-reads it from the Docker Engine API (in production through a read-only docker-socket-proxy). Only containers that
-define a health check are reported; a stopped one reports 0.
+Reports whether each container's own health check reports healthy, read from the Docker Engine API (in production
+through a read-only docker-socket-proxy). Only containers that define a health check are reported; a stopped one
+reports 0, where cAdvisor drops it.
 
 It also reports containers left under Compose's temporary `<12-hex id>_<name>` name, which an interrupted recreate
 leaves behind. cAdvisor keeps a container's first name, so it can't.
@@ -36,22 +36,25 @@ class Config:
     port: int
     timeout: float
     container_labels: tuple = ()
-    ignore_label: str = ""
+    # (key, value) of IGNORE_LABEL; value None matches any value.
+    ignore_label: tuple | None = None
 
     @classmethod
     def from_env(cls, environ):
         container_labels = tuple(
             label.strip() for label in environ.get("CONTAINER_LABELS", "").split(",") if label.strip()
         )
-        clashing = [label for label in container_labels if _metric_label(label) in OWN_LABELS]
+        metric_labels = [_metric_label(label) for label in container_labels]
+        clashing = sorted({name for name in metric_labels if name in OWN_LABELS or metric_labels.count(name) > 1})
         if clashing:
-            raise ValueError(f"CONTAINER_LABELS: {', '.join(clashing)} would replace the exporter's own label")
+            raise ValueError(f"CONTAINER_LABELS: more than one metric label would be named {', '.join(clashing)}")
+        key, has_value, value = environ.get("IGNORE_LABEL", "").strip().partition("=")
         return cls(
             docker_host=environ.get("DOCKER_HOST", "docker-socket-proxy:2375"),
             port=int(environ.get("PORT", "9714")),
             timeout=float(environ.get("TIMEOUT", "10")),
             container_labels=container_labels,
-            ignore_label=environ.get("IGNORE_LABEL", "").strip(),
+            ignore_label=(key, value if has_value else None) if key else None,
         )
 
     @property
@@ -79,36 +82,34 @@ class Collector:
         # status ("Up 2 hours (healthy)"); stopped ones need an inspect, done once per ID.
         self._has_check = {}
         self._lock = threading.Lock()
-        key, _, value = config.ignore_label.partition("=")
-        self._ignore = (key, value if "=" in config.ignore_label else None) if key else None
 
     def _get(self, path):
         host, port = self.config.docker_address
         conn = http.client.HTTPConnection(host, port, timeout=self.config.timeout)
         try:
             conn.request("GET", f"/{API_VERSION}{path}")
-            r = conn.getresponse()
-            if r.status != 200:
-                raise RuntimeError(f"{path}: HTTP {r.status}")
-            return json.load(r)
+            response = conn.getresponse()
+            if response.status != 200:
+                raise RuntimeError(f"{path}: HTTP {response.status}")
+            return json.load(response)
         finally:
             conn.close()
 
     def _ignored(self, labels):
-        if self._ignore is None:
+        if self.config.ignore_label is None:
             return False
-        key, value = self._ignore
+        key, value = self.config.ignore_label
         return key in labels and (value is None or labels[key] == value)
 
-    def _health(self, c):
+    def _health(self, container):
         """'healthy' | 'unhealthy' | 'starting' | 'stopped', or None without a health check."""
-        status = c.get("Status") or ""
-        if c.get("State") == "running":
+        status = container.get("Status") or ""
+        if container.get("State") == "running":
             for state in ("unhealthy", "healthy", "starting"):
                 if f"({state}" in status or f"health: {state}" in status:
                     return state
             return None
-        cid = c["Id"]
+        cid = container["Id"]
         if cid not in self._has_check:
             test = (self._get(f"/containers/{cid}/json").get("Config") or {}).get("Healthcheck", {}).get("Test") or []
             self._has_check[cid] = bool(test) and test[0] != "NONE"
@@ -136,26 +137,23 @@ class Collector:
         ]
         leftovers = []
         live = set()
-        for c in containers:
-            live.add(c["Id"])
-            labels = c.get("Labels") or {}
+        for container in containers:
+            live.add(container["Id"])
+            labels = container.get("Labels") or {}
             if self._ignored(labels):
                 continue
-            name = (c.get("Names") or ["/"])[0].lstrip("/")
-            stack = labels.get("com.docker.compose.project", "")
+            name = (container.get("Names") or ["/"])[0].lstrip("/")
+            own = [("container", name), ("stack", labels.get("com.docker.compose.project", ""))]
             if LEFTOVER.match(name):
-                leftovers.append(
-                    [("container", name), ("stack", stack), ("service", labels.get("com.docker.compose.service", ""))]
-                )
+                leftovers.append([*own, ("service", labels.get("com.docker.compose.service", ""))])
             try:
-                state = self._health(c)
+                state = self._health(container)
             except Exception as e:
                 print(f"inspect failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
                 continue
             if state is None:
                 continue
-            pairs = [("container", name), ("stack", stack)]
-            pairs += [(_metric_label(label), labels.get(label, "")) for label in self.config.container_labels]
+            pairs = own + [(_metric_label(label), labels.get(label, "")) for label in self.config.container_labels]
             lines.append(f"container_healthy{{{_labels(pairs)}}} {int(state == 'healthy')}")
         lines += [
             "# HELP container_leftover_name 1 for a container still named <id>_<name> by an interrupted Compose"

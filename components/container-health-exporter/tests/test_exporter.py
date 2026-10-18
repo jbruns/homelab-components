@@ -243,8 +243,8 @@ def test_copies_configured_container_labels_onto_container_healthy(docker, start
     ]
 
 
-@pytest.mark.parametrize("name", ["container", "stack", "com.docker.compose.project,stack"])
-def test_refuses_container_labels_that_would_clash_with_its_own(name):
+@pytest.mark.parametrize("name", ["container", "stack", "com.docker.compose.project,stack", "team,team", "a.b,a_b"])
+def test_refuses_container_labels_that_would_clash_with_its_own_or_each_other(name):
     result = subprocess.run(
         EXPORTER, env={"PYTHONPATH": str(SRC), "CONTAINER_LABELS": name}, capture_output=True, text=True, timeout=10
     )
