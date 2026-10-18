@@ -1,23 +1,37 @@
+import dataclasses
+import json
 import re
+import socket
+import socketserver
+import sys
 import threading
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
-from backup_coverage import exporter
+from backup_coverage.exporter import Config, Exporter, collect, healthcheck, main, serve
+from backup_coverage.stackback import Settings
+
+FAKE_RESTIC = Path(__file__).with_name("fake_restic.py")
 
 OLD = 1767225600  # 2026-01-01T00:00:00Z, before every snapshot
 FUTURE = 4102444800  # 2100-01-01: a container created "now" for any test run
 
 
 def volume_mount(name, destination):
-    return {"Type": "volume", "Name": name, "Source": f"/var/lib/docker/volumes/{name}/_data", "Destination": destination}
+    return {
+        "Type": "volume",
+        "Name": name,
+        "Source": f"/var/lib/docker/volumes/{name}/_data",
+        "Destination": destination,
+    }
 
 
-def container(labels, mounts=(), created=OLD, image="example/app:1"):
-    return {"Image": image, "Created": created, "Labels": labels, "Mounts": list(mounts)}
+def container(labels, mounts=(), created=OLD, image="example/app:1", id="c"):
+    return {"Id": id, "Image": image, "Created": created, "Labels": labels, "Mounts": list(mounts)}
 
 
 def compose(project, service, **labels):
@@ -55,8 +69,9 @@ CONTAINERS = [
     ),
     container(compose("media", "plain"), [volume_mount("media_plain", "/data")]),
     container({"stack-back.volumes": "true"}, [volume_mount("solo_data", "/data")]),
-    container(compose("nc", "pg", **{"stack-back.postgres": "true"}), created=FUTURE),
+    container(compose("nc", "pg", **{"stack-back.postgres": "true"}), created=FUTURE, id="pg"),
 ]
+POSTGRES_INSPECT = {"Id": "pg", "Config": {"Env": ["PATH=/usr/bin", "POSTGRES_DB=nextcloud"]}}
 
 VOLUMES = [
     {"Name": name, "CreatedAt": "2026-01-01T00:00:00Z"}
@@ -91,7 +106,7 @@ LISTING = [
 ]
 
 EXPECTED_PATHS = [
-    "/volumes//data",
+    "/volumes/data",
     "/volumes/media/sonarr/config",
     "/volumes/nc/mariadb/etc/mysql/conf.d",
     "/volumes/p/s/keep",
@@ -101,7 +116,7 @@ EXPECTED_PATHS = [
 HEADER = """\
 # HELP backup_coverage_expected Path stack-back is configured to back up.
 # TYPE backup_coverage_expected gauge
-# HELP backup_coverage_due 1 once the path should be in a backup (see backup_coverage.py).
+# HELP backup_coverage_due 1 once the path should be in a backup (see the backup-coverage README).
 # TYPE backup_coverage_due gauge
 # HELP backup_coverage_present 1 if the path is in its newest snapshot.
 # TYPE backup_coverage_present gauge
@@ -123,8 +138,8 @@ MARIADB_DB = 'kind="database",project="nc",service="mariadb",path="/databases/nc
 MARIADB_CONF = 'kind="volume",project="nc",service="mariadb",path="/volumes/nc/mariadb/etc/mysql/conf.d"'
 KEEP = 'kind="volume",project="p",service="s",path="/volumes/p/s/keep"'
 DATA = 'kind="volume",project="q",service="t",path="/volumes/q/t/data"'
-SOLO = 'kind="volume",project="",service="",path="/volumes//data"'
-PG = 'kind="database",project="nc",service="pg",path="/databases/nc/pg/all_databases.sql"'
+SOLO = 'kind="volume",project="",service="",path="/volumes/data"'
+PG = 'kind="database",project="nc",service="pg",path="/databases/nc/pg/nextcloud.sql"'
 
 EXPECTED_SERIES = f"""\
 backup_coverage_entries{{{SONARR}}} 2
@@ -170,28 +185,88 @@ backup_coverage_snapshot_timestamp{{{PG}}} 0
 LAST_SUCCESS = re.compile(r"backup_coverage_last_success_timestamp \d+\.\d+\n\Z")
 
 
+# home-ops runs stack-back with these two on; the characterized script assumed both.
+HOME_OPS = Settings.from_env({"EXCLUDE_BIND_MOUNTS": "true", "INCLUDE_ALL_COMPOSE_PROJECTS": "true"})
+
+
+class FakeDocker:
+    """A Docker Engine API stand-in serving fixed answers, on TCP or a Unix socket."""
+
+    def __init__(self, server, host):
+        self.server, self.host = server, host
+        self.answers = {
+            "/v1.44/volumes": {"Volumes": VOLUMES},
+            "/v1.44/containers/json?all=1": CONTAINERS,
+            "/v1.44/system/df?type=volume": DISK_USAGE,
+            "/v1.44/containers/pg/json": POSTGRES_INSPECT,
+        }
+        self.requests = []
+        server.fake = self
+
+
+class DockerHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        fake = self.server.fake
+        fake.requests.append(self.path)
+        if self.path not in fake.answers:
+            self.send_error(404)
+            return
+        body = json.dumps(fake.answers[self.path]).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def address_string(self):
+        return "docker-client"
+
+    def log_message(self, *args):
+        pass
+
+
+def start(server):
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 @pytest.fixture
-def upstreams(monkeypatch):
-    """The legacy script's Docker and restic calls, answered from the fixtures above."""
-    state = {"snapshots": SNAPSHOTS, "restic_calls": []}
-    docker_answers = {
-        "/volumes": {"Volumes": VOLUMES},
-        "/containers/json?all=1": CONTAINERS,
-        "/system/df?type=volume": DISK_USAGE,
-    }
+def docker():
+    server = start(ThreadingHTTPServer(("127.0.0.1", 0), DockerHandler))
+    yield FakeDocker(server, f"tcp://127.0.0.1:{server.server_port}")
+    server.shutdown()
 
-    def docker(path, timeout=30):
-        return docker_answers[path]
 
-    def restic(*args):
-        state["restic_calls"].append(args)
-        if args[0] == "snapshots":
-            return [state["snapshots"]]
-        return LISTING
+class FakeRestic:
+    def __init__(self, path):
+        self.path = path
+        self.answers = {"repository": "/backups", "snapshots": SNAPSHOTS, "ls": LISTING}
 
-    monkeypatch.setattr(exporter, "docker", docker)
-    monkeypatch.setattr(exporter, "restic", restic)
-    return state
+    @property
+    def command(self):
+        self.path.write_text(json.dumps(self.answers))
+        return (sys.executable, str(FAKE_RESTIC), str(self.path))
+
+    @property
+    def calls(self):
+        calls = Path(f"{self.path}.calls")
+        return [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+
+
+@pytest.fixture
+def restic(tmp_path):
+    return FakeRestic(tmp_path / "restic.json")
+
+
+def config(docker, restic, **overrides):
+    values = {"restic_repository": "/backups", "docker_host": docker.host, "stack_back": HOME_OPS}
+    return Config(**values, restic_command=restic.command, **overrides)
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def split(metrics):
@@ -202,37 +277,125 @@ def split(metrics):
     return series
 
 
-def test_reports_every_path_stack_back_should_back_up(upstreams):
-    assert split(exporter.collect()) == EXPECTED_SERIES
+def test_reports_every_path_stack_back_should_back_up(docker, restic):
+    assert split(collect(config(docker, restic))) == EXPECTED_SERIES
 
 
-def test_lists_the_expected_volume_paths_in_the_newest_volumes_snapshot_once(upstreams):
-    exporter.collect()
-    assert upstreams["restic_calls"] == [("snapshots",), ("ls", "new", *EXPECTED_PATHS)]
+def test_lists_the_expected_volume_paths_in_the_newest_volumes_snapshot_once(docker, restic):
+    collect(config(docker, restic))
+    read_only = ["--repo", "/backups", "--no-lock", "--json"]
+    assert restic.calls == [[*read_only, "snapshots"], [*read_only, "ls", "new", *EXPECTED_PATHS]]
 
 
-def test_without_a_volumes_snapshot_nothing_is_due_or_present(upstreams):
-    upstreams["snapshots"] = []
-    series = split(exporter.collect())
+def test_without_a_volumes_snapshot_nothing_is_due_or_present(docker, restic):
+    restic.answers["snapshots"] = []
+    series = split(collect(config(docker, restic)))
     assert f"backup_coverage_due{{{SONARR}}} 0\n" in series
     assert f"backup_coverage_present{{{SONARR}}} 0\n" in series
     assert f"backup_coverage_snapshot_timestamp{{{SONARR}}} 0\n" in series
     assert f"backup_coverage_present{{{MARIADB_DB}}} 0\n" in series
     assert f"backup_coverage_due{{{MARIADB_DB}}} 1\n" in series
-    assert upstreams["restic_calls"] == [("snapshots",)]
+    assert [call[-1] for call in restic.calls] == ["snapshots"]
 
 
-def test_serves_metrics_only_on_the_metrics_path(monkeypatch):
-    monkeypatch.setattr(exporter, "metrics", "backup_coverage_expected 1\n")
-    server = ThreadingHTTPServer(("127.0.0.1", 0), exporter.Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_port}"
+def test_a_database_is_due_once_its_container_is_older_than_the_configured_age(docker, restic):
+    series = split(collect(config(docker, restic, database_due_after=200 * 365 * 86400)))
+    assert f"backup_coverage_due{{{MARIADB_DB}}} 0\n" in series
+
+
+def test_asks_the_docker_engine_api_at_a_pinned_version(docker, restic):
+    collect(config(docker, restic))
+    assert docker.requests and all(path.startswith("/v1.44/") for path in docker.requests)
+
+
+def test_reaches_docker_over_a_unix_socket(tmp_path, monkeypatch, restic):
+    monkeypatch.chdir(tmp_path)  # a relative socket path stays within the Unix socket path limit
+    server = start(type("UnixServer", (socketserver.ThreadingUnixStreamServer,), {})("d.sock", DockerHandler))
     try:
-        with urllib.request.urlopen(f"{base}/metrics", timeout=5) as response:
-            assert response.read() == b"backup_coverage_expected 1\n"
-            assert response.headers["Content-Type"] == "text/plain; version=0.0.4"
+        unix_docker = FakeDocker(server, "unix://d.sock")
+        assert split(collect(config(unix_docker, restic))) == EXPECTED_SERIES
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize("failure", ["docker", "restic"])
+def test_a_failed_check_raises_naming_the_upstream(docker, restic, failure):
+    if failure == "docker":
+        del docker.answers["/v1.44/volumes"]
+    else:
+        restic.answers["fail"] = True
+    with pytest.raises(RuntimeError, match=f"^{failure}.*(HTTP 404|exited 1: Fatal: unable to open repository)$"):
+        collect(config(docker, restic))
+
+
+def test_an_unreachable_docker_raises_naming_its_host(tmp_path, docker, restic):
+    host = f"unix://{tmp_path}/missing.sock"
+    with pytest.raises(RuntimeError, match=f"^docker GET /containers/json\\?all=1 on {host}: "):
+        collect(dataclasses.replace(config(docker, restic), docker_host=host))
+
+
+def get(port, path):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+        return response.read().decode(), response.headers["Content-Type"]
+
+
+def test_serves_the_last_good_check_and_keeps_it_when_a_check_fails(docker, restic):
+    exporter = Exporter(config(docker, restic, port=free_port()))
+    server = start(serve(exporter))
+    try:
+        assert get(exporter.config.port, "/metrics") == ("", "text/plain; version=0.0.4")
+        exporter.refresh()
+        good, _ = get(exporter.config.port, "/metrics")
+        assert split(good) == EXPECTED_SERIES
+        del docker.answers["/v1.44/containers/json?all=1"]
+        exporter.refresh()
+        assert get(exporter.config.port, "/metrics")[0] == good
         with pytest.raises(urllib.error.HTTPError) as missing:
-            urllib.request.urlopen(f"{base}/", timeout=5)
+            get(exporter.config.port, "/")
         assert missing.value.code == 404
     finally:
         server.shutdown()
+
+
+def test_healthcheck_passes_only_while_serving_and_leaves_the_upstreams_alone(docker, restic):
+    exporter = Exporter(config(docker, restic, port=free_port()))
+    assert healthcheck(exporter.config.port) == 1
+    server = start(serve(exporter))
+    try:
+        assert healthcheck(exporter.config.port) == 0
+        assert main(["healthcheck"], {"PORT": str(exporter.config.port)}) == 0
+    finally:
+        server.shutdown()
+    assert docker.requests == [] and restic.calls == []
+
+
+def test_configuration_comes_from_the_environment_with_documented_defaults():
+    assert Config.from_env({"RESTIC_REPOSITORY": "/r"}) == Config(
+        restic_repository="/r",
+        docker_host="unix:///var/run/docker.sock",
+        port=8002,
+        refresh_interval=3600.0,
+        database_due_after=93600.0,
+        stack_back=Settings(),
+    )
+    environ = {
+        "RESTIC_REPOSITORY": "s3:example/backups",
+        "DOCKER_HOST": "tcp://socket-proxy:2375",
+        "PORT": "9200",
+        "REFRESH_INTERVAL": "60",
+        "DATABASE_DUE_AFTER": "7200",
+        "EXCLUDE_BIND_MOUNTS": "true",
+    }
+    assert Config.from_env(environ) == Config(
+        restic_repository="s3:example/backups",
+        docker_host="tcp://socket-proxy:2375",
+        port=9200,
+        refresh_interval=60.0,
+        database_due_after=7200.0,
+        stack_back=Settings(exclude_bind_mounts=True),
+    )
+
+
+def test_refuses_to_start_without_a_restic_repository(capsys):
+    assert main([], {}) == 2
+    assert "RESTIC_REPOSITORY is required" in capsys.readouterr().err

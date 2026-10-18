@@ -16,6 +16,17 @@
       "addLabels": [
         "contract-pin"
       ]
+    },
+    {
+      "description": "backup-coverage ships the restic it runs Contract Tests against: bump the Dockerfile and upstreams.yaml pins together",
+      "matchFileNames": [
+        "components/backup-coverage/Dockerfile",
+        "components/backup-coverage/upstreams.yaml"
+      ],
+      "matchPackageNames": [
+        "restic/restic"
+      ],
+      "groupName": "backup-coverage restic"
     }
   ],
   "customManagers": [

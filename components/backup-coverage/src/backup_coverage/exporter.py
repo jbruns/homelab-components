@@ -1,217 +1,279 @@
-"""Backup coverage: is every volume stack-back should back up present in the newest snapshot?
+"""Backup coverage: is every path stack-back should back up in the newest restic snapshot?
 
-Expected paths come from Docker, not from stack-back's run: every container (stopped ones too)
-labelled for stack-back, filtered and mapped exactly as stack-back v1.5.4 does
-(containers.py filter_mounts / get_volume_backup_destination, containers_db.py
-backup_destination_path), with EXCLUDE_BIND_MOUNTS and INCLUDE_ALL_COMPOSE_PROJECTS on.
+The expected paths come from Docker, not from stack-back's own run: every container, stopped ones too, mapped to
+stack-back's paths by `backup_coverage.stackback`. A path is "due" once it should be in a backup: a volume whose
+container and volume both predate the newest /volumes snapshot, or a database dump whose container is older than
+DATABASE_DUE_AFTER. A recreate defers the check to the next backup. A volume's live size (Docker's disk usage)
+tells an empty snapshot directory that is expected (the volume is empty) from one that is not.
 
-A path is "due" once it should be in a backup: a volume whose container and volume both
-predate the newest /volumes snapshot, or a database whose container is older than 26h. A
-recreate defers the check to the next backup. A volume's live size (Docker's disk usage) tells
-an empty snapshot dir that is expected (the volume is empty) from one that is not.
+`python -m backup_coverage` checks every REFRESH_INTERVAL and serves the last good result on /metrics, plus /healthz;
+`python -m backup_coverage healthcheck` probes /healthz.
 """
 
 import http.client
 import json
-import os
 import socket
 import subprocess
+import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-TRUE = {"1", "true", "True", "TRUE"}
-DB_LABELS = ("stack-back.mariadb", "stack-back.mysql", "stack-back.postgres")
-DB_MOUNTS = {"/var/lib/mysql", "/var/lib/mariadb", "/var/lib/postgresql/data"}
-DB_DUE_AFTER = 26 * 3600
-INTERVAL = int(os.environ.get("REFRESH_INTERVAL", "3600"))
-PORT = int(os.environ.get("PORT", "8002"))
+from backup_coverage.stackback import Settings, backup_paths
 
-metrics = ""
+# Docker Engine API 1.44 is Docker 25.0 and later; also the oldest API Docker 29 still serves.
+DOCKER_API = "/v1.44"
+DOCKER_TIMEOUT = 30
+# Docker walks every volume to size it, which can take tens of seconds.
+DOCKER_DISK_USAGE_TIMEOUT = 300
+RESTIC_TIMEOUT = 1800
+
+HELP = {
+    "backup_coverage_expected": "Path stack-back is configured to back up.",
+    "backup_coverage_due": "1 once the path should be in a backup (see the backup-coverage README).",
+    "backup_coverage_present": "1 if the path is in its newest snapshot.",
+    "backup_coverage_entries": "Direct children of a volume path in the newest /volumes snapshot.",
+    "backup_coverage_volume_bytes": (
+        "Live size of the volume now (-1 unknown); 0 means an empty snapshot dir is expected."
+    ),
+    "backup_coverage_snapshot_timestamp": "Newest snapshot holding the path (volumes: newest /volumes snapshot).",
+}
+LAST_SUCCESS_HELP = "When the last check completed."
 
 
-class DockerConnection(http.client.HTTPConnection):
-    def __init__(self, timeout=30):
+@dataclass(frozen=True)
+class Config:
+    restic_repository: str
+    docker_host: str = "unix:///var/run/docker.sock"
+    port: int = 8002
+    refresh_interval: float = 3600
+    database_due_after: float = 26 * 3600
+    stack_back: Settings = field(default_factory=Settings)
+    restic_command: tuple = ("restic",)
+
+    @classmethod
+    def from_env(cls, environ):
+        repository = environ.get("RESTIC_REPOSITORY", "")
+        if not repository:
+            raise ValueError("RESTIC_REPOSITORY is required")
+        return cls(
+            restic_repository=repository,
+            docker_host=environ.get("DOCKER_HOST", "unix:///var/run/docker.sock"),
+            port=int(environ.get("PORT", "8002")),
+            refresh_interval=float(environ.get("REFRESH_INTERVAL", "3600")),
+            database_due_after=float(environ.get("DATABASE_DUE_AFTER", "93600")),
+            stack_back=Settings.from_env(environ),
+        )
+
+
+class _UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout):
         super().__init__("localhost", timeout=timeout)
+        self._path = path
 
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect("/var/run/docker.sock")
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self._path)
 
 
-def docker(path, timeout=30):
-    conn = DockerConnection(timeout)
+def docker_get(host, path, timeout=DOCKER_TIMEOUT):
+    """JSON from GET `path` on the Docker Engine API at `host` (unix:///socket or tcp://host:port)."""
+    if host.startswith("unix://"):
+        conn = _UnixConnection(host.removeprefix("unix://"), timeout)
+    elif host.startswith("tcp://"):
+        url = urllib.parse.urlsplit(host)
+        conn = http.client.HTTPConnection(url.hostname, url.port or 2375, timeout=timeout)
+    else:
+        raise ValueError(f"DOCKER_HOST must be unix:// or tcp://, not {host!r}")
     try:
-        conn.request("GET", path)
-        resp = conn.getresponse()
-        body = resp.read()
-        if resp.status != 200:
-            raise RuntimeError(f"docker GET {path}: HTTP {resp.status}")
-        return json.loads(body)
+        conn.request("GET", DOCKER_API + path)
+        response = conn.getresponse()
+        body = response.read()
+    except OSError as e:
+        raise RuntimeError(f"docker GET {path} on {host}: {e}") from None
     finally:
         conn.close()
+    if response.status != 200:
+        raise RuntimeError(f"docker GET {path}: HTTP {response.status}")
+    return json.loads(body)
 
 
-def restic(*args):
-    out = subprocess.run(
-        ["restic", "--no-lock", "--json", *args],
-        check=True, capture_output=True, text=True, timeout=1800,
-    ).stdout
-    return [json.loads(line) for line in out.splitlines() if line.startswith("{") or line.startswith("[")]
+def restic(config, *args):
+    """The JSON lines restic prints for `args`, read-only (--no-lock) against the configured repository."""
+    command = [*config.restic_command, "--repo", config.restic_repository, "--no-lock", "--json", *args]
+    try:
+        out = subprocess.run(command, check=True, capture_output=True, text=True, timeout=RESTIC_TIMEOUT).stdout
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"restic {args[0]} exited {e.returncode}: {_restic_error(e.stderr)}") from None
+    return [json.loads(line) for line in out.splitlines() if line.startswith(("{", "["))]
 
 
-def ts(rfc3339):
+def _restic_error(stderr):
+    """The first line of restic's last error; with --json, restic 0.17+ prints it as a JSON exit_error."""
+    lines = stderr.strip().splitlines()
+    if not lines:
+        return ""
+    try:
+        message = json.loads(lines[-1])["message"]
+    except (ValueError, KeyError, TypeError):
+        message = lines[-1]
+    return message.splitlines()[0] if message else ""
+
+
+def _timestamp(rfc3339):
     return datetime.fromisoformat(rfc3339).timestamp()
 
 
-def patterns(value):
-    value = (value or "").strip()
-    return value.split(",") if value else None
+def _escape(value):
+    return str(value).replace("\\", "\\\\").replace("\n", " ").replace('"', '\\"')
 
 
-def volume_sizes():
-    """{volume name: live bytes}; -1 where Docker has no figure."""
-    # Docker walks every volume to size it: ~20s here, so a longer timeout.
-    vols = docker("/system/df?type=volume", timeout=300).get("Volumes") or []
-    return {v["Name"]: (v.get("UsageData") or {}).get("Size", -1) for v in vols}
-
-
-def expected_paths():
-    """[(kind, project, service, path, since, volume)] for every stack-back labelled container."""
-    volume_created = {v["Name"]: ts(v["CreatedAt"]) for v in docker("/volumes")["Volumes"] or []}
-    paths = []
-    for c in docker("/containers/json?all=1"):
-        labels = c.get("Labels") or {}
-        if "stack-back" in c.get("Image", "") or labels.get("com.docker.compose.oneoff") == "True":
-            continue
-        project = labels.get("com.docker.compose.project", "")
-        service = labels.get("com.docker.compose.service", "")
-        base = f"/{project}/{service}" if project else f"/{service}"
-        created = float(c["Created"])
-        is_db = any(labels.get(l) in TRUE for l in DB_LABELS)
-
-        if is_db:
-            paths.append(("database", project, service, f"/databases{base}/all_databases.sql", created, None))
-
-        if labels.get("stack-back.volumes") not in TRUE:
-            continue
-        include = patterns(labels.get("stack-back.volumes.include"))
-        exclude = patterns(labels.get("stack-back.volumes.exclude"))
-        for m in c.get("Mounts") or []:
-            if m.get("Type") != "volume":
-                continue
-            src = m.get("Source", "")
-            if include:
-                if not any(p in src for p in include):
-                    continue
-            elif exclude:
-                if any(p in src for p in exclude):
-                    continue
-            elif is_db and m["Destination"] in DB_MOUNTS:
-                continue
-            since = max(created, volume_created.get(m.get("Name"), created))
-            paths.append(("volume", project, service, f"/volumes{base}{m['Destination']}", since, m.get("Name")))
-    return paths
-
-
-def collect():
+def collect(config):
+    """The /metrics body for one check."""
     now = time.time()
-    expected = expected_paths()
-    sizes = volume_sizes()
-    snapshots = restic("snapshots")[0] or []
+    containers = docker_get(config.docker_host, "/containers/json?all=1")
 
-    volume_snaps = [s for s in snapshots if s["paths"] == ["/volumes"]]
-    newest = max(volume_snaps, key=lambda s: ts(s["time"]), default=None)
-    newest_ts = ts(newest["time"]) if newest else 0
+    def container_env(container_id):
+        return docker_get(config.docker_host, f"/containers/{container_id}/json")["Config"]["Env"] or []
 
-    db_newest = {}
+    expected = backup_paths(containers, config.stack_back, container_env)
+    volume_created = {
+        v["Name"]: _timestamp(v["CreatedAt"]) for v in docker_get(config.docker_host, "/volumes")["Volumes"] or []
+    }
+    disk_usage = docker_get(config.docker_host, "/system/df?type=volume", timeout=DOCKER_DISK_USAGE_TIMEOUT)
+    sizes = {v["Name"]: (v.get("UsageData") or {}).get("Size", -1) for v in disk_usage.get("Volumes") or []}
+    snapshots = restic(config, "snapshots")[0] or []
+
+    volume_snapshots = [s for s in snapshots if s["paths"] == ["/volumes"]]
+    newest = max(volume_snapshots, key=lambda s: _timestamp(s["time"]), default=None)
+    newest_ts = _timestamp(newest["time"]) if newest else 0
+
+    database_newest = {}
     for s in snapshots:
         if len(s["paths"]) == 1 and s["paths"][0].startswith("/databases/"):
             p = s["paths"][0]
-            db_newest[p] = max(db_newest.get(p, 0), ts(s["time"]))
+            database_newest[p] = max(database_newest.get(p, 0), _timestamp(s["time"]))
 
     # One non-recursive listing of every expected volume dir: the dir itself plus its children.
-    vol_paths = sorted({p for k, _, _, p, _, _ in expected if k == "volume"})
+    volume_paths = sorted({p.path for p in expected if p.kind == "volume"})
     present, entries = set(), {}
-    if newest and vol_paths:
-        for node in restic("ls", newest["id"], *vol_paths):
+    if newest and volume_paths:
+        for node in restic(config, "ls", newest["id"], *volume_paths):
             path = node.get("path")
             if node.get("struct_type") != "node" or not path:
                 continue
-            if path in vol_paths:
+            if path in volume_paths:
                 present.add(path)
             parent = path.rsplit("/", 1)[0]
-            if parent in vol_paths:
+            if parent in volume_paths:
                 entries[parent] = entries.get(parent, 0) + 1
 
-    lines = [
-        "# HELP backup_coverage_expected Path stack-back is configured to back up.",
-        "# TYPE backup_coverage_expected gauge",
-        "# HELP backup_coverage_due 1 once the path should be in a backup (see backup_coverage.py).",
-        "# TYPE backup_coverage_due gauge",
-        "# HELP backup_coverage_present 1 if the path is in its newest snapshot.",
-        "# TYPE backup_coverage_present gauge",
-        "# HELP backup_coverage_entries Direct children of a volume path in the newest /volumes snapshot.",
-        "# TYPE backup_coverage_entries gauge",
-        "# HELP backup_coverage_volume_bytes Live size of the volume now (-1 unknown); 0 means an empty snapshot dir is expected.",
-        "# TYPE backup_coverage_volume_bytes gauge",
-        "# HELP backup_coverage_snapshot_timestamp Newest snapshot holding the path (volumes: newest /volumes snapshot).",
-        "# TYPE backup_coverage_snapshot_timestamp gauge",
-    ]
-    for kind, project, service, path, since, volume in expected:
-        lbl = f'kind="{kind}",project="{project}",service="{service}",path="{path}"'
-        if kind == "volume":
+    lines = []
+    for name, text in HELP.items():
+        lines += [f"# HELP {name} {text}", f"# TYPE {name} gauge"]
+    for p in expected:
+        labels = ",".join(
+            f'{key}="{_escape(value)}"'
+            for key, value in (("kind", p.kind), ("project", p.project), ("service", p.service), ("path", p.path))
+        )
+        if p.kind == "volume":
+            since = max(p.container_created, volume_created.get(p.volume, p.container_created))
             due = since < newest_ts
-            is_present = path in present
-            snap = newest_ts
-            lines.append(f"backup_coverage_entries{{{lbl}}} {entries.get(path, 0)}")
-            lines.append(f"backup_coverage_volume_bytes{{{lbl}}} {sizes.get(volume, -1)}")
+            is_present = p.path in present
+            snapshot = newest_ts
+            lines.append(f"backup_coverage_entries{{{labels}}} {entries.get(p.path, 0)}")
+            lines.append(f"backup_coverage_volume_bytes{{{labels}}} {sizes.get(p.volume, -1)}")
         else:
-            due = since < now - DB_DUE_AFTER
-            snap = db_newest.get(path, 0)
-            is_present = snap > 0
+            due = p.container_created < now - config.database_due_after
+            snapshot = database_newest.get(p.path, 0)
+            is_present = snapshot > 0
         lines += [
-            f"backup_coverage_expected{{{lbl}}} 1",
-            f"backup_coverage_due{{{lbl}}} {int(due)}",
-            f"backup_coverage_present{{{lbl}}} {int(is_present)}",
-            f"backup_coverage_snapshot_timestamp{{{lbl}}} {snap}",
+            f"backup_coverage_expected{{{labels}}} 1",
+            f"backup_coverage_due{{{labels}}} {int(due)}",
+            f"backup_coverage_present{{{labels}}} {int(is_present)}",
+            f"backup_coverage_snapshot_timestamp{{{labels}}} {snapshot}",
         ]
     lines += [
-        "# HELP backup_coverage_last_success_timestamp When the last check completed.",
+        f"# HELP backup_coverage_last_success_timestamp {LAST_SUCCESS_HELP}",
         "# TYPE backup_coverage_last_success_timestamp gauge",
         f"backup_coverage_last_success_timestamp {time.time()}",
     ]
     return "\n".join(lines) + "\n"
 
 
-def loop():
-    global metrics
-    while True:
+class Exporter:
+    """Holds the last good check; /metrics is empty until the first check succeeds."""
+
+    def __init__(self, config):
+        self.config = config
+        self.metrics = ""
+
+    def refresh(self):
         try:
-            metrics = collect()
-            print(f"checked {metrics.count('backup_coverage_expected{')} paths", flush=True)
-        except Exception as e:  # keep serving the last good result; staleness alerts
-            print(f"check failed: {e}", flush=True)
-        time.sleep(INTERVAL)
+            self.metrics = collect(self.config)
+            print(f"checked {self.metrics.count('backup_coverage_expected{')} paths", flush=True)
+        except Exception as e:  # keep serving the last good result; its staleness alerts
+            print(f"check failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+    def run(self):
+        while True:
+            self.refresh()
+            time.sleep(self.config.refresh_interval)
 
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path != "/metrics":
-            self.send_error(404)
-            return
-        body = metrics.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; version=0.0.4")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+def serve(exporter):
+    """An HTTP server for /metrics and /healthz on the configured port; the caller runs serve_forever()."""
 
-    def log_message(self, *args):
-        pass
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/metrics":
+                self._reply(exporter.metrics, "text/plain; version=0.0.4")
+            elif self.path == "/healthz":
+                self._reply("ok\n", "text/plain")
+            else:
+                self.send_error(404)
+
+        def _reply(self, text, content_type):
+            body = text.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    return ThreadingHTTPServer(("", exporter.config.port), Handler)
 
 
-if __name__ == "__main__":
-    threading.Thread(target=loop, daemon=True).start()
-    ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+def healthcheck(port):
+    """Exit status for the image's healthcheck: 0 if this process answers on /healthz, without touching upstreams."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=3) as response:
+            return 0 if response.status == 200 else 1
+    except OSError:
+        return 1
+
+
+def main(argv, environ):
+    if argv == ["healthcheck"]:
+        return healthcheck(int(environ.get("PORT", "8002")))
+    if argv:
+        print("usage: python -m backup_coverage [healthcheck]", file=sys.stderr)
+        return 2
+    try:
+        config = Config.from_env(environ)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    exporter = Exporter(config)
+    threading.Thread(target=exporter.run, daemon=True).start()
+    print(f"serving /metrics on :{config.port}, checking every {config.refresh_interval:g}s", flush=True)
+    serve(exporter).serve_forever()
+    return 0
