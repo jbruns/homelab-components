@@ -18,7 +18,7 @@ class Upstream:
     repository: str
     tag: str
     digest: str
-    port: int
+    port: int | None  # None: a CLI upstream, run once per command instead of as a service
     env: dict = field(default_factory=dict)
     ready_path: str = "/"
     privileged: bool = False
@@ -43,7 +43,7 @@ def load_upstreams(component_dir):
                 repository=pinned["repository"],
                 tag=pinned["tag"],
                 digest=pinned["digest"],
-                port=int(spec["port"]),
+                port=int(spec["port"]) if "port" in spec else None,
                 env={k: str(v) for k, v in (spec.get("env") or {}).items()},
                 ready_path=spec.get("ready_path", "/"),
                 privileged=bool(spec.get("privileged", False)),

@@ -5,6 +5,7 @@
 #   <name>:            used by tests as upstream("<name>") and in Canary issue titles
 #     image:           repository:tag@sha256:digest   (digest required)
 #     port:            container port the Component talks to; published on 127.0.0.1 for tests
+#                      (omit for a CLI such as restic: tests run it with .command(), see tools/contract.py)
 #     env:             optional container env, e.g. a fixed API key; tests read it back as .env
 #     ready_path:      optional HTTP path polled until it answers below 500 (default /)
 #     privileged:      optional, default false; e.g. docker:<version>-dind as a pinned Docker Engine API

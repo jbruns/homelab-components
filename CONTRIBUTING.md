@@ -32,7 +32,8 @@ Python 3.13 matches the distroless base image. Test dependencies live in `requir
      `sonarr = upstream("sonarr")` starts that upstream from its pin and returns `sonarr.url` and `sonarr.env`.
      Assert on the fields and endpoints the Component relies on, so an upstream change that breaks it fails here.
      The harness starts HTTP services; a Docker Engine API upstream is a pinned `docker:<version>-dind` with
-     `privileged: true`. An upstream it cannot start yet (a CLI such as `restic`) is added to
+     `privileged: true`. A CLI upstream (such as `restic`) declares no `port`; `upstream("restic").command(...)`
+     is the argv that runs its pinned image once. Anything else the harness cannot start yet is added to
      `tools/contract.py`, test-first, in the PR that needs it.
 5. **Configure through the environment.** Every site-specific value (URLs, hostnames, credentials, paths, ports)
    comes from an env var with a generic default, or is `required`. Read env vars with literal names
