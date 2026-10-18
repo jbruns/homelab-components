@@ -23,6 +23,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 API_VERSION = "v1.44"
 LEFTOVER = re.compile(r"^[0-9a-f]{12}_(.+)$")
 OWN_LABELS = ("container", "stack")
+# A scrape that joins a collection already in flight waits at most TIMEOUT plus this, then reports Docker down.
+WAIT_MARGIN = 1.0
+UP_HEADER = [
+    "# HELP container_health_up 1 if the Docker API answered.",
+    "# TYPE container_health_up gauge",
+]
 
 
 def _metric_label(container_label):
@@ -82,6 +88,7 @@ class Collector:
         # status ("Up 2 hours (healthy)"); stopped ones need an inspect, done once per ID.
         self._has_check = {}
         self._lock = threading.Lock()
+        self._in_flight = None
 
     def _get(self, path):
         host, port = self.config.docker_address
@@ -116,15 +123,29 @@ class Collector:
         return "stopped" if self._has_check[cid] else None
 
     def collect(self):
-        """The /metrics body for one scrape."""
+        """The /metrics body for one scrape. Overlapping scrapes share one collection instead of each running one."""
         with self._lock:
-            return self._collect()
+            flight, leading = self._in_flight, self._in_flight is None
+            if leading:
+                flight = self._in_flight = _Flight()
+        if leading:
+            try:
+                flight.result = self._collect()
+            except BaseException as e:
+                flight.error = e
+            finally:
+                with self._lock:
+                    self._in_flight = None
+                flight.done.set()
+        elif not flight.done.wait(self.config.timeout + WAIT_MARGIN):
+            print("Docker API failed: collection in flight did not finish in time", file=sys.stderr, flush=True)
+            return "\n".join([*UP_HEADER, "container_health_up 0"]) + "\n"
+        if flight.error is not None:
+            raise flight.error
+        return flight.result
 
     def _collect(self):
-        lines = [
-            "# HELP container_health_up 1 if the Docker API answered.",
-            "# TYPE container_health_up gauge",
-        ]
+        lines = list(UP_HEADER)
         try:
             containers, up = self._get("/containers/json?all=1"), 1
         except Exception as e:  # report down, keep serving
@@ -164,6 +185,15 @@ class Collector:
         for cid in set(self._has_check) - live:
             del self._has_check[cid]
         return "\n".join(lines) + "\n"
+
+
+class _Flight:
+    """One collection in progress, and the result (or error) every scrape waiting on it gets."""
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.result = None
+        self.error = None
 
 
 def serve(config):

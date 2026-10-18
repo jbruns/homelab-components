@@ -35,11 +35,13 @@ class FakeDocker:
         self.healthchecks = {}  # container ID -> Config.Healthcheck.Test
         self.failing = set()  # paths (without version) answering 500
         self.requests = []
+        self.delay = 0.0  # seconds every request takes
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 fake.requests.append(self.path)
+                time.sleep(fake.delay)
                 path = re.sub(r"^/v[\d.]+(?=/)", "", self.path)
                 if path in fake.failing:
                     return self._reply(500, {"message": "boom"})
@@ -69,6 +71,9 @@ class FakeDocker:
     @property
     def address(self):
         return f"127.0.0.1:{self.server.server_port}"
+
+    def listed(self):
+        return [p for p in self.requests if p.endswith("/containers/json?all=1")]
 
     def inspected(self):
         return [p for p in self.requests if re.search(r"/containers/[^/]+/json$", p)]
@@ -319,3 +324,48 @@ def test_healthcheck_leaves_the_docker_api_alone(docker, start_exporter):
 def test_rejects_unknown_arguments():
     result = subprocess.run([*EXPORTER, "nope"], env={"PYTHONPATH": str(SRC)}, capture_output=True, timeout=10)
     assert result.returncode == 2
+
+
+def scrape_concurrently(exporter, count, stagger=0.1):
+    """Start `count` scrapes `stagger` seconds apart; return (body, seconds since the first started) for each."""
+    results = [None] * count
+    started = time.monotonic()
+
+    def scrape(i):
+        body = exporter.metrics()
+        results[i] = (body, time.monotonic() - started)
+
+    threads = [Thread(target=scrape, args=(i,)) for i in range(count)]
+    for thread in threads:
+        thread.start()
+        time.sleep(stagger)
+    for thread in threads:
+        thread.join(30)
+    return results
+
+
+def test_overlapping_scrapes_share_one_docker_collection(docker, start_exporter):
+    docker.containers = [container("a", "web", "Up (healthy)")]
+    exporter = start_exporter({"DOCKER_HOST": docker.address})
+    docker.requests.clear()
+    docker.delay = 1.0
+    results = scrape_concurrently(exporter, 4)
+    assert len(docker.listed()) == 1
+    bodies = {body for body, _ in results}
+    assert len(bodies) == 1 and "container_health_up 1\n" in bodies.pop()
+    finished = [seconds for _, seconds in results]
+    assert max(finished) - min(finished) < 0.5
+
+
+def test_a_scrape_waiting_on_a_slow_collection_gives_up_after_the_timeout(docker, start_exporter):
+    docker.containers = [container(f"s{i}", f"stopped{i}", "Exited (0)", state="exited") for i in range(4)]
+    docker.healthchecks = {f"s{i}": ["CMD", "true"] for i in range(4)}
+    exporter = start_exporter({"DOCKER_HOST": docker.address, "TIMEOUT": "1"})
+    docker.healthchecks = {f"s{i}": ["CMD", "true"] for i in range(4, 8)}
+    docker.containers = [container(f"s{i}", f"stopped{i}", "Exited (0)", state="exited") for i in range(4, 8)]
+    docker.delay = 0.8  # each request within TIMEOUT, the whole collection (list + 4 inspects) well beyond it
+    (first, first_done), (waiter, waiter_done) = scrape_concurrently(exporter, 2, stagger=0.2)
+    assert "container_health_up 0\n" in waiter
+    assert "container_healthy{" not in waiter
+    assert waiter_done < 3.0 < first_done
+    assert len(docker.listed()) == 2  # startup probe + one collection

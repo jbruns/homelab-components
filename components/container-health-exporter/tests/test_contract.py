@@ -1,11 +1,13 @@
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
+import yaml
 
 from container_health_exporter.exporter import Collector, Config
 
-BUSYBOX = "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
+BUSYBOX = yaml.safe_load((Path(__file__).parents[1] / "upstreams.yaml").read_text())["test_images"]["busybox"]["image"]
 HEALTH = ["--health-interval", "1s", "--health-retries", "1", "--health-start-period", "0s"]
 
 

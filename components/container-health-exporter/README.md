@@ -35,7 +35,7 @@ table and the code disagree.
 |---|---|---|
 | `DOCKER_HOST` | `docker-socket-proxy:2375` | Docker Engine API over plain TCP, as `host:port` or `tcp://host:port` (port defaults to 2375). |
 | `PORT` | `9714` | Port serving `/metrics` and `/healthz`. |
-| `TIMEOUT` | `10` | Seconds to wait for each Docker API request. |
+| `TIMEOUT` | `10` | Seconds to wait for each Docker API request. Overlapping scrapes share one collection; a scrape joining one already running waits at most `TIMEOUT` + 1 s, then reports `container_health_up 0`. |
 | `CONTAINER_LABELS` | empty (none) | Comma-separated container labels copied onto `container_healthy` as metric labels (`tier`, `com.example.team`); characters invalid in a metric label name become `_`. A container without the label gets `""`. |
 | `IGNORE_LABEL` | empty (ignore none) | Ignore containers carrying this label, as `key=value`, or `key` for any value (e.g. `startup-order=skip` for ad-hoc jobs). |
 
@@ -63,4 +63,7 @@ healthcheck:
 
 | Upstream | Pinned in | Contract |
 |---|---|---|
-| docker | [`upstreams.yaml`](upstreams.yaml) | `GET /v1.44/containers/json?all=1` lists `Id`, `Names`, `State`, `Status` (with `(healthy)`, `(unhealthy)` or `(health: starting)`) and `Labels`; `GET /v1.44/containers/<id>/json` gives `Config.Healthcheck.Test` |
+| docker | [`upstreams.yaml`](upstreams.yaml) (`upstreams`) | `GET /v1.44/containers/json?all=1` lists `Id`, `Names`, `State`, `Status` (with `(healthy)`, `(unhealthy)` or `(health: starting)`) and `Labels`; `GET /v1.44/containers/<id>/json` gives `Config.Healthcheck.Test` |
+
+The Contract Tests run their workload containers inside dind from the `busybox` image pinned under
+`test_images` in [`upstreams.yaml`](upstreams.yaml), where Renovate bumps it; the harness starts only `upstreams`.
