@@ -26,6 +26,7 @@ SHARED_PATHS = (
     "requirements-dev.txt",
     ".github/workflows/ci.yaml",
     ".github/workflows/test-component.yaml",
+    ".github/actions/",
 )
 _RELEASE_TAG = re.compile(r"^(?P<component>[a-z0-9][a-z0-9-]*)-v(?P<version>\d+\.\d+\.\d+)$")
 
@@ -129,10 +130,10 @@ def _run(args):
         print(json.dumps(canary_plan(all_components())))
     elif args.command == "release":
         component, version = parse_release_tag(args.tag)
-        if not (COMPONENTS_DIR / component / "Dockerfile").is_file():
-            print(f"components/{component}/Dockerfile not found", file=sys.stderr)
-            return 1
-        print(f"component={component}\nversion={version}")
+        if component not in all_components():
+            raise ValueError(f"{args.tag!r} names no Component under components/")
+        image = (COMPONENTS_DIR / component / "Dockerfile").is_file()
+        print(f"component={component}\nversion={version}\nimage={str(image).lower()}")
     return 0
 
 

@@ -58,9 +58,11 @@ Tag a commit on `main` `<component>-vX.Y.Z` (semver per Component) and push the 
 git tag arr-queue-exporter-v1.0.0 && git push origin arr-queue-exporter-v1.0.0
 ```
 
-The `release` workflow runs the Component's checks, then pushes `ghcr.io/jbruns/<component>:X.Y.Z` for
-linux/amd64 and linux/arm64 with provenance and an SBOM. Consumers pin it by digest; Renovate in the consuming
-repo picks up new versions.
+The `release` workflow refuses tags off `main`, runs the Component's checks, then pushes
+`ghcr.io/jbruns/<component>:X.Y.Z` for linux/amd64 and linux/arm64 with provenance and an SBOM, and creates a
+GitHub Release naming the image digest. A Component without a `Dockerfile` (a Host script) gets a GitHub
+Release with its `src/` files attached instead. Consumers pin by digest; Renovate in the consuming repo picks
+up new versions.
 
 ## Renovate
 

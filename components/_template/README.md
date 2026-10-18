@@ -38,7 +38,8 @@ table and the code disagree.
 
 ## Healthcheck
 
-The image declares a `HEALTHCHECK`; Compose should declare the same one (home-ops Baseline):
+`healthcheck` exits 0 when the exporter answers on its own `/healthz`, which never calls the upstream. The image
+declares it as its `HEALTHCHECK`; Compose should declare the same one (home-ops Baseline):
 
 ```yaml
 healthcheck:

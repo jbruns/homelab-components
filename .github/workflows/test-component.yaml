@@ -23,19 +23,20 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13" # the distroless base image's Python
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
-      - run: python -m pip install --quiet --requirement requirements-dev.txt
+      - uses: ./.github/actions/setup
       - name: README has Why, Retire when and every env var
         run: python -m tools.components check-readme "$COMPONENT"
+      # pytest exits 5 when it collects no tests.
       - name: unit tests
-        run: python -m pytest -m "not contract" "$COMPONENT_DIR"
+        run: |
+          python -m pytest -m "not contract" "$COMPONENT_DIR" || { rc=$?
+            [ "$rc" -eq 5 ] && echo "::error::no unit tests in $COMPONENT_DIR/tests"; exit "$rc"; }
       - name: Contract Tests
         if: hashFiles(format('components/{0}/upstreams.yaml', inputs.component)) != ''
-        run: python -m pytest -m contract "$COMPONENT_DIR"
+        run: |
+          python -m pytest -m contract "$COMPONENT_DIR" || { rc=$?
+            [ "$rc" -eq 5 ] && echo "::error::upstreams.yaml declares upstreams but no test is marked @pytest.mark.contract"
+            exit "$rc"; }
       - if: hashFiles(format('components/{0}/Dockerfile', inputs.component)) != ''
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: build image

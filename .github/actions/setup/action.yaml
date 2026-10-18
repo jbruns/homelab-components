@@ -1,0 +1,12 @@
+name: setup
+description: Python 3.13 (the distroless base image's Python) and the pinned dev tools from requirements-dev.txt
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.13"
+        cache: pip
+        cache-dependency-path: requirements-dev.txt
+    - run: python -m pip install --quiet --requirement requirements-dev.txt
+      shell: bash

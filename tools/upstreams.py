@@ -6,46 +6,50 @@ from pathlib import Path
 
 import yaml
 
-_RELEASE_TAG = re.compile(r"^(?P<prefix>v?)(?P<numbers>\d+(?:\.\d+)*)(?P<suffix>-[A-Za-z][\w.]*)?$")
-
-
-_PINNED_IMAGE = re.compile(r"^(?P<repository>[^\s:@]+(?::\d+/[^\s:@]+)?):(?P<tag>[^\s:@]+)@sha256:[0-9a-f]{64}$")
+_VERSION_TAG = re.compile(r"^(?P<prefix>v?)(?P<numbers>\d+(?:\.\d+)*)(?P<suffix>-[A-Za-z][\w.]*)?$")
+_PINNED_IMAGE = re.compile(
+    r"^(?P<repository>[^\s:@]+(?::\d+/[^\s:@]+)?):(?P<tag>[^\s:@]+)@(?P<digest>sha256:[0-9a-f]{64})$"
+)
 
 
 @dataclass(frozen=True)
 class Upstream:
     name: str
-    image: str
+    repository: str
+    tag: str
+    digest: str
     port: int
     env: dict = field(default_factory=dict)
     ready_path: str = "/"
+    privileged: bool = False
 
     @property
-    def repository(self):
-        return _PINNED_IMAGE.match(self.image)["repository"]
-
-    @property
-    def tag(self):
-        return _PINNED_IMAGE.match(self.image)["tag"]
+    def image(self):
+        return f"{self.repository}:{self.tag}@{self.digest}"
 
 
 def load_upstreams(component_dir):
     """The upstreams declared in `<component_dir>/upstreams.yaml`, in file order."""
     path = Path(component_dir) / "upstreams.yaml"
     declared = (yaml.safe_load(path.read_text()) or {}).get("upstreams") or {}
+    upstreams = []
     for name, spec in declared.items():
-        if not _PINNED_IMAGE.match(str(spec.get("image", ""))):
+        pinned = _PINNED_IMAGE.match(str(spec.get("image", "")))
+        if not pinned:
             raise ValueError(f"{path}: upstream {name!r} image must be pinned as repository:tag@sha256:digest")
-    return [
-        Upstream(
-            name=name,
-            image=spec["image"],
-            port=int(spec["port"]),
-            env={k: str(v) for k, v in (spec.get("env") or {}).items()},
-            ready_path=spec.get("ready_path", "/"),
+        upstreams.append(
+            Upstream(
+                name=name,
+                repository=pinned["repository"],
+                tag=pinned["tag"],
+                digest=pinned["digest"],
+                port=int(spec["port"]),
+                env={k: str(v) for k, v in (spec.get("env") or {}).items()},
+                ready_path=spec.get("ready_path", "/"),
+                privileged=bool(spec.get("privileged", False)),
+            )
         )
-        for name, spec in declared.items()
-    ]
+    return upstreams
 
 
 def contract_image(upstream, environ):
@@ -59,7 +63,7 @@ def contract_image(upstream, environ):
 
 
 def _shape(tag):
-    m = _RELEASE_TAG.match(tag)
+    m = _VERSION_TAG.match(tag)
     if not m:
         return None
     numbers = tuple(int(n) for n in m["numbers"].split("."))

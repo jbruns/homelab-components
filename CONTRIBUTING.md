@@ -31,18 +31,23 @@ Python 3.13 matches the distroless base image. Test dependencies live in `requir
    - Contract Tests are marked `@pytest.mark.contract` and take the `upstream` fixture:
      `sonarr = upstream("sonarr")` starts that upstream from its pin and returns `sonarr.url` and `sonarr.env`.
      Assert on the fields and endpoints the Component relies on, so an upstream change that breaks it fails here.
+     The harness starts HTTP services; a Docker Engine API upstream is a pinned `docker:<version>-dind` with
+     `privileged: true`. An upstream it cannot start yet (a CLI such as `restic`) is added to
+     `tools/contract.py`, test-first, in the PR that needs it.
 5. **Configure through the environment.** Every site-specific value (URLs, hostnames, credentials, paths, ports)
    comes from an env var with a generic default, or is `required`. Read env vars with literal names
    (`environ.get("SONARR_URL", "http://sonarr:8989")`; in shell `${NAME:-default}`) and list each one in the
    README's `## Configuration` table (`Variable | Default | Description`). CI fails when the table and the code
    disagree.
 6. **Ship a healthcheck.** The image runs `python3 -m <package> healthcheck`, which exits 0 only when the
-   process's own endpoint answers, and declares it as the Dockerfile `HEALTHCHECK`, so a Compose Service meets
-   the home-ops Baseline without `wget` or a shell. If the image cannot start without some env (an API key, say),
+   process answers on its own `/healthz` (which never calls an upstream, so a slow upstream cannot mark it
+   unhealthy), and declares it as the Dockerfile `HEALTHCHECK`, so a Compose Service meets the home-ops
+   Baseline without `wget` or a shell. If the image cannot start without some env (an API key, say),
    put dummy values in `tests/smoke.env`; CI starts the image with them and waits for healthy.
 7. **Keep the image minimal.** Stdlib-only Python on `gcr.io/distroless/python3-debian13:nonroot`, pinned by
    digest, running as nonroot. A Component that needs a binary (e.g. `restic`) copies it in from a pinned image
-   in a multi-stage build.
+   in a multi-stage build. A Component that runs directly on the Host (a POSIX shell script) has no
+   `Dockerfile`; its release attaches the files directly under `src/` to the GitHub Release instead.
 8. **Open a PR.** CI runs the README check, unit tests, Contract Tests and the image build for each Component
    the PR touches.
 

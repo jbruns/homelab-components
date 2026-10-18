@@ -18,6 +18,7 @@ def free_port():
 def fake_whoami():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            server.requests += 1
             body = json.dumps({"hostname": "whoami-1"}).encode()
             self.send_response(200 if self.path == "/api" else 404)
             self.send_header("Content-Type", "application/json")
@@ -28,13 +29,18 @@ def fake_whoami():
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.requests = 0
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_port}"
+    yield server
     server.shutdown()
 
 
+def url(server):
+    return f"http://127.0.0.1:{server.server_port}"
+
+
 def test_reports_the_upstream_up_with_its_hostname(fake_whoami):
-    metrics = collect(Config(upstream_url=fake_whoami, port=0, timeout=2))
+    metrics = collect(Config(upstream_url=url(fake_whoami), port=0, timeout=2))
     assert "template_upstream_up 1\n" in metrics
     assert 'template_upstream_info{hostname="whoami-1"} 1\n' in metrics
 
@@ -46,7 +52,7 @@ def test_reports_the_upstream_down_when_it_does_not_answer():
 
 
 def test_healthcheck_passes_only_while_metrics_are_served(fake_whoami):
-    config = Config(upstream_url=fake_whoami, port=free_port(), timeout=2)
+    config = Config(upstream_url=url(fake_whoami), port=free_port(), timeout=2)
     assert healthcheck(config) == 1
     server = serve(config)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -54,6 +60,17 @@ def test_healthcheck_passes_only_while_metrics_are_served(fake_whoami):
         assert healthcheck(config) == 0
     finally:
         server.shutdown()
+
+
+def test_healthcheck_leaves_the_upstream_alone(fake_whoami):
+    config = Config(upstream_url=url(fake_whoami), port=free_port(), timeout=2)
+    server = serve(config)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert healthcheck(config) == 0
+    finally:
+        server.shutdown()
+    assert fake_whoami.requests == 0
 
 
 def test_configuration_comes_from_the_environment_with_documented_defaults():

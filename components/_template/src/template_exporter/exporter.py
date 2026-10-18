@@ -1,7 +1,7 @@
 """Prometheus exporter for a traefik/whoami upstream: the copy-from template for new Components.
 
 Reads the upstream's /api once per scrape and reports whether it answered and which hostname it gave.
-`python -m template_exporter` serves /metrics; `python -m template_exporter healthcheck` probes it.
+`python -m template_exporter` serves /metrics and /healthz; `python -m template_exporter healthcheck` probes /healthz.
 """
 
 import json
@@ -56,16 +56,21 @@ def collect(config):
 
 
 def serve(config):
-    """An HTTP server for /metrics on the configured port; the caller runs serve_forever()."""
+    """An HTTP server for /metrics and /healthz on the configured port; the caller runs serve_forever()."""
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path != "/metrics":
+            if self.path == "/metrics":
+                self._reply(collect(config), "text/plain; version=0.0.4")
+            elif self.path == "/healthz":
+                self._reply("ok\n", "text/plain")
+            else:
                 self.send_error(404)
-                return
-            body = collect(config).encode()
+
+        def _reply(self, text, content_type):
+            body = text.encode()
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -77,9 +82,9 @@ def serve(config):
 
 
 def healthcheck(config):
-    """Exit status for the image's healthcheck: 0 if this process's own /metrics answers 200."""
+    """Exit status for the image's healthcheck: 0 if this process answers on /healthz, without touching upstreams."""
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{config.port}/metrics", timeout=config.timeout) as response:
+        with urllib.request.urlopen(f"http://127.0.0.1:{config.port}/healthz", timeout=3) as response:
             return 0 if response.status == 200 else 1
     except OSError:
         return 1

@@ -57,8 +57,10 @@ def _wait_ready(url, container):
 
 def _start(spec):
     image = contract_image(spec, os.environ)
-    env_args = [arg for key, value in spec.env.items() for arg in ("--env", f"{key}={value}")]
-    container = _docker("run", "--detach", "--publish", f"127.0.0.1::{spec.port}", *env_args, image)
+    options = [arg for key, value in spec.env.items() for arg in ("--env", f"{key}={value}")]
+    if spec.privileged:
+        options.append("--privileged")
+    container = _docker("run", "--detach", "--publish", f"127.0.0.1::{spec.port}", *options, image)
     try:
         host_port = _docker("port", container, f"{spec.port}/tcp").splitlines()[0].rsplit(":", 1)[1]
         url = f"http://127.0.0.1:{host_port}"
