@@ -67,6 +67,7 @@ healthcheck:
 |---|---|---|
 | SABnzbd | [`upstreams.yaml`](upstreams.yaml) | `GET /api?mode=status&output=json&apikey=…` returns `status.servers[]` with `servername`, `serveractive`, `serveroptional`, `serverpriority`, `servertotalconn`, `servererror`, `serverwarning`; a wrong API key is refused |
 
-The Contract Tests seed the API key through the pinned image's `SABNZBD__API_KEY`, configure servers on
-`.invalid` hosts through `api?mode=set_config`, and queue a one-segment NZB so SABnzbd reports a real server
-error.
+The Contract Tests seed the API key through the pinned image's `SABNZBD__API_KEY` and check each field above
+is present with its type (the exporter reads a missing one as 0 or empty, i.e. healthy). Through
+`api?mode=set_config` they configure servers on a `.invalid` host and on a refused port, and queue a
+one-segment NZB, so SABnzbd reports a real server error and a real server warning.

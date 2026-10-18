@@ -47,14 +47,24 @@ def add_nzb(sab, nzb):
     return api(sab, data=body, content_type=f"multipart/form-data; boundary={boundary}", mode="addfile")
 
 
-def add_server(sab, name, **settings):
-    """Configure a Usenet server on a host that never resolves (RFC 2606 .invalid)."""
-    api(sab, mode="set_config", section="servers", keyword=name, host=f"{name}.invalid", port=119, enable=1, **settings)
+def add_server(sab, name, host=None, port=119, **settings):
+    """Configure a Usenet server; by default on a host that never resolves (RFC 2606 .invalid)."""
+    host = host or f"{name}.invalid"
+    api(sab, mode="set_config", section="servers", keyword=name, host=host, port=port, enable=1, **settings)
 
 
 def sample(metrics, metric, server):
     m = re.search(rf'^{metric}{{server="{re.escape(server)}"(?:,[^}}]*)?}} (\S+)$', metrics, flags=re.M)
     return m and m[1]
+
+
+def wait_for(sab, metric, server, value="1", seconds=60):
+    """The /metrics body once `metric{server}` reads `value`."""
+    deadline = time.monotonic() + seconds
+    while sample(metrics := collect(config(sab)), metric, server) != value:
+        assert time.monotonic() < deadline, f"{metric}{{server={server!r}}} not {value} within {seconds}s:\n{metrics}"
+        time.sleep(1)
+    return metrics
 
 
 @pytest.mark.contract
@@ -70,6 +80,27 @@ def test_reports_down_when_sabnzbd_refuses_the_api_key(upstream):
 
 
 @pytest.mark.contract
+def test_status_lists_each_server_with_every_field_the_exporter_reads(upstream):
+    # The exporter treats a missing field as 0 or "", so a renamed or dropped field would read as healthy.
+    sab = upstream("sabnzbd")
+    add_server(sab, "contract-fields")
+
+    servers = api(sab, mode="status")["status"]["servers"]
+
+    (raw,) = [s for s in servers if s.get("servername") == "contract-fields"]
+    expected_types = {
+        "servername": str,
+        "serveractive": bool,
+        "serveroptional": int,
+        "serverpriority": int,
+        "servertotalconn": int,
+        "servererror": str,
+        "serverwarning": str,
+    }
+    assert {field: type(raw.get(field)) for field in expected_types} == expected_types
+
+
+@pytest.mark.contract
 def test_reports_each_configured_server(upstream):
     sab = upstream("sabnzbd")
     add_server(sab, "contract-settings", connections=3, priority=2, optional=1)
@@ -80,7 +111,6 @@ def test_reports_each_configured_server(upstream):
     assert sample(metrics, "sabnzbd_usenet_server_optional", "contract-settings") == "1"
     assert sample(metrics, "sabnzbd_usenet_server_priority", "contract-settings") == "2"
     assert sample(metrics, "sabnzbd_usenet_server_connections", "contract-settings") == "3"
-    assert sample(metrics, "sabnzbd_usenet_server_warning", "contract-settings") is not None
 
 
 @pytest.mark.contract
@@ -89,10 +119,24 @@ def test_reports_the_error_sabnzbd_hits_on_a_server(upstream):
     add_server(sab, "contract-unreachable", connections=1)
     assert add_nzb(sab, NZB)["status"] is True
 
-    deadline = time.monotonic() + 60
-    while sample(metrics := collect(config(sab)), "sabnzbd_usenet_server_error", "contract-unreachable") != "1":
-        assert time.monotonic() < deadline, f"no server error reported within 60s:\n{metrics}"
-        time.sleep(1)
+    metrics = wait_for(sab, "sabnzbd_usenet_server_error", "contract-unreachable")
+
     assert re.search(
         r'^sabnzbd_usenet_server_error_info\{server="contract-unreachable",error="[^"]+"\} 1$', metrics, flags=re.M
     )
+
+
+@pytest.mark.contract
+def test_reports_the_warning_sabnzbd_hits_on_a_server(upstream):
+    # Nothing listens on port 9 (discard) inside the SABnzbd container, so every connection is refused and
+    # SABnzbd warns about the server instead of failing it.
+    sab = upstream("sabnzbd")
+    add_server(sab, "contract-refused", host="127.0.0.1", port=9, connections=1)
+    assert add_nzb(sab, NZB)["status"] is True
+
+    metrics = wait_for(sab, "sabnzbd_usenet_server_warning", "contract-refused")
+
+    assert re.search(
+        r'^sabnzbd_usenet_server_warning_info\{server="contract-refused",warning="[^"]+"\} 1$', metrics, flags=re.M
+    )
+    assert sample(metrics, "sabnzbd_usenet_server_error", "contract-refused") == "0"
