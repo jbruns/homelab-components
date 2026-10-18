@@ -76,8 +76,9 @@ cmd_stop() {
     # state left by a boot run that never finished, so a second shutdown loses nothing.
     { running; cat "$STATE" 2>/dev/null; } | sed '/^$/d' | sort -u > "$STATE.tmp"
     if [ -s "$STATE.tmp" ]; then mv "$STATE.tmp" "$STATE"; else rm -f "$STATE.tmp"; fi
+    recorded=$(wc -l 2>/dev/null < "$STATE") || recorded=0
     {
-        log "stop: recorded $(cat "$STATE" 2>/dev/null | wc -l) containers"
+        log "stop: recorded $recorded containers"
         for lvl in $(descending "$MAX_LEVEL" 0); do
             names=$(at_level "$(running)" "$lvl" | tr '\n' ' ')
             [ -n "$names" ] || continue

@@ -81,6 +81,12 @@ def test_stop_records_running_containers_then_stops_them_from_the_highest_level_
     assert "stop: done" in log
 
 
+def test_stop_with_nothing_running_records_nothing(host):
+    assert host.run("stop").returncode == 0
+    assert not (host.dir / "state").exists()
+    assert re.search(r"stop: recorded +0 containers", (host.dir / "shutdown.log").read_text())
+
+
 def test_stop_keeps_names_recorded_by_an_earlier_shutdown(host):
     host.dir.mkdir()
     (host.dir / "state").write_text("earlier\n")
@@ -338,4 +344,4 @@ def test_start_runs_in_the_background_and_logs_to_last_log(host):
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="needs shellcheck")
 def test_script_is_posix_sh_and_shellcheck_clean():
     result = subprocess.run(["shellcheck", "--shell=sh", str(SCRIPT)], capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout
+    assert result.returncode == 0, result.stdout + result.stderr
