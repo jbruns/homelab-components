@@ -1,0 +1,19 @@
+# Upstreams this Component calls. Contract Tests start each one from its pinned image; Renovate bumps the pin
+# (and that PR's Contract Tests gate it). The weekly Canary tries the newest stable tag with the same shape as
+# the pinned tag (same `v` prefix, number of version parts and variant suffix). See components/_template.
+#
+# linuxserver publishes a plain `X.Y.Z` tag for each stable release (develop/nightly builds carry a suffix, so
+# the Canary skips them). Sonarr and Radarr take their API key from `<APP>__AUTH__APIKEY`, so the tests know it.
+upstreams:
+  sonarr:
+    image: linuxserver/sonarr:4.0.20@sha256:44b06045a98bc1f237b9ffefc4b28dab64cb29305e4a2a94875ae93b5224e4cc
+    port: 8989
+    env:
+      SONARR__AUTH__APIKEY: 0123456789abcdef0123456789abcdef
+    ready_path: /ping
+  radarr:
+    image: linuxserver/radarr:6.4.4@sha256:ea6822c956d26db648b237919f41340318f32e5b7dcc4ba702cf256a0f5f3c12
+    port: 7878
+    env:
+      RADARR__AUTH__APIKEY: 0123456789abcdef0123456789abcdef
+    ready_path: /ping
