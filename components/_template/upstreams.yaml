@@ -1,0 +1,16 @@
+# Upstreams this Component calls. Contract Tests start each one from its pinned image; Renovate bumps the pin
+# (and that PR's Contract Tests gate it). The weekly Canary tries the newest stable tag with the same shape as
+# the pinned tag (same `v` prefix, number of version parts and variant suffix).
+#
+#   <name>:            used by tests as upstream("<name>") and in Canary issue titles
+#     image:           repository:tag@sha256:digest   (digest required)
+#     port:            container port the Component talks to; published on 127.0.0.1 for tests
+#     env:             optional container env, e.g. a fixed API key; tests read it back as .env
+#     ready_path:      optional HTTP path polled until it answers below 500 (default /)
+#     privileged:      optional, default false; e.g. docker:<version>-dind as a pinned Docker Engine API
+#                      (with env DOCKER_TLS_CERTDIR: "", port 2375, ready_path /_ping)
+upstreams:
+  whoami:
+    image: traefik/whoami:v1.11.0@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab
+    port: 80
+    ready_path: /health

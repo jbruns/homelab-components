@@ -1,0 +1,4 @@
+# Test and lint tooling for CI and contributors. Component runtime code stays stdlib-only.
+pytest==9.1.1
+PyYAML==6.0.3
+ruff==0.17.1

@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=npm depName=renovate
+  RENOVATE_VERSION: 44.167.5
+  # renovate: datasource=docker depName=rhysd/actionlint
+  ACTIONLINT_VERSION: 1.7.12
+
+jobs:
+  tooling:
+    name: lint, Repo Tooling tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - run: ruff check --output-format=github .
+      - run: ruff format --check .
+      - run: python -m pytest tools
+      - run: docker run --rm -v "$PWD:/repo" -w /repo "rhysd/actionlint:${ACTIONLINT_VERSION}" -color
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npx --yes --package "renovate@${RENOVATE_VERSION}" -- renovate-config-validator --strict renovate.json
+
+  plan:
+    name: changed Components
+    runs-on: ubuntu-24.04
+    outputs:
+      components: ${{ steps.affected.outputs.components }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - id: affected
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Pull requests test the Components they touch; pushes to main and manual runs test every Component.
+          components=$(python -m tools.components affected ${BASE:+--base "$BASE"})
+          echo "components=$components" >> "$GITHUB_OUTPUT"
+          echo "Components: $components" >> "$GITHUB_STEP_SUMMARY"
+
+  component:
+    name: ${{ matrix.component }}
+    needs: plan
+    if: needs.plan.outputs.components != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.plan.outputs.components) }}
+    uses: ./.github/workflows/test-component.yaml
+    with:
+      component: ${{ matrix.component }}
+
+  # Single required check for branch protection.
+  ci:
+    name: ci
+    if: always()
+    needs: [tooling, plan, component]
+    runs-on: ubuntu-24.04
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "all checks passed"

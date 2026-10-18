@@ -1,0 +1,65 @@
+name: test component
+
+# One Component's checks: README rule, unit tests, Contract Tests against the pinned upstreams, and an image
+# build that must reach healthy. Called by ci.yaml for each changed Component and by release.yaml before publishing.
+on:
+  workflow_call:
+    inputs:
+      component:
+        description: folder name under components/
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  COMPONENT: ${{ inputs.component }}
+  COMPONENT_DIR: components/${{ inputs.component }}
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - name: README has Why, Retire when and every env var
+        run: python -m tools.components check-readme "$COMPONENT"
+      # pytest exits 5 when it collects no tests.
+      - name: unit tests
+        run: |
+          python -m pytest -m "not contract" "$COMPONENT_DIR" || { rc=$?
+            [ "$rc" -eq 5 ] && echo "::error::no unit tests in $COMPONENT_DIR/tests"; exit "$rc"; }
+      - name: Contract Tests
+        if: hashFiles(format('components/{0}/upstreams.yaml', inputs.component)) != ''
+        run: |
+          python -m pytest -m contract "$COMPONENT_DIR" || { rc=$?
+            [ "$rc" -eq 5 ] && echo "::error::upstreams.yaml declares upstreams but no test is marked @pytest.mark.contract"
+            exit "$rc"; }
+      - if: hashFiles(format('components/{0}/Dockerfile', inputs.component)) != ''
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build image
+        if: hashFiles(format('components/{0}/Dockerfile', inputs.component)) != ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ env.COMPONENT_DIR }}
+          load: true
+          push: false
+          tags: homelab-components-ci:${{ inputs.component }}
+      - name: image reaches healthy
+        if: hashFiles(format('components/{0}/Dockerfile', inputs.component)) != ''
+        run: |
+          env_file=()
+          if [ -f "$COMPONENT_DIR/tests/smoke.env" ]; then env_file=(--env-file "$COMPONENT_DIR/tests/smoke.env"); fi
+          cid=$(docker run --detach "${env_file[@]}" "homelab-components-ci:$COMPONENT")
+          trap 'docker logs "$cid"; docker rm --force "$cid" >/dev/null' EXIT
+          if [ "$(docker inspect --format '{{if .Config.Healthcheck}}yes{{end}}' "$cid")" != yes ]; then
+            echo "::error::the image declares no HEALTHCHECK"; exit 1
+          fi
+          for _ in $(seq 60); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' "$cid")
+            [ "$status" = healthy ] && exit 0
+            sleep 2
+          done
+          echo "::error::image not healthy after 120s (status: $status)"; exit 1

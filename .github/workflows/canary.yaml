@@ -1,0 +1,70 @@
+name: canary
+
+# Weekly Canary: each Component's Contract Tests against the newest stable tag of each upstream (same shape as the
+# pinned tag, pre-releases excluded). A failure opens or updates an issue; nothing here gates a merge.
+on:
+  schedule:
+    - cron: "17 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: newest stable upstream tags
+    runs-on: ubuntu-24.04
+    outputs:
+      canaries: ${{ steps.plan.outputs.canaries }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      # skopeo ships on GitHub's ubuntu runner images; it lists tags from any registry anonymously.
+      - id: plan
+        run: |
+          canaries=$(python -m tools.components canary-plan)
+          echo "canaries=$canaries" >> "$GITHUB_OUTPUT"
+          echo "$canaries" | jq -r '.[] | "- \(.component) vs \(.upstream) \(.version) (pinned \(.pinned))"' >> "$GITHUB_STEP_SUMMARY"
+
+  canary:
+    name: ${{ matrix.component }} vs ${{ matrix.upstream }} ${{ matrix.version }}
+    needs: plan
+    if: needs.plan.outputs.canaries != '[]'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.canaries) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - name: Contract Tests against ${{ matrix.image }}
+        env:
+          CONTRACT_UPSTREAM: ${{ matrix.upstream }}
+          CONTRACT_IMAGE: ${{ matrix.image }}
+          COMPONENT_DIR: components/${{ matrix.component }}
+        run: python -m pytest -m contract "$COMPONENT_DIR"
+      - name: open or update the Canary issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Canary: ${{ matrix.component }} fails against ${{ matrix.upstream }} ${{ matrix.version }}"
+          COMPONENT: ${{ matrix.component }}
+          IMAGE: ${{ matrix.image }}
+          PINNED: ${{ matrix.pinned }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body=$(printf '%s\n\n%s\n\n%s\n' \
+            "The Contract Tests for \`components/$COMPONENT\` failed against \`$IMAGE\` (pinned: \`$PINNED\`)." \
+            "Run: $RUN_URL" \
+            "This Canary warns ahead of the upstream bump; it does not block merges.")
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITLE\"" \
+            --json number,title | jq -r --arg title "$TITLE" '[.[] | select(.title == $title)][0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$body"
+          fi

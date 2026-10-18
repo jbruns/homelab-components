@@ -1,0 +1,44 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "America/Los_Angeles",
+  "packageRules": [
+    {
+      "description": "Upstream pins gate on the Component's Contract Tests; never automerge them",
+      "matchFileNames": [
+        "components/*/upstreams.yaml"
+      ],
+      "automerge": false,
+      "addLabels": [
+        "contract-pin"
+      ]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Upstream images pinned for Contract Tests (components/<name>/upstreams.yaml)",
+      "managerFilePatterns": [
+        "/(^|/)upstreams\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "image:\\s*\"?(?<depName>[^\\s:@\"]+(?::\\d+/[^\\s:@\"]+)?):(?<currentValue>[^\\s@\"]+)@(?<currentDigest>sha256:[a-f0-9]{64})\"?"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Versions annotated with # renovate: comments in workflows",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+:\\s*\"?(?<currentValue>[^\\s\"]+)\"?"
+      ]
+    }
+  ]
+}
