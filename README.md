@@ -69,3 +69,7 @@ up new versions.
 `renovate.json` pins and updates base image digests in each `Dockerfile`, action digests in workflows, the
 upstream pins in every `upstreams.yaml` (custom regex manager), the Python dev tools in `requirements-dev.txt`,
 and tool versions annotated `# renovate:` in workflows.
+
+## License
+
+[MIT](LICENSE).
