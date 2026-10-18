@@ -7,6 +7,7 @@ A test marked `contract` asks for an upstream by its name in the Component's `up
         sonarr = upstream("sonarr")
         sonarr.url   # http://127.0.0.1:<published port>
         sonarr.env   # env from upstreams.yaml, e.g. the API key the container was started with
+        sonarr.container   # container ID, e.g. to `docker exec` test data into the upstream
 
 The container runs from the pinned image, or from the image a Canary names (tools/upstreams.contract_image).
 It starts once per test session and is removed at the end.
@@ -33,6 +34,7 @@ class RunningUpstream:
     image: str
     url: str
     env: dict
+    container: str
 
 
 def _docker(*args):
@@ -73,7 +75,7 @@ def _start(spec):
     except BaseException:
         remove_container(container)
         raise
-    return container, RunningUpstream(name=spec.name, image=image, url=url, env=dict(spec.env))
+    return container, RunningUpstream(name=spec.name, image=image, url=url, env=dict(spec.env), container=container)
 
 
 @pytest.fixture(scope="session")
