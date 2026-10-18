@@ -1,0 +1,61 @@
+# Contributing
+
+For humans and agents. Vocabulary (Custom Component, Retirement Condition, Contract Test, Canary) follows
+[jbruns/home-ops GLOSSARY.md](https://github.com/jbruns/home-ops/blob/main/GLOSSARY.md).
+
+## Set up
+
+```sh
+python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest -m "not contract"     # unit tests, everything
+.venv/bin/pytest -m contract           # Contract Tests; needs a running Docker
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+```
+
+Python 3.13 matches the distroless base image. Test dependencies live in `requirements-dev.txt`, pinned.
+
+## Add a Component
+
+1. **Justify it.** Confirm no upstream or community option covers the need. Write that as `## Why`, and the
+   capability whose arrival would let you delete the Component as `## Retire when`.
+2. **Copy the template.** `cp -r components/_template components/<name>`, where `<name>` is lowercase
+   letters, digits and `-` (it becomes the image name and the release tag prefix). Rename
+   `src/template_exporter` to a package name unique in this repo, and update the `Dockerfile` and tests.
+3. **Declare the upstreams** the Component calls in `upstreams.yaml`, each pinned `repository:tag@sha256:digest`
+   (`docker buildx imagetools inspect <repository>:<tag>` prints the digest). Pin a tag whose shape the Canary
+   can follow: a plain release tag such as `v1.2.3` or `4.0.15.2941`, with any variant suffix (`-alpine`) you
+   need, never `latest` or `rolling`. Fields are documented at the top of the template's file.
+4. **Test first.** For each behaviour, write a failing test, then the code that passes it:
+   - Unit tests in `tests/` exercise the Component through its public interface (its `/metrics` output, its
+     exit status), using stand-ins for upstreams only where a real one is impractical.
+   - Contract Tests are marked `@pytest.mark.contract` and take the `upstream` fixture:
+     `sonarr = upstream("sonarr")` starts that upstream from its pin and returns `sonarr.url` and `sonarr.env`.
+     Assert on the fields and endpoints the Component relies on, so an upstream change that breaks it fails here.
+5. **Configure through the environment.** Every site-specific value (URLs, hostnames, credentials, paths, ports)
+   comes from an env var with a generic default, or is `required`. Read env vars with literal names
+   (`environ.get("SONARR_URL", "http://sonarr:8989")`; in shell `${NAME:-default}`) and list each one in the
+   README's `## Configuration` table (`Variable | Default | Description`). CI fails when the table and the code
+   disagree.
+6. **Ship a healthcheck.** The image runs `python3 -m <package> healthcheck`, which exits 0 only when the
+   process's own endpoint answers, and declares it as the Dockerfile `HEALTHCHECK`, so a Compose Service meets
+   the home-ops Baseline without `wget` or a shell. If the image cannot start without some env (an API key, say),
+   put dummy values in `tests/smoke.env`; CI starts the image with them and waits for healthy.
+7. **Keep the image minimal.** Stdlib-only Python on `gcr.io/distroless/python3-debian13:nonroot`, pinned by
+   digest, running as nonroot. A Component that needs a binary (e.g. `restic`) copies it in from a pinned image
+   in a multi-stage build.
+8. **Open a PR.** CI runs the README check, unit tests, Contract Tests and the image build for each Component
+   the PR touches.
+
+## Conventions
+
+- **Docker Engine API**: put the API version in the request path (`/v1.43/containers/json`), so Contract Tests
+  and Canaries test the API the Component actually uses.
+- **Errors**: an exporter reports an upstream it cannot reach as a metric (`*_up 0`) and keeps serving.
+- **Logs**: one line per event on stdout/stderr; never log credentials.
+- **Repo Tooling** (`tools/`) is documented and tested like a Component, without a Retirement Condition.
+
+## Release
+
+The version is the tag; nothing in the code changes. Tag `<component>-vX.Y.Z` on `main` and push it (see
+[README](README.md#releasing)). Follow semver from the consumer's view: a renamed metric or env var is a major
+bump.
