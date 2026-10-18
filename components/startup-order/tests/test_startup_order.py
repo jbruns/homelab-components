@@ -219,6 +219,62 @@ def test_run_releases_its_lock(host):
     assert not (host.dir / "lock").exists()
 
 
+def recorded(host, *names):
+    host.dir.mkdir(exist_ok=True)
+    (host.dir / "state").write_text("".join(n + "\n" for n in names))
+
+
+def test_reads_levels_from_the_label_named_in_the_environment(host):
+    recorded(host, "db", "app")
+    host.containers(
+        {"name": "db", "labels": {"boot.tier": "0"}, "running": False},
+        {"name": "app", "labels": {"boot.tier": "1", "startup-order": "skip"}, "running": False},
+    )
+    host.run("run", STARTUP_ORDER_LABEL="boot.tier")
+    assert host.calls() == ["start db", "start app"]
+
+
+def test_unlabelled_containers_take_the_configured_default_level(host):
+    recorded(host, "unlabelled", "db")
+    host.containers(container("unlabelled", running=False), container("db", 1, running=False))
+    host.run("run", STARTUP_ORDER_DEFAULT_LEVEL="0")
+    assert host.calls() == ["start unlabelled", "start db"]
+
+
+def test_levels_run_up_to_the_configured_maximum(host):
+    recorded(host, "top", "mid", "base")
+    host.containers(
+        container("top", 5, running=False), container("mid", 4, running=False), container("base", 0, running=False)
+    )
+    host.run("run", STARTUP_ORDER_MAX_LEVEL="5")
+    assert host.calls() == ["start base", "start mid", "start top"]
+    host.run("stop", STARTUP_ORDER_MAX_LEVEL="5")
+    assert host.calls()[3:] == ["stop top", "stop mid", "stop base"]
+
+
+def test_boot_restarts_only_levels_from_the_configured_reorder_level(host):
+    host.containers(container("db", 1), container("app", 2), container("exporter", 3))
+    host.run("run", STARTUP_ORDER_REORDER_FROM="3")
+    assert host.calls() == ["stop exporter", "start db", "start app", "start exporter"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"STARTUP_ORDER_MAX_LEVEL": "x"},
+        {"STARTUP_ORDER_DEFAULT_LEVEL": "4"},
+        {"STARTUP_ORDER_REORDER_FROM": "-1"},
+        {"STARTUP_ORDER_LEVEL_TIMEOUT": "soon"},
+    ],
+)
+def test_rejects_invalid_configuration_before_touching_anything(host, env):
+    host.containers(container("app", 2))
+    result = host.run("run", **env)
+    assert result.returncode == 2
+    assert f"startup-order: invalid {next(iter(env))}" in result.stderr
+    assert host.calls() == []
+
+
 @pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid (util-linux), as on the Host")
 def test_start_runs_in_the_background_and_logs_to_last_log(host):
     host.dir.mkdir()

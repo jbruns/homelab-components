@@ -1,37 +1,58 @@
 #!/bin/sh
-# Ordered stop/start of Docker containers by their `startup-order` label (ADR-0003).
+# Ordered stop/start of Docker containers by a level label, across Compose projects.
+# See README.md for configuration and installation.
 #
-# Registered as TrueNAS Init/Shutdown Scripts (System > Advanced), never as OS config:
-#   SHUTDOWN: sh /mnt/luna/homeops/bin/startup-order.sh stop
-#   POSTINIT: sh /mnt/luna/homeops/bin/startup-order.sh start
-#
-#   stop   record running containers, then stop them level 3 -> 0
-#   start  detach and run `run` in the background (keeps the POSTINIT task short)
-#   run    wait for Docker, then bring targets up level 0 -> 3, waiting for health
+#   stop   record running containers, then stop them from the highest level down to 0
+#   start  detach and run `run` in the background (keeps a boot hook short)
+#   run    wait for Docker, then bring targets up level 0 upwards, waiting for health
 #   plan   print what `run` would do without changing anything
 #
-# Levels: 0 edge, 1 Datastores and monitoring core, 2 Exposed Services, 3 sidecars.
-# Unlabeled containers are treated as level 2; `startup-order=skip` is never touched.
+# Containers without a valid level are treated as the default level; a level of `skip` is never touched.
 set -u
 
-BASE=${STARTUP_ORDER_DIR:-/mnt/luna/homeops/startup}
+BASE=${STARTUP_ORDER_DIR:-/var/lib/startup-order}
 STATE=$BASE/state
 LOG=$BASE/last.log
 LOCK=$BASE/lock
-LABEL=startup-order
-DEFAULT_LEVEL=2
+LABEL=${STARTUP_ORDER_LABEL:-startup-order}
+MAX_LEVEL=${STARTUP_ORDER_MAX_LEVEL:-3}
+DEFAULT_LEVEL=${STARTUP_ORDER_DEFAULT_LEVEL:-2}
+REORDER_FROM=${STARTUP_ORDER_REORDER_FROM:-2}
 LEVEL_TIMEOUT=${STARTUP_ORDER_LEVEL_TIMEOUT:-420}
 DOCKER_WAIT=${STARTUP_ORDER_DOCKER_WAIT:-900}
 SETTLE=${STARTUP_ORDER_SETTLE:-20}
 SETTLE_MAX=${STARTUP_ORDER_SETTLE_MAX:-180}
 DRY=0
 
+invalid() { echo "startup-order: invalid $1: $2" >&2; exit 2; }
+
+whole() {
+    case $2 in
+        '' | *[!0-9]*) invalid "STARTUP_ORDER_$1" "'$2' is not a whole number" ;;
+    esac
+}
+whole MAX_LEVEL "$MAX_LEVEL"
+whole DEFAULT_LEVEL "$DEFAULT_LEVEL"
+whole REORDER_FROM "$REORDER_FROM"
+whole LEVEL_TIMEOUT "$LEVEL_TIMEOUT"
+whole DOCKER_WAIT "$DOCKER_WAIT"
+whole SETTLE "$SETTLE"
+whole SETTLE_MAX "$SETTLE_MAX"
+[ "$DEFAULT_LEVEL" -le "$MAX_LEVEL" ] ||
+    invalid STARTUP_ORDER_DEFAULT_LEVEL "$DEFAULT_LEVEL is above STARTUP_ORDER_MAX_LEVEL ($MAX_LEVEL)"
+
+# Levels from $1 down to $2, or up from $1 to $2; nothing when the range is empty.
+descending() { awk -v hi="$1" -v lo="$2" 'BEGIN { for (i = hi; i >= lo; i--) print i }'; }
+ascending() { awk -v lo="$1" -v hi="$2" 'BEGIN { for (i = lo; i <= hi; i++) print i }'; }
+
 log() { echo "$(date '+%Y-%m-%dT%H:%M:%S%z') $*"; }
 
 # name<TAB>level for every container, running or not.
 inventory() {
     docker ps -a --format "{{.Names}}	{{.Label \"$LABEL\"}}" 2>/dev/null |
-        awk -F'\t' -v d="$DEFAULT_LEVEL" '$2 == "skip" { next } { l = $2; if (l !~ /^[0-3]$/) l = d; print $1 "\t" l }'
+        awk -F'\t' -v d="$DEFAULT_LEVEL" -v max="$MAX_LEVEL" '
+            $2 == "skip" { next }
+            { l = $2; if (l !~ /^[0-9]+$/ || l + 0 > max + 0) l = d; print $1 "\t" l + 0 }'
 }
 
 running() { docker ps --format '{{.Names}}' 2>/dev/null | sort; }
@@ -57,7 +78,7 @@ cmd_stop() {
     if [ -s "$STATE.tmp" ]; then mv "$STATE.tmp" "$STATE"; else rm -f "$STATE.tmp"; fi
     {
         log "stop: recorded $(cat "$STATE" 2>/dev/null | wc -l) containers"
-        for lvl in 3 2 1 0; do
+        for lvl in $(descending "$MAX_LEVEL" 0); do
             names=$(at_level "$(running)" "$lvl" | tr '\n' ' ')
             [ -n "$names" ] || continue
             log "stop: level $lvl: $names"
@@ -98,8 +119,9 @@ cmd_run() {
     targets=$(printf '%s\n%s\n' "$now" "$saved" | sed '/^$/d' | sort -u)
     log "run: $(printf '%s\n' "$targets" | grep -c .) targets ($(printf '%s\n' "$now" | grep -c .) already running, state file: $([ -n "$saved" ] && echo yes || echo no))"
 
-    # Levels 0 and 1 have no upstream dependencies; restart only what sits above them.
-    for lvl in 3 2; do
+    # dockerd's restart policy started containers in no particular order; restart those at
+    # STARTUP_ORDER_REORDER_FROM and above so they come up after what they depend on.
+    for lvl in $(descending "$MAX_LEVEL" "$REORDER_FROM"); do
         names=$(at_level "$now" "$lvl" | tr '\n' ' ')
         [ -n "$names" ] || continue
         log "run: stopping level $lvl for reorder: $names"
@@ -107,7 +129,7 @@ cmd_run() {
         [ "$DRY" = 1 ] || docker stop $names >/dev/null 2>&1 || log "run: stop errors at level $lvl"
     done
 
-    for lvl in 0 1 2 3; do
+    for lvl in $(ascending 0 "$MAX_LEVEL"); do
         names=$(at_level "$targets" "$lvl" | tr '\n' ' ')
         [ -n "$names" ] || continue
         log "run: starting level $lvl: $names"
