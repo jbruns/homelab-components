@@ -29,14 +29,14 @@ exportarr (or SABnzbd itself) exposes each server's enabled state and its curren
 
 ## Metrics
 
-All gauges. `server` is the server's name in SABnzbd. Only enabled servers are listed by SABnzbd, so a disabled
-server has no samples.
+All gauges. `server` is the server's name in SABnzbd. SABnzbd does not list a server disabled in its config, so
+such a server has no samples.
 
 | Metric | Description |
 |---|---|
 | `sabnzbd_status_up` | 1 if the status API answered; 0 on any failure (unreachable, wrong API key, bad JSON). |
 | `sabnzbd_status_scrape_duration_seconds` | Time taken to read the status API. |
-| `sabnzbd_usenet_server_active{server}` | 1 if the server is enabled in SABnzbd. |
+| `sabnzbd_usenet_server_active{server}` | 1 while SABnzbd is using the server; 0 while it has taken it out of rotation (e.g. an optional server with too many failed connections). |
 | `sabnzbd_usenet_server_optional{server}` | 1 if the server is optional (a failure does not fail the download). |
 | `sabnzbd_usenet_server_priority{server}` | Server priority; 0 is tried first. |
 | `sabnzbd_usenet_server_connections{server}` | Configured connections. |
@@ -45,7 +45,7 @@ server has no samples.
 | `sabnzbd_usenet_server_warning{server}` | 1 while SABnzbd reports a warning for the server. |
 | `sabnzbd_usenet_server_warning_info{server,warning}` | The server's current warning (first 200 characters); present only while there is one. |
 
-An alert on a failing provider that is in use:
+An alert on a provider that is failing while SABnzbd is still using it:
 
 ```promql
 sabnzbd_usenet_server_error == 1 and on (server) sabnzbd_usenet_server_active == 1
