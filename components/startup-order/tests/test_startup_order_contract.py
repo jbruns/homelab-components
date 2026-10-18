@@ -1,24 +1,33 @@
-"""Contract Tests: startup-order.sh driving a real, pinned Docker Engine (dind) through the Docker CLI."""
+"""Contract Tests: startup-order.sh driving a real, pinned Docker CLI and Engine.
 
-import os
+The script runs inside the pinned docker:dind container, so both its `docker` CLI and its engine are the pinned (or
+Canary) version, and its busybox userland checks the script stays POSIX sh.
+"""
+
 import subprocess
 from pathlib import Path
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "src" / "startup-order.sh"
+INSTALLED = "/usr/local/bin/startup-order.sh"
 # Workload image pulled into the dind engine; any image with sh and sleep will do.
 WORKLOAD = "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
 
 
+def host_docker(*args):
+    return subprocess.run(["docker", *args], check=True, capture_output=True, text=True, timeout=300).stdout.strip()
+
+
 class Engine:
     def __init__(self, url):
-        self.host = "tcp://" + url.removeprefix("http://")
+        published = f"127.0.0.1:{url.rsplit(':', 1)[1]}->2375/tcp"
+        listing = host_docker("ps", "--format", "{{.ID}} {{.Ports}}").splitlines()
+        self.container = next(line.split()[0] for line in listing if published in line)
+        host_docker("cp", str(SCRIPT), f"{self.container}:{INSTALLED}")
 
     def docker(self, *args):
-        return subprocess.run(
-            ["docker", "--host", self.host, *args], check=True, capture_output=True, text=True, timeout=300
-        ).stdout.strip()
+        return host_docker("exec", self.container, "docker", *args)
 
     def create(self, name, level=None, *options, healthy_after=None):
         labels = [] if level is None else ["--label", f"startup-order={level}"]
@@ -35,16 +44,10 @@ class Engine:
     def running(self):
         return sorted(self.docker("ps", "--format", "{{.Names}}").split())
 
-    def startup_order(self, tmp_path, *args):
+    def startup_order(self, *args):
+        settings = ["--env", "STARTUP_ORDER_SETTLE=0", "--env", "STARTUP_ORDER_LEVEL_TIMEOUT=60"]
         result = subprocess.run(
-            ["sh", str(SCRIPT), *args],
-            env={
-                "PATH": os.environ["PATH"],
-                "DOCKER_HOST": self.host,
-                "STARTUP_ORDER_DIR": str(tmp_path / "startup"),
-                "STARTUP_ORDER_SETTLE": "0",
-                "STARTUP_ORDER_LEVEL_TIMEOUT": "60",
-            },
+            ["docker", "exec", *settings, self.container, "sh", INSTALLED, *args],
             capture_output=True,
             text=True,
             timeout=300,
@@ -61,6 +64,7 @@ def engine(upstream):
     names = engine.docker("ps", "--all", "--quiet").split()
     if names:
         engine.docker("rm", "--force", *names)
+    host_docker("exec", engine.container, "rm", "-rf", "/var/lib/startup-order")
 
 
 def started_in_order(engine, *names):
@@ -69,7 +73,7 @@ def started_in_order(engine, *names):
 
 
 @pytest.mark.contract
-def test_shutdown_then_boot_brings_containers_back_level_by_level(engine, tmp_path):
+def test_shutdown_then_boot_brings_containers_back_level_by_level(engine):
     engine.create("edge", 0)
     engine.create("db", 1, healthy_after=3)
     engine.create("app", 2)
@@ -78,10 +82,10 @@ def test_shutdown_then_boot_brings_containers_back_level_by_level(engine, tmp_pa
     engine.create("pinned", "skip")
     pinned_started = engine.started_at("pinned")
 
-    engine.startup_order(tmp_path, "stop")
+    engine.startup_order("stop")
     assert engine.running() == ["pinned"]
 
-    log = engine.startup_order(tmp_path, "run")
+    log = engine.startup_order("run")
     assert engine.running() == ["app", "db", "edge", "pinned", "sidecar", "unlabelled"]
     assert started_in_order(engine, "edge", "db", "app", "sidecar")
     assert started_in_order(engine, "db", "unlabelled", "sidecar")
@@ -91,14 +95,14 @@ def test_shutdown_then_boot_brings_containers_back_level_by_level(engine, tmp_pa
 
 
 @pytest.mark.contract
-def test_boot_restarts_what_dockerd_already_started_above_level_1(engine, tmp_path):
+def test_boot_restarts_what_dockerd_already_started_above_level_1(engine):
     engine.create("db", 1)
     engine.create("app", 2)
     engine.create("unlabelled")
     engine.create("sidecar", 3)
     db_started, app_started = engine.started_at("db"), engine.started_at("app")
 
-    log = engine.startup_order(tmp_path, "run")
+    log = engine.startup_order("run")
     assert "run: stopping level 2 for reorder:" in log
     assert engine.running() == ["app", "db", "sidecar", "unlabelled"]
     assert engine.started_at("db") == db_started
@@ -108,12 +112,12 @@ def test_boot_restarts_what_dockerd_already_started_above_level_1(engine, tmp_pa
 
 
 @pytest.mark.contract
-def test_plan_reads_the_engine_and_changes_nothing(engine, tmp_path):
+def test_plan_reads_the_engine_and_changes_nothing(engine):
     engine.create("db", 1)
     engine.create("app", 2)
     app_started = engine.started_at("app")
 
-    log = engine.startup_order(tmp_path, "plan")
+    log = engine.startup_order("plan")
     assert "run: starting level 1: db" in log
     assert "run: starting level 2: app" in log
     assert engine.started_at("app") == app_started

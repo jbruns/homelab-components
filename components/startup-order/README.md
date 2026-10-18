@@ -126,6 +126,7 @@ Run `startup-order.sh plan` after installing to check what a boot would do.
 |---|---|---|
 | Docker CLI and Engine | [`upstreams.yaml`](upstreams.yaml) (`docker:<version>-dind`) | `ps -a` with `{{.Label}}`, `ps`, `inspect` of `.State.Status` and `.State.Health.Status`, multi-name `start`/`stop` and `info` behave as the script expects, against a real engine |
 
-The Contract Tests run the script with the CLI on the test machine against the pinned dind engine, with busybox
-containers labelled at each level, unlabelled and `skip`: a shutdown then boot, a boot after dockerd already
-started everything, and `plan`.
+The Contract Tests copy the script into the pinned dind container and run it there, so the `docker` CLI and the
+engine are both the pinned version (or the Canary's), and busybox `sh` and `awk` keep it POSIX. They label busybox
+containers at each level, leave one unlabelled and mark one `skip`, then check a shutdown followed by a boot, a boot
+after dockerd already started everything, and `plan`.
