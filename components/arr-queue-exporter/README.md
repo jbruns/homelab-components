@@ -72,9 +72,8 @@ healthcheck:
 
 | Upstream | Pinned in | Contract |
 |---|---|---|
-| Sonarr | [`upstreams.yaml`](upstreams.yaml) | `GET /api/v3/queue` with `X-Api-Key`, `pageSize` and `includeUnknownSeriesItems` answers one page of `records`; a wrong key is refused |
+| Sonarr | [`upstreams.yaml`](upstreams.yaml) | `GET /api/v3/queue` with `X-Api-Key`, `pageSize` and `includeUnknownSeriesItems` lists an unmatched download as `importBlocked`/`warning` with `id`, `title`, `statusMessages[].messages` and `errorMessage`; a wrong key is refused |
 | Radarr | [`upstreams.yaml`](upstreams.yaml) | the same, with `includeUnknownMovieItems` |
 
-The Contract Tests run against apps with an empty queue, so the record fields read
-(`id`, `title`, `trackedDownloadState`, `trackedDownloadStatus`, `statusMessages[].messages`, `errorMessage`)
-are pinned by the unit tests against recorded shapes, not against a live queue.
+The Contract Tests give each app a Usenet Blackhole download client and drop a file it cannot match into the
+watch folder (with `docker exec`), so the queue holds a real stuck record without a download client container.
