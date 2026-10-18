@@ -140,12 +140,13 @@ def test_unlabelled_and_out_of_range_containers_start_at_level_2(host):
         container("sidecar", 3, running=False),
         container("unlabelled", running=False),
         container("odd", "9", running=False),
+        container("padded", "03", running=False),
         container("db", 1, running=False),
     )
     host.dir.mkdir()
-    (host.dir / "state").write_text("sidecar\nunlabelled\nodd\ndb\n")
+    (host.dir / "state").write_text("sidecar\nunlabelled\nodd\npadded\ndb\n")
     host.run("run")
-    assert host.calls() == ["start db", "start unlabelled odd", "start sidecar"]
+    assert host.calls() == ["start db", "start unlabelled odd padded", "start sidecar"]
 
 
 def test_run_never_touches_skipped_containers_even_when_recorded(host):
@@ -206,12 +207,56 @@ def test_run_gives_up_when_docker_never_answers(host):
     assert "run: Docker not ready after 0s, giving up" in result.stdout
 
 
-def test_run_refuses_to_start_while_another_run_holds_the_lock(host):
+def boot_id():
+    path = Path("/proc/sys/kernel/random/boot_id")
+    return path.read_text().strip() if path.exists() else "-"
+
+
+def dead_pid():
+    process = subprocess.Popen(["true"])
+    process.wait()
+    return process.pid
+
+
+def hold_lock(host, owner=None):
     (host.dir / "lock").mkdir(parents=True)
+    if owner is not None:
+        (host.dir / "lock" / "owner").write_text(owner + "\n")
+
+
+@pytest.mark.parametrize("owner", [None, f"{os.getpid()} {boot_id()}"], ids=["owner-not-yet-written", "live-run"])
+def test_run_refuses_to_start_while_another_run_holds_the_lock(host, owner):
+    hold_lock(host, owner)
     result = host.run("run")
     assert result.returncode == 1
     assert "another run holds" in result.stdout
     assert (host.dir / "lock").is_dir()
+
+
+@pytest.mark.parametrize(
+    "owner", [f"{dead_pid()} {boot_id()}", f"{os.getpid()} an-earlier-boot"], ids=["crashed-run", "earlier-boot"]
+)
+def test_run_takes_over_a_lock_left_by_a_run_that_is_gone(host, owner):
+    hold_lock(host, owner)
+    recorded(host, "app")
+    host.containers(container("app", 2, running=False))
+    result = host.run("run")
+    assert result.returncode == 0, result.stdout
+    assert "run: removing stale lock" in result.stdout
+    assert host.calls() == ["start app"]
+    assert not (host.dir / "lock").exists()
+
+
+def test_run_stops_and_releases_its_lock_when_terminated(host):
+    host.containers(up=False)
+    process = subprocess.Popen(["sh", str(SCRIPT), "run"], env=host.env, stdout=subprocess.PIPE, text=True)
+    for _ in range(100):
+        if (host.dir / "lock" / "owner").exists():
+            break
+        subprocess.run(["sleep", "0.1"])
+    process.terminate()
+    assert process.wait(timeout=30) == 143
+    assert not (host.dir / "lock").exists()
 
 
 def test_run_releases_its_lock(host):

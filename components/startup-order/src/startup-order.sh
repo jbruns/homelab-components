@@ -52,7 +52,7 @@ inventory() {
     docker ps -a --format "{{.Names}}	{{.Label \"$LABEL\"}}" 2>/dev/null |
         awk -F'\t' -v d="$DEFAULT_LEVEL" -v max="$MAX_LEVEL" '
             $2 == "skip" { next }
-            { l = $2; if (l !~ /^[0-9]+$/ || l + 0 > max + 0) l = d; print $1 "\t" l + 0 }'
+            { l = $2; if (l !~ /^(0|[1-9][0-9]*)$/ || l + 0 > max + 0) l = d; print $1 "\t" l + 0 }'
 }
 
 running() { docker ps --format '{{.Names}}' 2>/dev/null | sort; }
@@ -106,10 +106,26 @@ wait_settle() {
     done
 }
 
+boot_id() { cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo -; }
+
+# The lock directory records "<pid> <boot id>" so a lock left by a crash or an earlier boot is taken over.
+take_lock() {
+    if ! mkdir "$LOCK" 2>/dev/null; then
+        read -r pid boot < "$LOCK/owner" 2>/dev/null || return 1
+        if [ "$boot" = "$(boot_id)" ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
+        log "run: removing stale lock $LOCK (pid $pid, boot $boot)"
+        rm -rf "$LOCK"
+        mkdir "$LOCK" 2>/dev/null || return 1
+    fi
+    echo "$$ $(boot_id)" > "$LOCK/owner"
+    trap 'rm -rf "$LOCK"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+}
+
 cmd_run() {
     mkdir -p "$BASE"
-    if ! mkdir "$LOCK" 2>/dev/null; then log "run: another run holds $LOCK"; return 1; fi
-    trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
+    take_lock || { log "run: another run holds $LOCK"; return 1; }
     log "run: waiting for Docker"
     wait_docker || { log "run: Docker not ready after ${DOCKER_WAIT}s, giving up"; return 1; }
     [ "$DRY" = 1 ] || wait_settle

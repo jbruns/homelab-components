@@ -29,8 +29,9 @@ it keeps across updates.
 ## Levels
 
 Each container carries the label `startup-order=<level>` (the label name is configurable): a whole number from 0 to
-`STARTUP_ORDER_MAX_LEVEL`. A container without a valid level is treated as `STARTUP_ORDER_DEFAULT_LEVEL`. A container
-labelled `startup-order=skip` is never stopped or started. One convention, with the defaults:
+`STARTUP_ORDER_MAX_LEVEL`, without leading zeros. A container without a valid level is treated as
+`STARTUP_ORDER_DEFAULT_LEVEL`. A container labelled `startup-order=skip` is never stopped or started. One convention,
+with the defaults:
 
 | Level | For |
 |---|---|
@@ -58,7 +59,8 @@ startup-order.sh plan    # print what `run` would do, changing nothing
 At boot, `run` starts every container that is running now or was recorded at the last `stop`; a recorded name that
 no longer exists is dropped. Containers already running at `STARTUP_ORDER_REORDER_FROM` and above are stopped first
 so they come back after the levels below them. A level that is not ready within `STARTUP_ORDER_LEVEL_TIMEOUT` logs
-a `WARNING` and the next level starts anyway. `run` holds a lock directory so two runs never overlap.
+a `WARNING` and the next level starts anyway. `run` holds a lock directory so two runs never overlap; a lock left
+by a run that crashed or by an earlier boot is taken over.
 
 Exit status: 0 on success, 1 when Docker never answered or another run holds the lock, 2 for a bad command or an
 invalid setting.
