@@ -1,0 +1,10 @@
+# Upstreams this Component calls (fields documented in components/_template/upstreams.yaml). startup-order drives
+# the Docker CLI against the Host's Docker Engine; the Contract Tests point the CLI at a pinned dind engine.
+upstreams:
+  docker:
+    image: docker:29.7.2-dind@sha256:3ef33f2e220b79ed3ef3b99d81746f06f306cd6340e2cb7331d17ae996e74cb6
+    port: 2375
+    privileged: true
+    ready_path: /_ping
+    env:
+      DOCKER_TLS_CERTDIR: ""
