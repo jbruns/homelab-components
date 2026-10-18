@@ -339,6 +339,11 @@ def get(port, path):
         return response.read().decode(), response.headers["Content-Type"]
 
 
+UP_HEADER = (
+    "# HELP backup_coverage_up 1 if the last check reached Docker and restic.\n# TYPE backup_coverage_up gauge\n"
+)
+
+
 def test_serves_the_last_good_check_and_keeps_it_when_a_check_fails(docker, restic):
     exporter = Exporter(config(docker, restic, port=free_port()))
     server = start(serve(exporter))
@@ -346,15 +351,23 @@ def test_serves_the_last_good_check_and_keeps_it_when_a_check_fails(docker, rest
         assert get(exporter.config.port, "/metrics") == ("", "text/plain; version=0.0.4")
         exporter.refresh()
         good, _ = get(exporter.config.port, "/metrics")
-        assert split(good) == EXPECTED_SERIES
+        checked, up = good.split(UP_HEADER)
+        assert split(checked) == EXPECTED_SERIES and up == "backup_coverage_up 1\n"
         del docker.answers["/v1.44/containers/json?all=1"]
         exporter.refresh()
-        assert get(exporter.config.port, "/metrics")[0] == good
+        assert get(exporter.config.port, "/metrics")[0] == f"{checked}{UP_HEADER}backup_coverage_up 0\n"
         with pytest.raises(urllib.error.HTTPError) as missing:
             get(exporter.config.port, "/")
         assert missing.value.code == 404
     finally:
         server.shutdown()
+
+
+def test_a_first_check_that_fails_serves_only_up_0(docker, restic):
+    del docker.answers["/v1.44/volumes"]
+    exporter = Exporter(config(docker, restic))
+    exporter.refresh()
+    assert exporter.metrics() == f"{UP_HEADER}backup_coverage_up 0\n"
 
 
 def test_healthcheck_passes_only_while_serving_and_leaves_the_upstreams_alone(docker, restic):

@@ -43,6 +43,7 @@ HELP = {
     "backup_coverage_snapshot_timestamp": "Newest snapshot holding the path (volumes: newest /volumes snapshot).",
 }
 LAST_SUCCESS_HELP = "When the last check completed."
+UP_HELP = "1 if the last check reached Docker and restic."
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,7 @@ class Config:
     docker_host: str = "unix:///var/run/docker.sock"
     port: int = 8002
     refresh_interval: float = 3600
-    database_due_after: float = 26 * 3600
+    database_due_after: float = 93600
     stack_back: Settings = field(default_factory=Settings)
     restic_command: tuple = ("restic",)
 
@@ -207,18 +208,27 @@ def collect(config):
 
 
 class Exporter:
-    """Holds the last good check; /metrics is empty until the first check succeeds."""
+    """Holds the last good check and whether the last check succeeded; /metrics is empty until the first check."""
 
     def __init__(self, config):
         self.config = config
-        self.metrics = ""
+        self.checked = ""
+        self.up = None
 
     def refresh(self):
         try:
-            self.metrics = collect(self.config)
-            print(f"checked {self.metrics.count('backup_coverage_expected{')} paths", flush=True)
-        except Exception as e:  # keep serving the last good result; its staleness alerts
+            self.checked = collect(self.config)
+            self.up = 1
+            print(f"checked {self.checked.count('backup_coverage_expected{')} paths", flush=True)
+        except Exception as e:  # keep serving the last good result, with up 0
+            self.up = 0
             print(f"check failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+    def metrics(self):
+        if self.up is None:
+            return ""
+        up = f"# HELP backup_coverage_up {UP_HELP}\n# TYPE backup_coverage_up gauge\nbackup_coverage_up {self.up}\n"
+        return self.checked + up
 
     def run(self):
         while True:
@@ -232,7 +242,7 @@ def serve(exporter):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/metrics":
-                self._reply(exporter.metrics, "text/plain; version=0.0.4")
+                self._reply(exporter.metrics(), "text/plain; version=0.0.4")
             elif self.path == "/healthz":
                 self._reply("ok\n", "text/plain")
             else:

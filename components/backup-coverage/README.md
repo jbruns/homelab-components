@@ -14,7 +14,7 @@ looks for each path in the restic repository with `restic snapshots` and `restic
   `<POSTGRES_DB>.sql`, as stack-back names them.
 
 It checks every `REFRESH_INTERVAL` and serves the last good result on `/metrics`, which stays empty until the first
-check succeeds. A failed check is logged to stderr and leaves the last result, and its
+check ends. A failed check is logged to stderr, sets `backup_coverage_up` to 0 and leaves the last result, and its
 `backup_coverage_last_success_timestamp`, in place.
 
 Unlike stack-back, it counts stopped containers too, so a stopped service whose data is not being backed up still
@@ -72,6 +72,7 @@ Every per-path metric has the labels `kind` (`volume` or `database`), `project`,
 | `backup_coverage_volume_bytes` | Volumes only: live size of the Docker volume, -1 when unknown (a bind mount, or Docker did not report it). |
 | `backup_coverage_snapshot_timestamp` | Newest snapshot holding the path (volumes: the newest `/volumes` snapshot), 0 when none. |
 | `backup_coverage_last_success_timestamp` | When the last check completed; no labels. |
+| `backup_coverage_up` | 1 if the last check reached Docker and restic, 0 if it failed; no labels. |
 
 An alert on `backup_coverage_due == 1 and backup_coverage_present == 0` finds missing paths; one on
 `backup_coverage_entries == 0 and backup_coverage_volume_bytes > 0` finds volumes backed up empty.

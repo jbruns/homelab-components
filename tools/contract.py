@@ -41,8 +41,7 @@ class RunningUpstream:
 
     def command(self, *docker_options):
         """argv running this upstream's image once, with its env and any extra `docker run` options."""
-        env = [arg for key, value in self.env.items() for arg in ("--env", f"{key}={value}")]
-        return ["docker", "run", "--rm", "--interactive", *env, *docker_options, self.image]
+        return ["docker", "run", "--rm", "--interactive", *_env_options(self.env), *docker_options, self.image]
 
 
 def _docker(*args):
@@ -70,12 +69,16 @@ def _wait_ready(url, container):
     pytest.fail(f"upstream at {url} not ready after {READY_TIMEOUT:.0f}s; last logs:\n{logs.stdout}{logs.stderr}")
 
 
+def _env_options(env):
+    return [arg for key, value in env.items() for arg in ("--env", f"{key}={value}")]
+
+
 def _start(spec):
     image = contract_image(spec, os.environ)
     if spec.port is None:
         _docker("pull", "--quiet", image)
         return None, RunningUpstream(name=spec.name, image=image, url=None, env=dict(spec.env), container=None)
-    options = [arg for key, value in spec.env.items() for arg in ("--env", f"{key}={value}")]
+    options = _env_options(spec.env)
     if spec.privileged:
         options.append("--privileged")
     container = _docker("run", "--detach", "--publish", f"127.0.0.1::{spec.port}", *options, image)
