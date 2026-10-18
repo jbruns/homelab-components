@@ -1,129 +1,220 @@
 """Prometheus exporter for Docker health-check status.
 
-Uptime of a Service that is not an Exposed Service is its own health check reporting healthy
-(GLOSSARY.md). Neither cAdvisor nor the Docker engine exports that, so this reads it from the
-read-only docker-socket-proxy. Only containers that define a health check are reported; a
-stopped one reports 0. Ad-hoc containers (`startup-order=skip`) are ignored.
+Neither cAdvisor nor the Docker engine exports whether a container's own health check reports healthy, so this
+reads it from the Docker Engine API (in production through a read-only docker-socket-proxy). Only containers that
+define a health check are reported; a stopped one reports 0.
 
-It also reports containers left under Compose's temporary `<12-hex id>_<name>` name, which an
-interrupted recreate leaves behind. cAdvisor keeps a container's first name, so it can't.
+It also reports containers left under Compose's temporary `<12-hex id>_<name>` name, which an interrupted recreate
+leaves behind. cAdvisor keeps a container's first name, so it can't.
+
+`python -m container_health_exporter` serves /metrics and /healthz; `... healthcheck` probes /healthz.
 """
 
 import http.client
 import json
-import os
 import re
+import sys
+import threading
+import urllib.request
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-DOCKER = os.environ.get("DOCKER_HOST", "docker-socket-proxy:2375")
-PORT = int(os.environ.get("PORT", "9714"))
-TIMEOUT = float(os.environ.get("TIMEOUT", "10"))
-
+# Served by Docker 25 and later, including Docker 29.0, whose oldest accepted version was 1.44.
+API_VERSION = "v1.44"
 LEFTOVER = re.compile(r"^[0-9a-f]{12}_(.+)$")
-
-# Whether a container defines a health check, by container ID. Running containers show it in
-# their status ("Up 2 hours (healthy)"); stopped ones need an inspect, done once per ID.
-has_check = {}
+OWN_LABELS = ("container", "stack")
 
 
-def get(path):
-    host, port = DOCKER.rsplit(":", 1)
-    conn = http.client.HTTPConnection(host, int(port), timeout=TIMEOUT)
-    try:
-        conn.request("GET", path)
-        r = conn.getresponse()
-        if r.status != 200:
-            raise RuntimeError(f"{path}: HTTP {r.status}")
-        return json.load(r)
-    finally:
-        conn.close()
+def _metric_label(container_label):
+    name = re.sub(r"[^A-Za-z0-9_]", "_", container_label)
+    return "_" + name if name[:1].isdigit() else name
 
 
-def health(c):
-    """'healthy' | 'unhealthy' | 'starting' | 'stopped', or None without a health check."""
-    status = c.get("Status") or ""
-    if c.get("State") == "running":
-        for state in ("unhealthy", "healthy", "starting"):
-            if f"({state}" in status or f"health: {state}" in status:
-                return state
-        return None
-    cid = c["Id"]
-    if cid not in has_check:
-        test = (get(f"/containers/{cid}/json").get("Config") or {}).get("Healthcheck", {}).get("Test") or []
-        has_check[cid] = bool(test) and test[0] != "NONE"
-    return "stopped" if has_check[cid] else None
+@dataclass(frozen=True)
+class Config:
+    docker_host: str
+    port: int
+    timeout: float
+    container_labels: tuple = ()
+    ignore_label: str = ""
+
+    @classmethod
+    def from_env(cls, environ):
+        container_labels = tuple(
+            label.strip() for label in environ.get("CONTAINER_LABELS", "").split(",") if label.strip()
+        )
+        clashing = [label for label in container_labels if _metric_label(label) in OWN_LABELS]
+        if clashing:
+            raise ValueError(f"CONTAINER_LABELS: {', '.join(clashing)} would replace the exporter's own label")
+        return cls(
+            docker_host=environ.get("DOCKER_HOST", "docker-socket-proxy:2375"),
+            port=int(environ.get("PORT", "9714")),
+            timeout=float(environ.get("TIMEOUT", "10")),
+            container_labels=container_labels,
+            ignore_label=environ.get("IGNORE_LABEL", "").strip(),
+        )
+
+    @property
+    def docker_address(self):
+        """(host, port) of DOCKER_HOST, given as `host:port` or `tcp://host:port`."""
+        address = re.sub(r"^(tcp|http)://", "", self.docker_host).rstrip("/")
+        host, _, port = address.rpartition(":")
+        return (host, int(port)) if host else (address, 2375)
 
 
-def esc(v):
-    return str(v).replace("\\", "\\\\").replace("\n", " ").replace('"', '\\"')
+def _escape(value):
+    return str(value).replace("\\", "\\\\").replace("\n", " ").replace('"', '\\"')
 
 
-def collect():
-    lines = [
-        "# HELP container_health_up 1 if the Docker API answered.",
-        "# TYPE container_health_up gauge",
-    ]
-    try:
-        containers, up = get("/containers/json?all=1"), 1
-    except Exception as e:  # report down, keep serving
-        print(f"Docker API failed: {type(e).__name__}: {e}", flush=True)
-        containers, up = [], 0
-    lines.append(f"container_health_up {up}")
-    lines += [
-        "# HELP container_healthy 1 while the container's health check reports healthy.",
-        "# TYPE container_healthy gauge",
-    ]
-    leftovers = []
-    live = set()
-    for c in containers:
-        live.add(c["Id"])
-        labels = c.get("Labels") or {}
-        if labels.get("startup-order") == "skip":
-            continue
-        name = (c.get("Names") or ["/"])[0].lstrip("/")
-        if LEFTOVER.match(name):
-            leftovers.append({"container": name, "stack": labels.get("com.docker.compose.project", ""),
-                              "service": labels.get("com.docker.compose.service", "")})
+def _labels(pairs):
+    return ",".join(f'{k}="{_escape(v)}"' for k, v in pairs)
+
+
+class Collector:
+    """Builds /metrics from the Docker Engine API, remembering which stopped containers define a health check."""
+
+    def __init__(self, config):
+        self.config = config
+        # Whether a container defines a health check, by container ID. Running containers show it in their
+        # status ("Up 2 hours (healthy)"); stopped ones need an inspect, done once per ID.
+        self._has_check = {}
+        self._lock = threading.Lock()
+        key, _, value = config.ignore_label.partition("=")
+        self._ignore = (key, value if "=" in config.ignore_label else None) if key else None
+
+    def _get(self, path):
+        host, port = self.config.docker_address
+        conn = http.client.HTTPConnection(host, port, timeout=self.config.timeout)
         try:
-            state = health(c)
-        except Exception as e:
-            print(f"inspect failed: {type(e).__name__}: {e}", flush=True)
-            continue
-        if state is None:
-            continue
-        lbl = {
-            "container": name,
-            "stack": labels.get("com.docker.compose.project", ""),
-            "tier": labels.get("tier", ""),
-        }
-        lines.append("container_healthy{%s} %d" % (
-            ",".join(f'{k}="{esc(v)}"' for k, v in lbl.items()), state == "healthy"))
-    lines += [
-        "# HELP container_leftover_name 1 for a container still named <id>_<name> by an interrupted Compose recreate.",
-        "# TYPE container_leftover_name gauge",
-    ]
-    for lbl in leftovers:
-        lines.append("container_leftover_name{%s} 1" % ",".join(f'{k}="{esc(v)}"' for k, v in lbl.items()))
-    for cid in set(has_check) - live:
-        del has_check[cid]
-    return "\n".join(lines) + "\n"
+            conn.request("GET", f"/{API_VERSION}{path}")
+            r = conn.getresponse()
+            if r.status != 200:
+                raise RuntimeError(f"{path}: HTTP {r.status}")
+            return json.load(r)
+        finally:
+            conn.close()
+
+    def _ignored(self, labels):
+        if self._ignore is None:
+            return False
+        key, value = self._ignore
+        return key in labels and (value is None or labels[key] == value)
+
+    def _health(self, c):
+        """'healthy' | 'unhealthy' | 'starting' | 'stopped', or None without a health check."""
+        status = c.get("Status") or ""
+        if c.get("State") == "running":
+            for state in ("unhealthy", "healthy", "starting"):
+                if f"({state}" in status or f"health: {state}" in status:
+                    return state
+            return None
+        cid = c["Id"]
+        if cid not in self._has_check:
+            test = (self._get(f"/containers/{cid}/json").get("Config") or {}).get("Healthcheck", {}).get("Test") or []
+            self._has_check[cid] = bool(test) and test[0] != "NONE"
+        return "stopped" if self._has_check[cid] else None
+
+    def collect(self):
+        """The /metrics body for one scrape."""
+        with self._lock:
+            return self._collect()
+
+    def _collect(self):
+        lines = [
+            "# HELP container_health_up 1 if the Docker API answered.",
+            "# TYPE container_health_up gauge",
+        ]
+        try:
+            containers, up = self._get("/containers/json?all=1"), 1
+        except Exception as e:  # report down, keep serving
+            print(f"Docker API failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            containers, up = [], 0
+        lines.append(f"container_health_up {up}")
+        lines += [
+            "# HELP container_healthy 1 while the container's health check reports healthy.",
+            "# TYPE container_healthy gauge",
+        ]
+        leftovers = []
+        live = set()
+        for c in containers:
+            live.add(c["Id"])
+            labels = c.get("Labels") or {}
+            if self._ignored(labels):
+                continue
+            name = (c.get("Names") or ["/"])[0].lstrip("/")
+            stack = labels.get("com.docker.compose.project", "")
+            if LEFTOVER.match(name):
+                leftovers.append(
+                    [("container", name), ("stack", stack), ("service", labels.get("com.docker.compose.service", ""))]
+                )
+            try:
+                state = self._health(c)
+            except Exception as e:
+                print(f"inspect failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+                continue
+            if state is None:
+                continue
+            pairs = [("container", name), ("stack", stack)]
+            pairs += [(_metric_label(label), labels.get(label, "")) for label in self.config.container_labels]
+            lines.append(f"container_healthy{{{_labels(pairs)}}} {int(state == 'healthy')}")
+        lines += [
+            "# HELP container_leftover_name 1 for a container still named <id>_<name> by an interrupted Compose"
+            " recreate.",
+            "# TYPE container_leftover_name gauge",
+        ]
+        lines += [f"container_leftover_name{{{_labels(pairs)}}} 1" for pairs in leftovers]
+        for cid in set(self._has_check) - live:
+            del self._has_check[cid]
+        return "\n".join(lines) + "\n"
 
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path != "/metrics":
-            self.send_error(404)
-            return
-        body = collect().encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; version=0.0.4")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+def serve(config):
+    """An HTTP server for /metrics and /healthz on the configured port; the caller runs serve_forever()."""
+    collector = Collector(config)
 
-    def log_message(self, *args):
-        pass
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/metrics":
+                self._reply(collector.collect(), "text/plain; version=0.0.4")
+            elif self.path == "/healthz":
+                self._reply("ok\n", "text/plain")
+            else:
+                self.send_error(404)
+
+        def _reply(self, text, content_type):
+            body = text.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    return ThreadingHTTPServer(("", config.port), Handler)
 
 
-if __name__ == "__main__":
-    ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+def healthcheck(config):
+    """Exit status for the image's healthcheck: 0 if this process answers on /healthz, without touching Docker."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{config.port}/healthz", timeout=3) as response:
+            return 0 if response.status == 200 else 1
+    except OSError:
+        return 1
+
+
+def main(argv, environ):
+    try:
+        config = Config.from_env(environ)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    if argv == ["healthcheck"]:
+        return healthcheck(config)
+    if argv:
+        print("usage: python -m container_health_exporter [healthcheck]", file=sys.stderr)
+        return 2
+    print(f"serving /metrics on :{config.port} for Docker at {config.docker_host}", flush=True)
+    serve(config).serve_forever()
+    return 0

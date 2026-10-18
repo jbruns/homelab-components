@@ -14,7 +14,7 @@ from threading import Thread
 import pytest
 
 SRC = Path(__file__).parents[1] / "src"
-EXPORTER = [sys.executable, str(SRC / "container_health_exporter" / "exporter.py")]
+EXPORTER = [sys.executable, "-m", "container_health_exporter"]
 
 
 def free_port():
@@ -132,9 +132,9 @@ def test_reports_running_containers_by_the_state_their_health_check_reports(dock
     ]
     metrics = start_exporter({"DOCKER_HOST": docker.address}).metrics()
     assert healthy_lines(metrics) == [
-        'container_healthy{container="cache",stack="media",tier=""} 0',
-        'container_healthy{container="db",stack="media",tier="warning"} 0',
-        'container_healthy{container="web",stack="media",tier="critical"} 1',
+        'container_healthy{container="cache",stack="media"} 0',
+        'container_healthy{container="db",stack="media"} 0',
+        'container_healthy{container="web",stack="media"} 1',
     ]
     assert docker.inspected() == []
 
@@ -151,8 +151,8 @@ def test_reports_stopped_containers_with_a_health_check_as_0_and_inspects_each_o
     exporter.metrics()
     metrics = exporter.metrics()
     assert healthy_lines(metrics) == [
-        'container_healthy{container="checked",stack="",tier=""} 0',
-        'container_healthy{container="created",stack="",tier=""} 0',
+        'container_healthy{container="checked",stack=""} 0',
+        'container_healthy{container="created",stack=""} 0',
     ]
     assert sorted(re.sub(r"^/v[\d.]+", "", p) for p in docker.inspected()) == [
         f"/containers/{cid}/json" for cid in ("s1", "s2", "s3", "s4")
@@ -182,7 +182,7 @@ def test_reports_containers_left_under_a_temporary_compose_name(docker, start_ex
     metrics = start_exporter({"DOCKER_HOST": docker.address}).metrics()
     leftovers = [line for line in metrics.splitlines() if line.startswith("container_leftover_name{")]
     assert leftovers == ['container_leftover_name{container="0123456789ab_sonarr",stack="media",service="sonarr"} 1']
-    assert 'container_healthy{container="0123456789ab_sonarr",stack="media",tier=""} 1' in metrics
+    assert 'container_healthy{container="0123456789ab_sonarr",stack="media"} 1' in metrics
 
 
 def test_reports_the_docker_api_down_and_keeps_serving(start_exporter):
@@ -205,19 +205,20 @@ def test_skips_a_container_it_cannot_inspect_and_reports_the_rest(docker, start_
     ]
     metrics = start_exporter({"DOCKER_HOST": docker.address}).metrics()
     assert "container_health_up 1\n" in metrics
-    assert healthy_lines(metrics) == ['container_healthy{container="web",stack="",tier=""} 1']
+    assert healthy_lines(metrics) == ['container_healthy{container="web",stack=""} 1']
 
 
 def test_escapes_label_values(docker, start_exporter):
     docker.containers = [container("a", "web", "Up (healthy)", **{"com.docker.compose.project": 'a"b\\c\nd'})]
     metrics = start_exporter({"DOCKER_HOST": docker.address}).metrics()
-    assert healthy_lines(metrics) == ['container_healthy{container="web",stack="a\\"b\\\\c d",tier=""} 1']
+    assert healthy_lines(metrics) == ['container_healthy{container="web",stack="a\\"b\\\\c d"} 1']
 
 
-def test_serves_the_whole_exposition(docker, start_exporter):
+def test_keeps_the_home_ops_exposition_when_configured_like_home_ops(docker, start_exporter):
     labels = {"com.docker.compose.project": "media", "com.docker.compose.service": "sonarr", "tier": "info"}
     docker.containers = [container("a", "0123456789ab_sonarr", "Up 1 minute (healthy)", **labels)]
-    assert start_exporter({"DOCKER_HOST": docker.address}).metrics() == (
+    env = {"DOCKER_HOST": docker.address, "CONTAINER_LABELS": "tier", "IGNORE_LABEL": "startup-order=skip"}
+    assert start_exporter(env).metrics() == (
         "# HELP container_health_up 1 if the Docker API answered.\n"
         "# TYPE container_health_up gauge\n"
         "container_health_up 1\n"
@@ -230,6 +231,40 @@ def test_serves_the_whole_exposition(docker, start_exporter):
     )
 
 
+def test_copies_configured_container_labels_onto_container_healthy(docker, start_exporter):
+    docker.containers = [
+        container("a", "web", "Up (healthy)", **{"tier": "critical", "com.example.team": "media"}),
+        container("b", "db", "Up (unhealthy)"),
+    ]
+    env = {"DOCKER_HOST": docker.address, "CONTAINER_LABELS": "tier, com.example.team"}
+    assert healthy_lines(start_exporter(env).metrics()) == [
+        'container_healthy{container="db",stack="",tier="",com_example_team=""} 0',
+        'container_healthy{container="web",stack="",tier="critical",com_example_team="media"} 1',
+    ]
+
+
+@pytest.mark.parametrize("name", ["container", "stack", "com.docker.compose.project,stack"])
+def test_refuses_container_labels_that_would_clash_with_its_own(name):
+    result = subprocess.run(
+        EXPORTER, env={"PYTHONPATH": str(SRC), "CONTAINER_LABELS": name}, capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode == 2
+    assert "CONTAINER_LABELS" in result.stderr
+
+
+def test_calls_the_docker_api_at_its_pinned_version(docker, start_exporter):
+    docker.containers = [container("s1", "checked", "Exited (0) 1 hour ago", state="exited")]
+    docker.healthchecks = {"s1": ["CMD", "true"]}
+    start_exporter({"DOCKER_HOST": docker.address}).metrics()
+    assert docker.requests and all(p.startswith("/v1.44/") for p in docker.requests)
+
+
+def test_accepts_docker_host_as_a_tcp_url(docker, start_exporter):
+    docker.containers = [container("a", "web", "Up (healthy)")]
+    metrics = start_exporter({"DOCKER_HOST": f"tcp://{docker.address}/"}).metrics()
+    assert healthy_lines(metrics) == ['container_healthy{container="web",stack=""} 1']
+
+
 def test_answers_404_off_metrics(docker, start_exporter):
     exporter = start_exporter({"DOCKER_HOST": docker.address})
     with pytest.raises(urllib.error.HTTPError) as error:
@@ -237,11 +272,50 @@ def test_answers_404_off_metrics(docker, start_exporter):
     assert error.value.code == 404
 
 
-def test_ignores_containers_labelled_startup_order_skip(docker, start_exporter):
+def test_ignores_containers_carrying_the_configured_ignore_label(docker, start_exporter):
     docker.containers = [
         container("a", "0123456789ab_job", "Up (healthy)", **{"startup-order": "skip"}),
         container("b", "web", "Up (healthy)", **{"startup-order": "2"}),
     ]
-    metrics = start_exporter({"DOCKER_HOST": docker.address}).metrics()
-    assert healthy_lines(metrics) == ['container_healthy{container="web",stack="",tier=""} 1']
+    metrics = start_exporter({"DOCKER_HOST": docker.address, "IGNORE_LABEL": "startup-order=skip"}).metrics()
+    assert healthy_lines(metrics) == ['container_healthy{container="web",stack=""} 1']
     assert "container_leftover_name{" not in metrics
+
+
+def test_ignores_containers_carrying_the_configured_ignore_label_with_any_value(docker, start_exporter):
+    docker.containers = [
+        container("a", "job", "Up (healthy)", **{"example.ignore": ""}),
+        container("b", "web", "Up (healthy)"),
+    ]
+    metrics = start_exporter({"DOCKER_HOST": docker.address, "IGNORE_LABEL": "example.ignore"}).metrics()
+    assert healthy_lines(metrics) == ['container_healthy{container="web",stack=""} 1']
+
+
+def test_ignores_no_container_by_default(docker, start_exporter):
+    docker.containers = [container("a", "job", "Up (healthy)", **{"startup-order": "skip"})]
+    metrics = start_exporter({"DOCKER_HOST": docker.address}).metrics()
+    assert healthy_lines(metrics) == ['container_healthy{container="job",stack=""} 1']
+
+
+def healthcheck(port):
+    env = {"PYTHONPATH": str(SRC), "PORT": str(port)}
+    return subprocess.run([*EXPORTER, "healthcheck"], env=env, timeout=10).returncode
+
+
+def test_healthcheck_passes_only_while_the_exporter_serves(docker, start_exporter):
+    assert healthcheck(free_port()) == 1
+    exporter = start_exporter({"DOCKER_HOST": docker.address})
+    assert healthcheck(exporter.port) == 0
+
+
+def test_healthcheck_leaves_the_docker_api_alone(docker, start_exporter):
+    exporter = start_exporter({"DOCKER_HOST": docker.address})
+    docker.requests.clear()
+    assert exporter.get("/healthz") == "ok\n"
+    assert healthcheck(exporter.port) == 0
+    assert docker.requests == []
+
+
+def test_rejects_unknown_arguments():
+    result = subprocess.run([*EXPORTER, "nope"], env={"PYTHONPATH": str(SRC)}, capture_output=True, timeout=10)
+    assert result.returncode == 2
