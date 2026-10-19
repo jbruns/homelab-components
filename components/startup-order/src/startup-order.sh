@@ -62,6 +62,18 @@ inventory() {
 
 running() { docker ps --format '{{.Names}}' 2>/dev/null | sort; }
 
+# Sets $saved to the recorded names, empty when there is no state file; fails when one exists but cannot be read.
+read_state() {
+    saved=""
+    [ -e "$STATE" ] || [ -L "$STATE" ] || return 0
+    saved=$(cat "$STATE" 2>/dev/null)
+}
+
+# Atomically replaces the state file with the names in $1; on failure the old state file is left as it was.
+save_state() {
+    { printf '%s\n' "$1" > "$STATE.tmp" && mv -f "$STATE.tmp" "$STATE"; } 2>/dev/null
+}
+
 # Names from $1 (newline list) whose level is $2, per the inventory in $3 (default: a fresh one).
 at_level() {
     { if [ $# -ge 3 ]; then printf '%s\n' "$3"; else inventory; fi; } | WANT=$1 awk -F'\t' -v lvl="$2" '
@@ -76,14 +88,18 @@ ready() {
 }
 
 cmd_stop() {
-    mkdir -p "$BASE"
-    # Record first: dockerd may be stopping in parallel with this task. Merge with any
-    # state left by a boot run that never finished, so a second shutdown loses nothing.
-    { running; cat "$STATE" 2>/dev/null; } | sed '/^$/d' | sort -u > "$STATE.tmp"
-    if [ -s "$STATE.tmp" ]; then mv "$STATE.tmp" "$STATE"; else rm -f "$STATE.tmp"; fi
-    recorded=$(wc -l 2>/dev/null < "$STATE") || recorded=0
+    mkdir -p "$BASE" || return 1
     {
-        log "stop: recorded $recorded containers"
+        # Record first: dockerd may be stopping in parallel with this task. Merge with any state left by a boot run
+        # that never finished, so a second shutdown loses nothing. Stop nothing unless the record is saved.
+        now=$(docker ps --format '{{.Names}}' 2>/dev/null) ||
+            { log "stop: cannot list running containers; stopping nothing"; return 1; }
+        read_state || { log "stop: cannot read $STATE; stopping nothing"; return 1; }
+        keep=$(printf '%s\n%s\n' "$now" "$saved" | sed '/^$/d' | sort -u)
+        if [ -n "$keep" ]; then
+            save_state "$keep" || { log "stop: cannot save state to $STATE; stopping nothing"; return 1; }
+        fi
+        log "stop: recorded $(printf '%s\n' "$keep" | grep -c .) containers"
         for lvl in $(descending "$MAX_LEVEL" 0); do
             names=$(at_level "$(running)" "$lvl" | tr '\n' ' ')
             [ -n "$names" ] || continue
@@ -133,7 +149,7 @@ cmd_run() {
     now=$(docker ps --format '{{.Names}}' 2>/dev/null) || abort "cannot list running containers"
     now=$(printf '%s\n' "$now" | sort)
     inv=$(inventory) || abort "cannot list containers"
-    saved=$(cat "$STATE" 2>/dev/null)
+    read_state || abort "cannot read $STATE; stopping nothing"
     # Names recorded at shutdown that no longer exist (e.g. --rm containers) are dropped by at_level.
     targets=$(printf '%s\n%s\n' "$now" "$saved" | sed '/^$/d' | sort -u)
     log "run: $(printf '%s\n' "$targets" | grep -c .) targets ($(printf '%s\n' "$now" | grep -c .) already running, state file: $([ -n "$saved" ] && echo yes || echo no))"
@@ -141,7 +157,7 @@ cmd_run() {
     # Persist every target before stopping anything, so a run interrupted mid-reorder leaves the next run a full
     # recovery set. The state is removed only once every target is running.
     if [ "$DRY" != 1 ] && [ -n "$targets" ]; then
-        { printf '%s\n' "$targets" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"; } 2>/dev/null ||
+        save_state "$targets" ||
             { log "run: cannot save recovery state to $STATE; stopping nothing"; return 1; }
     fi
 
@@ -183,8 +199,8 @@ cmd_run() {
     done
 
     [ "$DRY" = 1 ] && { log "run: done"; return 0; }
-    # Unhealthy is a warning (above); a target that still exists but is not running is a failure.
-    now=$(docker ps --format '{{.Names}}' 2>/dev/null) || abort "cannot confirm what is running"
+    # Unhealthy is a warning (above); a target that still exists but is not running (e.g. restarting) is a failure.
+    now=$(docker ps --filter status=running --format '{{.Names}}' 2>/dev/null) || abort "cannot confirm what is running"
     inv=$(inventory) || abort "cannot confirm what is running"
     missing=$(for lvl in $(ascending 0 "$MAX_LEVEL"); do at_level "$targets" "$lvl" "$inv"; done |
         NOW=$now awk 'BEGIN { n = split(ENVIRON["NOW"], r, "\n"); for (i = 1; i <= n; i++) up[r[i]] = 1 }

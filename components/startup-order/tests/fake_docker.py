@@ -5,7 +5,8 @@ It answers only the commands startup-order.sh runs (info, ps, inspect, start, st
 makes that command take s seconds after it has acted; FAKE_DOCKER_DOWN_AFTER=<command> takes the daemon down once
 that command has acted. The Contract Tests run the same behaviours against a real engine.
 
-State: {"up": bool, "containers": [{"name", "labels", "running", "healthcheck", "healthy_on_start", "start_fails"}]}
+State: {"up": bool, "containers": [{"name", "labels", "running", "healthcheck", "healthy_on_start", "start_fails",
+"crash_loops"}]}. A crash-looping container is left `restarting` by start: listed by plain `ps`, not running.
 """
 
 import json
@@ -30,15 +31,16 @@ def main(args):
     elif command == "ps":
         fmt = rest[rest.index("--format") + 1]
         label = re.search(r'\.Label "([^"]+)"', fmt)
+        only_running = "status=running" in rest
         for c in state["containers"]:
-            if "-a" in rest or c.get("running"):
+            if "-a" in rest or c.get("running") or (c.get("restarting") and not only_running):
                 print(f"{c['name']}\t{c.get('labels', {}).get(label[1], '')}" if label else c["name"])
     elif command == "inspect":
         c = containers.get(rest[-1])
         if c is None:
             print(f"Error: No such object: {rest[-1]}", file=sys.stderr)
             return 1
-        status = "running" if c.get("running") else "exited"
+        status = "running" if c.get("running") else "restarting" if c.get("restarting") else "exited"
         health = c.get("health", "none") if c.get("healthcheck") else "none"
         print(f"{status} {health}")
     elif command in ("start", "stop"):
@@ -54,7 +56,8 @@ def main(args):
                 print(f"Error response from daemon: failed to start {name}", file=sys.stderr)
                 rc = 1
                 continue
-            c["running"] = command == "start"
+            c["running"] = command == "start" and not c.get("crash_loops")
+            c["restarting"] = command == "start" and bool(c.get("crash_loops"))
             if command == "start" and c.get("healthcheck"):
                 c["health"] = "healthy" if c.get("healthy_on_start", True) else "starting"
         if os.environ.get("FAKE_DOCKER_DOWN_AFTER") == command:

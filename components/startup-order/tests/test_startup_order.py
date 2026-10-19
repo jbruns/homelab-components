@@ -110,6 +110,38 @@ def test_stop_keeps_names_recorded_by_an_earlier_shutdown(host):
     assert (host.dir / "state").read_text().split() == ["app", "earlier"]
 
 
+def test_stop_stops_nothing_when_it_cannot_save_the_state(host):
+    recorded(host, "db")
+    (host.dir / "state.tmp").mkdir()
+    host.containers(container("app", 2))
+    assert host.run("stop").returncode == 1
+    assert "stop: cannot save state" in (host.dir / "shutdown.log").read_text()
+    assert host.calls() == []
+    assert (host.dir / "state").read_text() == "db\n"
+
+
+def test_stop_stops_nothing_when_it_cannot_list_containers(host):
+    host.containers(container("app", 2), up=False)
+    assert host.run("stop").returncode == 1
+    assert "stop: cannot list running containers" in (host.dir / "shutdown.log").read_text()
+    assert not (host.dir / "state").exists()
+
+
+@pytest.mark.parametrize("command", ["stop", "run"])
+def test_an_unreadable_state_file_is_never_overwritten_and_nothing_is_stopped(host, command):
+    unreadable = host.dir / "state"
+    unreadable.mkdir(parents=True)
+    (unreadable / "names").write_text("db\n")
+    host.containers(container("db", 1, running=False), container("app", 2))
+    result = host.run(command)
+    assert result.returncode == 1
+    log = result.stdout + ((host.dir / "shutdown.log").read_text() if command == "stop" else "")
+    assert f"{command}: cannot read {unreadable}" in log
+    assert host.calls() == []
+    assert sorted(p.name for p in unreadable.iterdir()) == ["names"]
+    assert not (host.dir / "state.tmp").exists()
+
+
 def test_stop_never_touches_skipped_containers(host):
     host.containers(container("app", 2), container("pinned", "skip"))
     host.run("stop")
@@ -324,6 +356,15 @@ def test_a_container_that_fails_to_start_keeps_the_state_and_fails_the_run(host)
     assert (host.dir / "state").read_text().split() == ["app", "db"]
 
 
+def test_a_crash_looping_target_keeps_the_state_and_fails_the_run(host):
+    recorded(host, "app")
+    host.containers(container("db", 1), container("app", 2, running=False, crash_loops=True))
+    result = host.run("run", STARTUP_ORDER_LEVEL_TIMEOUT="0")
+    assert result.returncode == 1, result.stdout
+    assert "run: not started: app" in result.stdout
+    assert (host.dir / "state").read_text().split() == ["app", "db"]
+
+
 def test_run_requires_flock(tmp_path):
     host = FakeHost(tmp_path)
     bin_dir = tmp_path / "bin"
@@ -405,7 +446,10 @@ def test_start_runs_in_the_background_and_logs_to_last_log(host):
     assert host.calls() == ["start app"]
 
 
-@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="needs shellcheck")
 def test_script_is_posix_sh_and_shellcheck_clean():
+    if shutil.which("shellcheck") is None:
+        if os.environ.get("CI"):
+            pytest.fail("shellcheck is required in CI")
+        pytest.skip("needs shellcheck")
     result = subprocess.run(["shellcheck", "--shell=sh", str(SCRIPT)], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr

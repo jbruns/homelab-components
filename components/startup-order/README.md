@@ -62,17 +62,18 @@ no longer exists is dropped. Containers already running at `STARTUP_ORDER_REORDE
 so they come back after the levels below them. A level that is not ready within `STARTUP_ORDER_LEVEL_TIMEOUT` logs
 a `WARNING` and the next level starts anyway; an unhealthy but running container does not fail the run.
 
-Before stopping anything, `run` writes every target to the state file; if it cannot, it stops nothing and exits 1.
-It deletes the state file only once every target that still exists is running. When Docker fails (it cannot list
-containers, or goes away after a `stop`/`start` error) or a target is still not running at the end, `run` logs why,
-keeps the state file and exits 1, so the next run (or the next boot) starts what it left stopped. The same holds for
-a run that is interrupted.
+Neither `stop` nor `run` stops anything until it has saved its targets to the state file. If listing containers,
+reading an existing state file, or writing it fails, it logs why, stops nothing and exits 1. `run` deletes the state
+file only once every target that still exists is running; a `restarting` (crash-looping) container does not count.
+When Docker fails (it cannot list containers, or goes away after a `stop`/`start` error) or a target is still not
+running at the end, `run` logs why, keeps the state file and exits 1, so the next run (or the next boot) starts what
+it left stopped. The same holds for a run that is interrupted.
 
 `run` holds an exclusive `flock` on `run.lock` (`plan` on `plan.lock`), so two runs never overlap. The kernel drops
 the lock when the run exits, is killed or the Host reboots, so a crash never leaves a lock to clear by hand.
 
 Exit status: 0 on success; 1 when Docker never answered or failed, a target is not running, the state cannot be
-saved, or another run holds the lock; 2 for a bad command, an invalid setting or missing `flock`; 130/143 when
+read or saved, or another run holds the lock; 2 for a bad command, an invalid setting or missing `flock`; 130/143 when
 interrupted.
 
 Logs, all under `STARTUP_ORDER_DIR`: `shutdown.log` (appended by `stop`), `last.log` (the latest `start`). `run` and

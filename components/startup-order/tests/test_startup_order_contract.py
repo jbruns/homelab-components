@@ -5,6 +5,7 @@ Canary) version, and its busybox userland checks the script stays POSIX sh.
 """
 
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -29,10 +30,10 @@ class Engine:
     def docker(self, *args):
         return host_docker("exec", self.container, "docker", *args)
 
-    def create(self, name, level=None, *options, healthy_after=None):
+    def create(self, name, level=None, *options, healthy_after=None, command=None):
         labels = [] if level is None else ["--label", f"startup-order={level}"]
         if healthy_after is None:
-            command = ["sleep", "3600"]
+            command = command or ["sleep", "3600"]
         else:
             command = ["sh", "-c", f"sleep {healthy_after}; touch /tmp/ok; sleep 3600"]
             options = (*options, "--health-cmd", "test -f /tmp/ok", "--health-interval", "1s")
@@ -44,15 +45,18 @@ class Engine:
     def running(self):
         return sorted(self.docker("ps", "--format", "{{.Names}}").split())
 
-    def startup_order(self, *args):
-        settings = ["--env", "STARTUP_ORDER_SETTLE=0", "--env", "STARTUP_ORDER_LEVEL_TIMEOUT=60"]
+    def status(self, name):
+        return self.docker("inspect", "--format", "{{.State.Status}}", name)
+
+    def startup_order(self, *args, expect=0, level_timeout=60):
+        settings = ["--env", "STARTUP_ORDER_SETTLE=0", "--env", f"STARTUP_ORDER_LEVEL_TIMEOUT={level_timeout}"]
         result = subprocess.run(
             ["docker", "exec", *settings, self.container, "sh", INSTALLED, *args],
             capture_output=True,
             text=True,
             timeout=300,
         )
-        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.returncode == expect, result.stdout + result.stderr
         return result.stdout
 
 
@@ -121,3 +125,19 @@ def test_plan_reads_the_engine_and_changes_nothing(engine):
     assert "run: starting level 1: db" in log
     assert "run: starting level 2: app" in log
     assert engine.started_at("app") == app_started
+
+
+@pytest.mark.contract
+def test_a_crash_looping_target_is_not_counted_as_running(engine):
+    engine.create("db", 1)
+    engine.create("crashy", 2, "--restart=always", command=["sh", "-c", "exit 1"])
+    deadline = time.monotonic() + 30
+    while engine.status("crashy") != "restarting":
+        assert time.monotonic() < deadline, "crashy never reached restarting"
+        time.sleep(0.2)
+    assert "crashy" in engine.running()
+
+    log = engine.startup_order("run", expect=1, level_timeout=10)
+    assert "run: not started: crashy" in log
+    assert "run: done" not in log
+    assert host_docker("exec", engine.container, "cat", "/var/lib/startup-order/state").split() == ["crashy", "db"]
