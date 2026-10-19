@@ -10,8 +10,10 @@ looks for each path in the restic repository with `restic snapshots` and `restic
   the next backup. Its direct child count and the volume's live size tell an expected empty directory (an empty
   volume) from a lost one.
 - A **database** path (`/databases/[project/]service/<dump>.sql`) is present when any snapshot holds it. It is due
-  once its container is older than `DATABASE_DUE_AFTER`. MariaDB and MySQL dump to `all_databases.sql`, Postgres to
-  `<POSTGRES_DB>.sql`, as stack-back names them.
+  once its container is older than `DATABASE_DUE_AFTER`. A container is a database when its `stack-back.mariadb`,
+  `stack-back.mysql` or `stack-back.postgres` label is true or, with `AUTO_BACKUP_ALL`, when its image starts with
+  `mariadb`, `mysql` or `postgres` and that label is not false; its data directory is then left out of the volume
+  paths. MariaDB and MySQL dump to `all_databases.sql`, Postgres to `<POSTGRES_DB>.sql`, as stack-back names them.
 
 It checks every `REFRESH_INTERVAL` and serves the last good result on `/metrics`, which stays empty until the first
 check ends. A failed check is logged to stderr, sets `backup_coverage_up` to 0 and leaves the last result, and its
@@ -53,7 +55,8 @@ Component can share stack-back's env file; set them as the stack-back container 
 | `INCLUDE_ALL_VOLUMES` | `false` | stack-back's older name for `AUTO_BACKUP_ALL`. |
 
 restic itself reads the rest of its environment: give it the repository password with `RESTIC_PASSWORD_FILE` (or
-`RESTIC_PASSWORD`), and any backend credentials the repository needs. Its cache goes to `RESTIC_CACHE_DIR`, or
+`RESTIC_PASSWORD`), and any backend credentials the repository needs. The repository reaches restic through its
+environment, never its command line, and logged restic errors mask it and any credentials in a URL. Its cache goes to `RESTIC_CACHE_DIR`, or
 under `$HOME/.cache`, which must be writable.
 
 The process must be able to read the Docker socket and the repository. A local repository whose files restic wrote

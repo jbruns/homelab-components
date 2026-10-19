@@ -183,7 +183,7 @@ def test_reports_coverage_from_a_real_repository(engine_with_containers, upstrea
     restic_run(restic, repo, "backup", "--stdin", "--stdin-filename", dump, stdin="-- dump\n")
 
     home_ops = Settings.from_env(SETTINGS["home-ops"])
-    command = tuple(restic_command(restic, repo))
+    command = tuple(restic_command(restic, repo, "--env", "RESTIC_REPOSITORY"))  # passed on from the check
     config = Config(
         restic_repository="/repo",
         docker_host=docker.url.replace("http://", "tcp://"),

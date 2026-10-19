@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from backup_coverage import exporter as exporter_module
 from backup_coverage.exporter import Config, Exporter, collect, healthcheck, main, serve
 from backup_coverage.stackback import Settings
 
@@ -259,8 +260,8 @@ def restic(tmp_path):
 
 
 def config(docker, restic, **overrides):
-    values = {"restic_repository": "/backups", "docker_host": docker.host, "stack_back": HOME_OPS}
-    return Config(**values, restic_command=restic.command, **overrides)
+    values = {"restic_repository": "/backups", "docker_host": docker.host, "stack_back": HOME_OPS, **overrides}
+    return Config(**values, restic_command=restic.command)
 
 
 def free_port():
@@ -283,7 +284,7 @@ def test_reports_every_path_stack_back_should_back_up(docker, restic):
 
 def test_lists_the_expected_volume_paths_in_the_newest_volumes_snapshot_once(docker, restic):
     collect(config(docker, restic))
-    read_only = ["--repo", "/backups", "--no-lock", "--json"]
+    read_only = ["--no-lock", "--json"]
     assert restic.calls == [[*read_only, "snapshots"], [*read_only, "ls", "new", *EXPECTED_PATHS]]
 
 
@@ -324,8 +325,21 @@ def test_a_failed_check_raises_naming_the_upstream(docker, restic, failure):
         del docker.answers["/v1.44/volumes"]
     else:
         restic.answers["fail"] = True
-    with pytest.raises(RuntimeError, match=f"^{failure}.*(HTTP 404|exited 1: Fatal: unable to open repository)$"):
+    with pytest.raises(RuntimeError, match=f"^{failure}.*(HTTP 404|exited 1: Fatal: unable to open repository)"):
         collect(config(docker, restic))
+
+
+SECRET_REPOSITORY = "s3:https://AKIAEXAMPLE:s3cr3t@minio.example/backups"
+
+
+@pytest.mark.parametrize("failure", ["fail", "hang"])
+def test_a_failed_restic_call_never_logs_the_repository(docker, restic, monkeypatch, capsys, failure):
+    monkeypatch.setattr(exporter_module, "RESTIC_TIMEOUT", 1)
+    restic.answers.update({"repository": SECRET_REPOSITORY, failure: True})
+    Exporter(config(docker, restic, restic_repository=SECRET_REPOSITORY)).refresh()
+    out, err = capsys.readouterr()
+    assert "check failed: RuntimeError: restic snapshots " in err
+    assert "s3cr3t" not in out + err and "AKIAEXAMPLE" not in out + err
 
 
 def test_an_unreachable_docker_raises_naming_its_host(tmp_path, docker, restic):

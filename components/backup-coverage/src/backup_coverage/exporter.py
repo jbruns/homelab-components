@@ -12,6 +12,8 @@ tells an empty snapshot directory that is expected (the volume is empty) from on
 
 import http.client
 import json
+import os
+import re
 import socket
 import subprocess
 import sys
@@ -25,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from backup_coverage.stackback import Settings, backup_paths
 
-# Docker Engine API 1.44 is Docker 25.0 and later; also the oldest API Docker 29 still serves.
+# Docker Engine API 1.44 is Docker 25.0 and later (the Host runs 28.3.1); also the oldest API Docker 29 serves.
 DOCKER_API = "/v1.44"
 DOCKER_TIMEOUT = 30
 # Docker walks every volume to size it, which can take tens of seconds.
@@ -105,13 +107,24 @@ def docker_get(host, path, timeout=DOCKER_TIMEOUT):
 
 
 def restic(config, *args):
-    """The JSON lines restic prints for `args`, read-only (--no-lock) against the configured repository."""
-    command = [*config.restic_command, "--repo", config.restic_repository, "--no-lock", "--json", *args]
+    """The JSON lines restic prints for `args`, read-only (--no-lock) against the configured repository.
+
+    The repository goes to restic in RESTIC_REPOSITORY, never on its command line, and errors never repeat it: its
+    URL can hold credentials.
+    """
+    command = [*config.restic_command, "--no-lock", "--json", *args]
+    env = {**os.environ, "RESTIC_REPOSITORY": config.restic_repository}
     try:
-        out = subprocess.run(command, check=True, capture_output=True, text=True, timeout=RESTIC_TIMEOUT).stdout
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"restic {args[0]} exited {e.returncode}: {_restic_error(e.stderr)}") from None
-    return [json.loads(line) for line in out.splitlines() if line.startswith(("{", "["))]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=RESTIC_TIMEOUT, env=env)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"restic {args[0]} timed out after {RESTIC_TIMEOUT}s") from None
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"restic {args[0]} did not run: {type(e).__name__}") from None
+    if result.returncode != 0:
+        error = _restic_error(result.stderr).replace(config.restic_repository, "<RESTIC_REPOSITORY>")
+        error = re.sub(r"://[^/@\s]+@", "://<credentials>@", error)
+        raise RuntimeError(f"restic {args[0]} exited {result.returncode}: {error}")
+    return [json.loads(line) for line in result.stdout.splitlines() if line.startswith(("{", "["))]
 
 
 def _restic_error(stderr):
