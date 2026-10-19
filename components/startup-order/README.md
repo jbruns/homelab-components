@@ -6,7 +6,8 @@ dockerd brought up out of order, then starts each level from 0 upwards, waiting 
 running and (if it has a healthcheck) healthy before starting the next.
 
 It is a POSIX `sh` script that runs on the Host itself (not in a container), from the Host's boot and shutdown hooks.
-It uses only the `docker` CLI, `awk`, `sort`, `sed` and `setsid`.
+It uses only the `docker` CLI, `awk`, `sort`, `sed`, and util-linux `flock` and `setsid` (`start`, `run` and `plan`
+exit 2 when `flock` is missing). TrueNAS SCALE and busybox both provide them.
 
 ## Why
 
@@ -58,12 +59,15 @@ startup-order.sh plan    # print what `run` would do, changing nothing
 
 At boot, `run` starts every container that is running now or was recorded at the last `stop`; a recorded name that
 no longer exists is dropped. Containers already running at `STARTUP_ORDER_REORDER_FROM` and above are stopped first
-so they come back after the levels below them. A level that is not ready within `STARTUP_ORDER_LEVEL_TIMEOUT` logs
-a `WARNING` and the next level starts anyway. `run` holds a lock directory so two runs never overlap; a lock left
-by a run that crashed or by an earlier boot is taken over.
+so they come back after the levels below them. Before stopping anything, `run` writes every target to the state
+file, and removes it only when it finishes, so a run interrupted mid-reorder leaves the next run what it stopped. A
+level that is not ready within `STARTUP_ORDER_LEVEL_TIMEOUT` logs a `WARNING` and the next level starts anyway.
 
-Exit status: 0 on success, 1 when Docker never answered or another run holds the lock, 2 for a bad command or an
-invalid setting.
+`run` holds an exclusive `flock` on `run.lock` (`plan` on `plan.lock`), so two runs never overlap. The kernel drops
+the lock when the run exits, is killed or the Host reboots, so a crash never leaves a lock to clear by hand.
+
+Exit status: 0 on success, 1 when Docker never answered or another run holds the lock, 2 for a bad command, an
+invalid setting or missing `flock`, 130/143 when interrupted.
 
 Logs, all under `STARTUP_ORDER_DIR`: `shutdown.log` (appended by `stop`), `last.log` (the latest `start`). `run` and
 `plan` log to stdout.
@@ -74,7 +78,7 @@ Set these in the environment of the hook that calls the script; `start` passes t
 
 | Variable | Default | Description |
 |---|---|---|
-| `STARTUP_ORDER_DIR` | `/var/lib/startup-order` | Directory for the state file, lock and logs. Must survive a reboot. |
+| `STARTUP_ORDER_DIR` | `/var/lib/startup-order` | Directory for the state file, lock files and logs. Must survive a reboot. |
 | `STARTUP_ORDER_LABEL` | `startup-order` | Container label holding the level. |
 | `STARTUP_ORDER_MAX_LEVEL` | `3` | Highest level; valid levels are 0 to this. |
 | `STARTUP_ORDER_DEFAULT_LEVEL` | `2` | Level for containers without a valid level label. |

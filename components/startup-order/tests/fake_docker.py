@@ -1,8 +1,8 @@
 """A stand-in for the `docker` CLI, for unit tests that need no Docker Engine.
 
 It answers only the commands startup-order.sh runs (info, ps, inspect, start, stop) from a JSON state file
-($FAKE_DOCKER_STATE) and appends each start/stop to a call log ($FAKE_DOCKER_CALLS). The Contract Tests run the
-same behaviours against a real engine.
+($FAKE_DOCKER_STATE) and appends each start/stop to a call log ($FAKE_DOCKER_CALLS). FAKE_DOCKER_SLOW=<command>=<s>
+makes that command take s seconds after it has acted. The Contract Tests run the same behaviours against a real engine.
 
 State: {"up": bool, "containers": [{"name", "labels", "running", "healthcheck", "healthy_on_start"}]}
 """
@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import time
 
 
 def main(args):
@@ -53,6 +54,9 @@ def main(args):
                 c["health"] = "healthy" if c.get("healthy_on_start", True) else "starting"
         with open(state_path, "w") as f:
             json.dump(state, f)
+        slow, _, seconds = os.environ.get("FAKE_DOCKER_SLOW", "").partition("=")
+        if slow == command:
+            time.sleep(float(seconds))
     else:
         print(f"fake docker: unsupported command {command!r}", file=sys.stderr)
         return 1

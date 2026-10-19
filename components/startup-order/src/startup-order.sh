@@ -13,7 +13,7 @@ set -u
 BASE=${STARTUP_ORDER_DIR:-/var/lib/startup-order}
 STATE=$BASE/state
 LOG=$BASE/last.log
-LOCK=$BASE/lock
+LOCK=$BASE/run.lock
 LABEL=${STARTUP_ORDER_LABEL:-startup-order}
 MAX_LEVEL=${STARTUP_ORDER_MAX_LEVEL:-3}
 DEFAULT_LEVEL=${STARTUP_ORDER_DEFAULT_LEVEL:-2}
@@ -40,6 +40,11 @@ whole SETTLE "$SETTLE"
 whole SETTLE_MAX "$SETTLE_MAX"
 [ "$DEFAULT_LEVEL" -le "$MAX_LEVEL" ] ||
     invalid STARTUP_ORDER_DEFAULT_LEVEL "$DEFAULT_LEVEL is above STARTUP_ORDER_MAX_LEVEL ($MAX_LEVEL)"
+
+case "${1:-}" in
+    start | run | plan)
+        command -v flock >/dev/null 2>&1 || { echo "startup-order: requires flock (util-linux) on PATH" >&2; exit 2; } ;;
+esac
 
 # Levels from $1 down to $2, or up from $1 to $2; nothing when the range is empty.
 descending() { awk -v hi="$1" -v lo="$2" 'BEGIN { for (i = hi; i >= lo; i--) print i }'; }
@@ -107,26 +112,18 @@ wait_settle() {
     done
 }
 
-boot_id() { cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo -; }
-
-# The lock directory records "<pid> <boot id>" so a lock left by a crash or an earlier boot is taken over.
+# flock(1) holds the lock on an open descriptor, so the kernel releases it when this run exits, crashes or the
+# Host reboots; the lock file itself is never removed. Child commands (docker, sleep) inherit fd 9, so a killed
+# run's lock lasts until its last child exits.
 take_lock() {
-    if ! mkdir "$LOCK" 2>/dev/null; then
-        read -r pid boot < "$LOCK/owner" 2>/dev/null || return 1
-        if [ "$boot" = "$(boot_id)" ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
-        log "run: removing stale lock $LOCK (pid $pid, boot $boot)"
-        rm -rf "$LOCK"
-        mkdir "$LOCK" 2>/dev/null || return 1
-    fi
-    echo "$$ $(boot_id)" > "$LOCK/owner"
-    trap 'rm -rf "$LOCK"' EXIT
+    exec 9>> "$LOCK" && flock -n 9 || return 1
     trap 'exit 130' INT
     trap 'exit 143' TERM
 }
 
 cmd_run() {
     mkdir -p "$BASE"
-    take_lock || { log "run: another run holds $LOCK"; return 1; }
+    take_lock 2>/dev/null || { log "run: another run holds $LOCK"; return 1; }
     log "run: waiting for Docker"
     wait_docker || { log "run: Docker not ready after ${DOCKER_WAIT}s, giving up"; return 1; }
     [ "$DRY" = 1 ] || wait_settle
@@ -135,6 +132,12 @@ cmd_run() {
     # Names recorded at shutdown that no longer exist (e.g. --rm containers) are dropped by at_level.
     targets=$(printf '%s\n%s\n' "$now" "$saved" | sed '/^$/d' | sort -u)
     log "run: $(printf '%s\n' "$targets" | grep -c .) targets ($(printf '%s\n' "$now" | grep -c .) already running, state file: $([ -n "$saved" ] && echo yes || echo no))"
+
+    # Persist every target before stopping anything, so a run interrupted mid-reorder leaves the next run a full
+    # recovery set. The state is removed only when this run finishes.
+    if [ "$DRY" != 1 ] && [ -n "$targets" ]; then
+        printf '%s\n' "$targets" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+    fi
 
     # dockerd's restart policy started containers in no particular order; restart those at
     # STARTUP_ORDER_REORDER_FROM and above so they come up after what they depend on.
@@ -177,6 +180,6 @@ case "${1:-}" in
         setsid sh "$0" run > "$LOG" 2>&1 < /dev/null &
         ;;
     run) cmd_run ;;
-    plan) DRY=1; LOCK=$BASE/lock.plan; cmd_run ;;
+    plan) DRY=1; LOCK=$BASE/plan.lock; cmd_run ;;
     *) echo "usage: $0 stop|start|run|plan" >&2; exit 2 ;;
 esac

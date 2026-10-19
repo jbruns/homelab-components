@@ -1,9 +1,11 @@
+import fcntl
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -55,7 +57,16 @@ def container(name, level=None, running=True, **extra):
 
 @pytest.fixture
 def host(tmp_path):
+    if shutil.which("flock") is None:
+        pytest.skip("needs flock (util-linux), as on the Host")
     return FakeHost(tmp_path)
+
+
+def wait_for(condition, timeout=10):
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.05)
 
 
 def test_rejects_an_unknown_command_with_usage(host):
@@ -213,61 +224,71 @@ def test_run_gives_up_when_docker_never_answers(host):
     assert "run: Docker not ready after 0s, giving up" in result.stdout
 
 
-def boot_id():
-    path = Path("/proc/sys/kernel/random/boot_id")
-    return path.read_text().strip() if path.exists() else "-"
-
-
-def dead_pid():
-    process = subprocess.Popen(["true"])
-    process.wait()
-    return process.pid
-
-
-def hold_lock(host, owner=None):
-    (host.dir / "lock").mkdir(parents=True)
-    if owner is not None:
-        (host.dir / "lock" / "owner").write_text(owner + "\n")
-
-
-@pytest.mark.parametrize("owner", [None, f"{os.getpid()} {boot_id()}"], ids=["owner-not-yet-written", "live-run"])
-def test_run_refuses_to_start_while_another_run_holds_the_lock(host, owner):
-    hold_lock(host, owner)
-    result = host.run("run")
+def test_run_refuses_to_start_while_another_process_holds_the_lock(host):
+    host.dir.mkdir()
+    with open(host.dir / "run.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        result = host.run("run")
     assert result.returncode == 1
     assert "another run holds" in result.stdout
-    assert (host.dir / "lock").is_dir()
 
 
-@pytest.mark.parametrize(
-    "owner", [f"{dead_pid()} {boot_id()}", f"{os.getpid()} an-earlier-boot"], ids=["crashed-run", "earlier-boot"]
-)
-def test_run_takes_over_a_lock_left_by_a_run_that_is_gone(host, owner):
-    hold_lock(host, owner)
+def test_run_proceeds_over_a_lock_file_left_by_a_run_that_is_gone(host):
     recorded(host, "app")
+    (host.dir / "run.lock").write_text("")
     host.containers(container("app", 2, running=False))
     result = host.run("run")
     assert result.returncode == 0, result.stdout
-    assert "run: removing stale lock" in result.stdout
     assert host.calls() == ["start app"]
-    assert not (host.dir / "lock").exists()
 
 
-def test_run_stops_and_releases_its_lock_when_terminated(host):
+def test_concurrent_runs_never_overlap_and_never_remove_each_others_lock(host):
+    recorded(host, "db")
+    (host.dir / "run.lock").write_text("")
+    host.containers(container("db", 1, running=False))
+    env = {**host.env, "FAKE_DOCKER_SLOW": "start=2"}
+    contenders = [
+        subprocess.Popen(["sh", str(SCRIPT), "run"], env=env, stdout=subprocess.PIPE, text=True) for _ in range(4)
+    ]
+    results = [(p.wait(timeout=60), p.stdout.read()) for p in contenders]
+    assert sorted(rc for rc, _ in results) == [0, 1, 1, 1], results
+    assert host.calls() == ["start db"]
+    assert (host.dir / "run.lock").exists()
+
+
+def test_run_stops_when_terminated_and_frees_the_lock(host):
     host.containers(up=False)
     process = subprocess.Popen(["sh", str(SCRIPT), "run"], env=host.env, stdout=subprocess.PIPE, text=True)
-    for _ in range(100):
-        if (host.dir / "lock" / "owner").exists():
-            break
-        subprocess.run(["sleep", "0.1"])
+    wait_for(lambda: (host.dir / "run.lock").exists())
     process.terminate()
     assert process.wait(timeout=30) == 143
-    assert not (host.dir / "lock").exists()
+    host.containers()
+    assert host.run("run").returncode == 0
 
 
-def test_run_releases_its_lock(host):
-    host.run("run")
-    assert not (host.dir / "lock").exists()
+def test_a_run_terminated_mid_reorder_leaves_what_it_stopped_for_the_next_run(host):
+    host.containers(container("db", 1), container("app", 2))
+    env = {**host.env, "FAKE_DOCKER_SLOW": "stop=3"}
+    process = subprocess.Popen(["sh", str(SCRIPT), "run"], env=env, stdout=subprocess.PIPE, text=True)
+    wait_for(lambda: "stop app" in host.calls())
+    process.terminate()
+    assert process.wait(timeout=30) == 143
+    assert host.running() == ["db"]
+
+    result = host.run("run")
+    assert result.returncode == 0, result.stdout
+    assert host.running() == ["app", "db"]
+    assert not (host.dir / "state").exists()
+
+
+def test_run_requires_flock(tmp_path):
+    host = FakeHost(tmp_path)
+    bin_dir = tmp_path / "bin"
+    result = subprocess.run(
+        ["/bin/sh", str(SCRIPT), "run"], env={**host.env, "PATH": str(bin_dir)}, capture_output=True, text=True
+    )
+    assert result.returncode == 2
+    assert "startup-order: requires flock" in result.stderr
 
 
 def recorded(host, *names):
