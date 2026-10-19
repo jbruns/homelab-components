@@ -142,6 +142,26 @@ def test_an_unreadable_state_file_is_never_overwritten_and_nothing_is_stopped(ho
     assert not (host.dir / "state.tmp").exists()
 
 
+def test_stop_stops_only_what_it_recorded(host):
+    host.containers(container("app", 2), container("deployed", 2, running=False, late=True))
+    assert host.run("stop").returncode == 0
+    assert host.calls() == ["stop app"]
+    assert host.running() == ["deployed"]
+    assert (host.dir / "state").read_text().split() == ["app"]
+
+
+def test_stop_stops_nothing_while_a_holder_it_cannot_end_keeps_the_lock(host):
+    host.dir.mkdir()
+    host.containers(container("app", 2))
+    with open(host.dir / "run.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        result = host.run("stop", STARTUP_ORDER_STOP_WAIT="1")
+    assert result.returncode == 1
+    assert "still held after 1s; stopping nothing" in (host.dir / "shutdown.log").read_text()
+    assert host.calls() == []
+    assert not (host.dir / "state").exists()
+
+
 def test_stop_never_touches_skipped_containers(host):
     host.containers(container("app", 2), container("pinned", "skip"))
     host.run("stop")

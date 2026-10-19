@@ -6,8 +6,8 @@ dockerd brought up out of order, then starts each level from 0 upwards, waiting 
 running and (if it has a healthcheck) healthy before starting the next.
 
 It is a POSIX `sh` script that runs on the Host itself (not in a container), from the Host's boot and shutdown hooks.
-It uses only the `docker` CLI, `awk`, `sort`, `sed`, and util-linux `flock` and `setsid` (`start`, `run` and `plan`
-exit 2 when `flock` is missing). TrueNAS SCALE and busybox both provide them.
+It uses only the `docker` CLI, `awk`, `sort`, `sed`, and util-linux `flock` and `setsid` (every command exits 2 when
+`flock` is missing). TrueNAS SCALE and busybox both provide them.
 
 ## Why
 
@@ -51,7 +51,7 @@ services:
 ## Usage
 
 ```sh
-startup-order.sh stop    # at shutdown: record running containers, stop them highest level first
+startup-order.sh stop    # at shutdown: record running containers, stop those highest level first
 startup-order.sh start   # at boot: run `run` in the background (setsid) and return at once
 startup-order.sh run     # wait for Docker and the restart-policy starts to settle, then start level by level
 startup-order.sh plan    # print what `run` would do, changing nothing
@@ -69,8 +69,11 @@ When Docker fails (it cannot list containers, or goes away after a `stop`/`start
 running at the end, `run` logs why, keeps the state file and exits 1, so the next run (or the next boot) starts what
 it left stopped. The same holds for a run that is interrupted.
 
-`run` holds an exclusive `flock` on `run.lock` (`plan` on `plan.lock`), so two runs never overlap. The kernel drops
-the lock when the run exits, is killed or the Host reboots, so a crash never leaves a lock to clear by hand.
+`stop` and `run` hold an exclusive `flock` on `run.lock` (`plan` on `plan.lock`), so they never overlap. The kernel
+drops the lock when its holder exits, is killed or the Host reboots, so a crash never leaves a lock to clear by hand.
+Shutdown wins: `stop` sends TERM to a boot `run` that still holds the lock (it exits 143 and keeps the state file),
+waits up to `STARTUP_ORDER_STOP_WAIT` for the lock, and stops nothing if it does not get it. `stop` only stops
+containers it recorded; one started after that is left for dockerd to stop, and to restart at boot.
 
 Exit status: 0 on success; 1 when Docker never answered or failed, a target is not running, the state cannot be
 read or saved, or another run holds the lock; 2 for a bad command, an invalid setting or missing `flock`; 130/143 when
@@ -94,6 +97,7 @@ Set these in the environment of the hook that calls the script; `start` passes t
 | `STARTUP_ORDER_DOCKER_WAIT` | `900` | Seconds `run` waits for the Docker daemon to answer before giving up. |
 | `STARTUP_ORDER_SETTLE` | `20` | Seconds the set of running containers must stay unchanged before `run` reorders (dockerd's own restart-policy starts settling). |
 | `STARTUP_ORDER_SETTLE_MAX` | `180` | Most seconds to wait for that to settle. |
+| `STARTUP_ORDER_STOP_WAIT` | `30` | Seconds `stop` waits for a boot `run` it has told to give up to release the lock. |
 
 ## Install
 
@@ -127,7 +131,9 @@ download verifies.
    ```
 
    On TrueNAS, these are a SHUTDOWN and a POSTINIT command under System → Advanced → Init/Shutdown Scripts, and the
-   script and `STARTUP_ORDER_DIR` belong on a pool dataset, since an update replaces the boot environment.
+   script and `STARTUP_ORDER_DIR` belong on a pool dataset, since an update replaces the boot environment. The
+   SHUTDOWN entry's Timeout (10 s by default) must cover `STARTUP_ORDER_STOP_WAIT` plus one `docker stop` per level;
+   with the defaults and Docker's 10 s stop timeout that is 30 + 4 × 10 = 70 s, so set it to at least 120.
 
 Run `startup-order.sh plan` after installing to check what a boot would do.
 

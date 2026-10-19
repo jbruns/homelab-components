@@ -6,7 +6,8 @@ makes that command take s seconds after it has acted; FAKE_DOCKER_DOWN_AFTER=<co
 that command has acted. The Contract Tests run the same behaviours against a real engine.
 
 State: {"up": bool, "containers": [{"name", "labels", "running", "healthcheck", "healthy_on_start", "start_fails",
-"crash_loops"}]}. A crash-looping container is left `restarting` by start: listed by plain `ps`, not running.
+"crash_loops", "late"}]}. A crash-looping container is left `restarting` by start: listed by plain `ps`, not
+running. A late container starts just after the first `ps` that lists running containers, as if deployed meanwhile.
 """
 
 import json
@@ -35,6 +36,12 @@ def main(args):
         for c in state["containers"]:
             if "-a" in rest or c.get("running") or (c.get("restarting") and not only_running):
                 print(f"{c['name']}\t{c.get('labels', {}).get(label[1], '')}" if label else c["name"])
+        late = [] if "-a" in rest else [c for c in state["containers"] if c.pop("late", False)]
+        for c in late:
+            c["running"] = True
+        if late:
+            with open(state_path, "w") as f:
+                json.dump(state, f)
     elif command == "inspect":
         c = containers.get(rest[-1])
         if c is None:

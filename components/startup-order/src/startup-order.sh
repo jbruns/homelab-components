@@ -22,6 +22,7 @@ LEVEL_TIMEOUT=${STARTUP_ORDER_LEVEL_TIMEOUT:-420}
 DOCKER_WAIT=${STARTUP_ORDER_DOCKER_WAIT:-900}
 SETTLE=${STARTUP_ORDER_SETTLE:-20}
 SETTLE_MAX=${STARTUP_ORDER_SETTLE_MAX:-180}
+STOP_WAIT=${STARTUP_ORDER_STOP_WAIT:-30}
 DRY=0
 
 invalid() { echo "startup-order: invalid $1: $2" >&2; exit 2; }
@@ -38,11 +39,12 @@ whole LEVEL_TIMEOUT "$LEVEL_TIMEOUT"
 whole DOCKER_WAIT "$DOCKER_WAIT"
 whole SETTLE "$SETTLE"
 whole SETTLE_MAX "$SETTLE_MAX"
+whole STOP_WAIT "$STOP_WAIT"
 [ "$DEFAULT_LEVEL" -le "$MAX_LEVEL" ] ||
     invalid STARTUP_ORDER_DEFAULT_LEVEL "$DEFAULT_LEVEL is above STARTUP_ORDER_MAX_LEVEL ($MAX_LEVEL)"
 
 case "${1:-}" in
-    start | run | plan)
+    stop | start | run | plan)
         command -v flock >/dev/null 2>&1 || { echo "startup-order: requires flock (util-linux) on PATH" >&2; exit 2; } ;;
 esac
 
@@ -87,9 +89,25 @@ ready() {
         awk '$1 == "running" && ($2 == "healthy" || $2 == "none") { ok = 1 } END { exit !ok }'
 }
 
+# Shutdown wins over a boot run: ask the run holding the lock to give up, then wait for it to let go.
+stop_lock() {
+    exec 9>> "$LOCK" || return 1
+    flock -n 9 && return 0
+    pid=$(cat "$LOCK.pid" 2>/dev/null) && [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null &&
+        log "stop: asked run $pid to give up"
+    # busybox flock has no -w.
+    waited=0
+    until flock -n 9; do
+        [ "$waited" -ge "$STOP_WAIT" ] && return 1
+        sleep 1; waited=$((waited + 1))
+    done
+}
+
 cmd_stop() {
     mkdir -p "$BASE" || return 1
     {
+        stop_lock 2>/dev/null || { log "stop: $LOCK still held after ${STOP_WAIT}s; stopping nothing"; return 1; }
+        echo $$ > "$LOCK.pid" 2>/dev/null
         # Record first: dockerd may be stopping in parallel with this task. Merge with any state left by a boot run
         # that never finished, so a second shutdown loses nothing. Stop nothing unless the record is saved.
         now=$(docker ps --format '{{.Names}}' 2>/dev/null) ||
@@ -101,7 +119,8 @@ cmd_stop() {
         fi
         log "stop: recorded $(printf '%s\n' "$keep" | grep -c .) containers"
         for lvl in $(descending "$MAX_LEVEL" 0); do
-            names=$(at_level "$(running)" "$lvl" | tr '\n' ' ')
+            # Only what was recorded: anything started since is left for dockerd to stop, and to restart at boot.
+            names=$(at_level "$now" "$lvl" | tr '\n' ' ')
             [ -n "$names" ] || continue
             log "stop: level $lvl: $names"
             # shellcheck disable=SC2086
@@ -130,9 +149,10 @@ wait_settle() {
 
 # flock(1) holds the lock on an open descriptor, so the kernel releases it when this run exits, crashes or the
 # Host reboots; the lock file itself is never removed. Child commands (docker, sleep) inherit fd 9, so a killed
-# run's lock lasts until its last child exits.
+# run's lock lasts until its last child exits. The holder's PID goes in $LOCK.pid so `stop` can end a boot run.
 take_lock() {
     exec 9>> "$LOCK" && flock -n 9 || return 1
+    echo $$ > "$LOCK.pid" 2>/dev/null
     trap 'exit 130' INT
     trap 'exit 143' TERM
 }

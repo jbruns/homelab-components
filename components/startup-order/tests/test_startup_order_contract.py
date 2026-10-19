@@ -12,6 +12,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "src" / "startup-order.sh"
 INSTALLED = "/usr/local/bin/startup-order.sh"
+STATE_DIR = "/var/lib/startup-order"
 # Workload image pulled into the dind engine; any image with sh and sleep will do.
 WORKLOAD = "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
 
@@ -68,7 +69,7 @@ def engine(upstream):
     names = engine.docker("ps", "--all", "--quiet").split()
     if names:
         engine.docker("rm", "--force", *names)
-    host_docker("exec", engine.container, "rm", "-rf", "/var/lib/startup-order")
+    host_docker("exec", engine.container, "rm", "-rf", STATE_DIR)
 
 
 def started_in_order(engine, *names):
@@ -140,4 +141,33 @@ def test_a_crash_looping_target_is_not_counted_as_running(engine):
     log = engine.startup_order("run", expect=1, level_timeout=10)
     assert "run: not started: crashy" in log
     assert "run: done" not in log
-    assert host_docker("exec", engine.container, "cat", "/var/lib/startup-order/state").split() == ["crashy", "db"]
+    assert host_docker("exec", engine.container, "cat", f"{STATE_DIR}/state").split() == ["crashy", "db"]
+
+
+@pytest.mark.contract
+def test_shutdown_ends_a_boot_run_that_is_still_settling(engine):
+    engine.create("db", 1)
+    engine.create("app", 2)
+    settling = ["--env", "STARTUP_ORDER_SETTLE=600", "--env", "STARTUP_ORDER_SETTLE_MAX=600"]
+    boot = subprocess.Popen(
+        ["docker", "exec", *settling, engine.container, "sh", INSTALLED, "run"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while subprocess.run(
+            ["docker", "exec", engine.container, "test", "-s", f"{STATE_DIR}/run.lock.pid"]
+        ).returncode:
+            assert time.monotonic() < deadline, "boot run never took the lock"
+            time.sleep(0.2)
+
+        engine.startup_order("stop")
+        assert boot.wait(timeout=30) == 143
+    finally:
+        boot.kill()
+    assert "run: done" not in boot.stdout.read()
+    assert "stop: asked run" in host_docker("exec", engine.container, "cat", f"{STATE_DIR}/shutdown.log")
+    assert engine.running() == []
+    assert host_docker("exec", engine.container, "cat", f"{STATE_DIR}/state").split() == ["app", "db"]
