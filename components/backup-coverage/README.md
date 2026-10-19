@@ -9,8 +9,9 @@ looks for each path in the restic repository with `restic snapshots` and `restic
   snapshot. It is due once both its container and its Docker volume predate that snapshot, so a recreate waits for
   the next backup. Its direct child count and the volume's live size tell an expected empty directory (an empty
   volume) from a lost one.
-- A volume or bind mount shared by several containers is expected once, as stack-back backs it up: under the last of
-  them in Docker's container list (the oldest).
+- A volume or bind mount shared by several containers is expected once, as stack-back backs it up: under the last
+  running one in Docker's container list (the oldest). A stopped container is expected for it only when no running
+  container shares it.
 - A **database** path (`/databases/[project/]service/<dump>.sql`) is present when any snapshot holds it. It is due
   once its container is older than `DATABASE_DUE_AFTER`. A container is a database when its `stack-back.mariadb`,
   `stack-back.mysql` or `stack-back.postgres` label is true or, with `AUTO_BACKUP_ALL`, when its image starts with
@@ -22,7 +23,8 @@ check ends. A failed check is logged to stderr, sets `backup_coverage_up` to 0 a
 `backup_coverage_last_success_timestamp`, in place.
 
 Unlike stack-back, it counts stopped containers too, so a stopped service whose data is not being backed up still
-shows as missing. A container outside Compose has no service, so its paths skip that part (`/volumes/data`);
+shows as missing. Like stack-back, it knows stack-back's own container by its configured image (`Config.Image`), so
+it still does after that image's tag is removed. A container outside Compose has no service, so its paths skip that part (`/volumes/data`);
 stack-back v1.5.4 fails on such a container.
 
 ## Why

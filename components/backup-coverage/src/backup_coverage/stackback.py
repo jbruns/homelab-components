@@ -9,7 +9,6 @@ One deliberate difference: stack-back only looks at running containers, while th
 stopped service whose data is not being backed up shows up as missing.
 """
 
-import functools
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -60,21 +59,25 @@ def _patterns(value):
     return value.split(",") if value else None
 
 
-def _is_stack_back(container):
-    return "stack-back" in container.get("Image", "")
+def _is_stack_back(config):
+    return "stack-back" in (config["Image"] or "")
 
 
 def _is_oneoff(labels):
     return labels.get("com.docker.compose.oneoff") == "True"
 
 
-def _stack_back_projects(containers):
+def _stack_back_projects(containers, configs):
     """Compose projects of the stack-back containers (not their backup-process containers)."""
     projects = set()
     for c in containers:
         labels = c.get("Labels") or {}
         project = labels.get(PROJECT_LABEL, "")
-        if _is_stack_back(c) and not _is_oneoff(labels) and labels.get(f"stack-back.process-{project}") != "True":
+        if (
+            _is_stack_back(configs[c["Id"]])
+            and not _is_oneoff(labels)
+            and labels.get(f"stack-back.process-{project}") != "True"
+        ):
             projects.add(project)
     if not projects:
         raise LookupError("found no stack-back container to take the Compose project from")
@@ -98,11 +101,11 @@ def _mounts_for_backup(labels, mounts, settings, is_database):
 
 def _database(labels, settings, config):
     """The database stack-back dumps: one labelled true, or with AUTO_BACKUP_ALL one whose image (Config.Image)
-    starts with its name, unless labelled false. `config()` is asked only with AUTO_BACKUP_ALL."""
+    starts with its name, unless labelled false."""
     for kind in DATABASES:
         label = labels.get(f"stack-back.{kind}")
         automatic = settings.auto_backup_all and label not in FALSE_VALUES
-        if label in TRUE_VALUES or (automatic and (config()["Image"] or "").startswith(kind)):
+        if label in TRUE_VALUES or (automatic and (config["Image"] or "").startswith(kind)):
             return kind
     return None
 
@@ -111,34 +114,32 @@ def _dump_name(database, config):
     """stack-back dumps MariaDB and MySQL whole, and Postgres as the one database in the container's POSTGRES_DB."""
     if database != "postgres":
         return "all_databases.sql"
-    env = dict(entry.partition("=")[::2] for entry in config()["Env"] or [])
+    env = dict(entry.partition("=")[::2] for entry in config["Env"] or [])
     return f"{env.get('POSTGRES_DB')}.sql"  # stack-back writes "None.sql" when it is unset
-
-
-def _once(inspect, container_id):
-    return functools.cache(lambda: inspect(container_id))
 
 
 def backup_paths(containers, settings, inspect):
     """Every BackupPath for the containers of Docker's `/containers/json?all=1`, in container and mount order.
 
     Like stack-back's generate_backup_mounts(), a mount source (a volume or bind shared by several containers) is
-    backed up once, at the path of the last container in the list that backs it up, in the place of the first.
+    backed up once, at the path of the last running container in the list that backs it up, in the place of the
+    first. stack-back skips stopped containers; here one keeps only a source no running container backs up.
 
-    `inspect(id)` is the Config of a container's `/containers/{id}/json` (its Env and Image), asked only for Postgres
-    containers and, with AUTO_BACKUP_ALL, for the image of every container that might be backed up.
+    `inspect(id)` is the Config of a container's `/containers/{id}/json`: stack-back reads its Image, and Env.
     """
-    projects = None if settings.include_all_compose_projects else _stack_back_projects(containers)
+    configs = {c["Id"]: inspect(c["Id"]) for c in containers}
+    projects = None if settings.include_all_compose_projects else _stack_back_projects(containers, configs)
     paths, volume_paths = [], {}
     for c in containers:
         labels = c.get("Labels") or {}
         project = labels.get(PROJECT_LABEL, "")
-        if _is_stack_back(c) or _is_oneoff(labels) or (projects is not None and project not in projects):
+        if _is_stack_back(configs[c["Id"]]) or _is_oneoff(labels) or (projects is not None and project not in projects):
             continue
         service = labels.get(SERVICE_LABEL, "")
         prefix = [project] if settings.include_project_name and project else []
         created = float(c["Created"])
-        config = _once(inspect, c["Id"])
+        config = configs[c["Id"]]
+        running = c.get("State") == "running"
         database = _database(labels, settings, config)
         if database:
             path = PurePosixPath("/databases", *prefix, service, _dump_name(database, config))
@@ -148,7 +149,9 @@ def backup_paths(containers, settings, inspect):
             path = PurePosixPath("/volumes", *prefix, service, destination)
             volume = m.get("Name") if m.get("Type") == "volume" else None
             source = m.get("Source", "")
-            if source not in volume_paths:
+            owner = volume_paths.get(source)
+            if owner is None:
                 paths.append(source)
-            volume_paths[source] = BackupPath("volume", project, service, str(path), created, volume)
-    return [volume_paths[p] if isinstance(p, str) else p for p in paths]
+            if owner is None or running or not owner[0]:
+                volume_paths[source] = (running, BackupPath("volume", project, service, str(path), created, volume))
+    return [volume_paths[p][1] if isinstance(p, str) else p for p in paths]

@@ -31,8 +31,10 @@ def volume_mount(name, destination):
     }
 
 
-def container(labels, mounts=(), created=OLD, image="example/app:1", id="c"):
-    return {"Id": id, "Image": image, "Created": created, "Labels": labels, "Mounts": list(mounts)}
+def container(labels, mounts=(), created=OLD, image="example/app:1", id=None):
+    id = id or "_".join(labels.get(f"com.docker.compose.{key}", "") for key in ("project", "service"))
+    labels_and_mounts = {"Labels": labels, "Mounts": list(mounts)}
+    return {"Id": id, "Image": image, "Created": created, "State": "running", **labels_and_mounts}
 
 
 def compose(project, service, **labels):
@@ -72,7 +74,10 @@ CONTAINERS = [
     container({"stack-back.volumes": "true"}, [volume_mount("solo_data", "/data")]),
     container(compose("nc", "pg", **{"stack-back.postgres": "true"}), created=FUTURE, id="pg"),
 ]
-POSTGRES_INSPECT = {"Id": "pg", "Config": {"Env": ["PATH=/usr/bin", "POSTGRES_DB=nextcloud"]}}
+INSPECT = {
+    f"/v1.44/containers/{c['Id']}/json": {"Id": c["Id"], "Config": {"Env": [], "Image": c["Image"]}} for c in CONTAINERS
+}
+INSPECT["/v1.44/containers/pg/json"]["Config"]["Env"] = ["PATH=/usr/bin", "POSTGRES_DB=nextcloud"]
 
 VOLUMES = [
     {"Name": name, "CreatedAt": "2026-01-01T00:00:00Z"}
@@ -199,7 +204,7 @@ class FakeDocker:
             "/v1.44/volumes": {"Volumes": VOLUMES},
             "/v1.44/containers/json?all=1": CONTAINERS,
             "/v1.44/system/df?type=volume": DISK_USAGE,
-            "/v1.44/containers/pg/json": POSTGRES_INSPECT,
+            **INSPECT,
         }
         self.requests = []
         server.fake = self

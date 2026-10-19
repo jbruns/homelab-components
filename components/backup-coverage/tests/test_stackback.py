@@ -5,19 +5,22 @@ from backup_coverage.stackback import BackupPath, Settings, backup_paths
 OLD = 1767225600
 
 
-def container(project, service, labels=None, mounts=(), image="example/app:1"):
-    compose = {"com.docker.compose.project": project, "com.docker.compose.service": service}
-    labels = {**compose, **(labels or {})}
-    return {"Id": service, "Image": image, "Created": OLD, "Labels": labels, "Mounts": list(mounts)}
-
-
-ENV = {"db": ["POSTGRES_USER=app", "POSTGRES_DB=app"], "nodb": ["POSTGRES_USER=app"], "pg": ["POSTGRES_DB=pg"]}
 # Config.Image from container inspect, which stack-back reads; the list's Image can differ (e.g. after a re-tag).
 IMAGES = {"pg": "postgres:17", "maria": "mariadb:11", "my": "mysql:8.4", "pgoff": "postgres:17", "app": "app:1"}
 
 
+def container(project, service, labels=None, mounts=(), image="example/app:1", state="running"):
+    compose = {"com.docker.compose.project": project, "com.docker.compose.service": service}
+    labels = {**compose, **(labels or {})}
+    IMAGES.setdefault(service, image)
+    return {"Id": service, "Image": image, "Created": OLD, "State": state, "Labels": labels, "Mounts": list(mounts)}
+
+
+ENV = {"db": ["POSTGRES_USER=app", "POSTGRES_DB=app"], "nodb": ["POSTGRES_USER=app"], "pg": ["POSTGRES_DB=pg"]}
+
+
 def inspect(container_id):
-    return {"Env": ENV.get(container_id, []), "Image": IMAGES.get(container_id, "example/app:1")}
+    return {"Env": ENV.get(container_id, []), "Image": IMAGES[container_id]}
 
 
 VOLUME = {
@@ -144,3 +147,19 @@ def test_a_volume_shared_by_several_containers_is_backed_up_once_at_the_last_one
         BackupPath("volume", "ops", "worker", "/volumes/worker/srv/shared", OLD, "app_data"),
         BackupPath("database", "ops", "db", "/databases/db/app.sql", OLD, None),
     ]
+
+
+def test_a_stopped_container_never_takes_a_source_a_running_one_backs_up():
+    containers = [
+        STACK_BACK,
+        container("ops", "web", {"stack-back.volumes": "true"}, [VOLUME]),
+        container("ops", "old", {"stack-back.volumes": "true"}, [VOLUME, volume("old")], state="exited"),
+    ]
+    assert paths(containers) == ["/volumes/web/data", "/volumes/old/data"]
+
+
+def test_stack_back_is_known_by_its_configured_image_not_the_listed_one():
+    untagged = {**STACK_BACK, "Id": "untagged", "Image": "sha256:0123"}
+    IMAGES["untagged"] = "ghcr.io/lawndoc/stack-back:v1.5.4"
+    containers = [untagged, container("ops", "app", {"stack-back.volumes": "true"}, [VOLUME])]
+    assert paths(containers) == ["/volumes/app/data"]

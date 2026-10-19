@@ -44,7 +44,8 @@ CONTAINERS = {
         compose("ops", "exc", **{"stack-back.volumes": "true", "stack-back.volumes.exclude": "cache"}),
         ["ops_cache:/cache", "ops_exc:/data"],
     ),
-    # One volume in two services: stack-back backs it up once, under one service.
+    # One volume in three services: stack-back backs it up once, under one running service; "stopped" is older.
+    "stopped": (APP_IMAGE, compose("ops", "stopped", **{"stack-back.volumes": "true"}), ["ops_shared:/old"]),
     "web": (APP_IMAGE, compose("ops", "web", **{"stack-back.volumes": "true"}), ["ops_shared:/srv/www"]),
     "worker": (APP_IMAGE, compose("ops", "worker", **{"stack-back.volumes": "true"}), ["ops_shared:/data"]),
     "auto": (APP_IMAGE, compose("ops", "auto"), ["ops_auto:/auto"]),
@@ -67,6 +68,9 @@ CONTAINERS = {
     ),
 }
 
+# Kept stopped for both stack-back and this Component; every other container is treated as running.
+STOPPED = {"stopped"}
+
 ENV = {"pg": ["POSTGRES_DB=app"], "auto-pg": ["POSTGRES_DB=auto"]}
 
 # stack-back's own selection, given Docker's container inspect JSON on stdin and its container's id as argv[1].
@@ -76,7 +80,7 @@ from restic_compose_backup import containers, utils
 
 data = json.load(sys.stdin)
 for c in data:
-    c["State"]["Running"] = True
+    c["State"]["Running"] = c["Id"] not in sys.argv[2:]
 utils.list_containers = lambda: data
 socket.gethostname = lambda: sys.argv[1][:12]
 running = containers.RunningContainers()
@@ -126,6 +130,8 @@ def engine_with_containers(upstream):
             body = {"Image": image, "Cmd": ["none"], "Labels": labels, "Env": ENV.get(name, [])}
             body["HostConfig"] = {"Binds": binds}
             ids[name] = json.loads(engine(docker.url, "POST", f"/containers/create?name={name}", body))["Id"]
+        # Untagged, Docker lists stack-back by image ID; stack-back (and this Component) know it by Config.Image.
+        engine(docker.url, "DELETE", f"/images/{STACK_BACK_IMAGE}?noprune=1")
         _created[docker.url] = ids
     return docker, _created[docker.url]
 
@@ -135,7 +141,14 @@ def stack_back_paths(stack_back, docker, ids, environ):
     listed = [c["Id"] for c in json.loads(engine(docker.url, "GET", "/containers/json?all=1"))]
     inspect = [json.loads(engine(docker.url, "GET", f"/containers/{i}/json")) for i in listed]
     env = [arg for key, value in environ.items() for arg in ("--env", f"{key}={value}")]
-    command = [*stack_back.command("--entrypoint", "python", *env), "-c", STACK_BACK_SCRIPT, ids["stack-back"]]
+    stopped = [ids[name] for name in STOPPED]
+    command = [
+        *stack_back.command("--entrypoint", "python", *env),
+        "-c",
+        STACK_BACK_SCRIPT,
+        ids["stack-back"],
+        *stopped,
+    ]
     return sorted(tuple(p) for p in json.loads(run(command, json.dumps(inspect))))
 
 
@@ -145,6 +158,11 @@ def test_expects_the_paths_stack_back_backs_up(engine_with_containers, upstream,
     docker, ids = engine_with_containers
     host = docker.url.replace("http://", "tcp://")
     containers = docker_get(host, "/containers/json?all=1")
+    stopped = {ids[name] for name in STOPPED}
+    for c in containers:
+        c["State"] = "exited" if c["Id"] in stopped else "running"
+    (listed_stack_back,) = [c["Image"] for c in containers if c["Id"] == ids["stack-back"]]
+    assert listed_stack_back.startswith("sha256:")
 
     def inspect(container_id):
         return docker_get(host, f"/containers/{container_id}/json")["Config"]
