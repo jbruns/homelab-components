@@ -9,6 +9,8 @@ looks for each path in the restic repository with `restic snapshots` and `restic
   snapshot. It is due once both its container and its Docker volume predate that snapshot, so a recreate waits for
   the next backup. Its direct child count and the volume's live size tell an expected empty directory (an empty
   volume) from a lost one.
+- A volume or bind mount shared by several containers is expected once, as stack-back backs it up: under the last of
+  them in Docker's container list (the oldest).
 - A **database** path (`/databases/[project/]service/<dump>.sql`) is present when any snapshot holds it. It is due
   once its container is older than `DATABASE_DUE_AFTER`. A container is a database when its `stack-back.mariadb`,
   `stack-back.mysql` or `stack-back.postgres` label is true or, with `AUTO_BACKUP_ALL`, when its image starts with
@@ -56,7 +58,8 @@ Component can share stack-back's env file; set them as the stack-back container 
 
 restic itself reads the rest of its environment: give it the repository password with `RESTIC_PASSWORD_FILE` (or
 `RESTIC_PASSWORD`), and any backend credentials the repository needs. The repository reaches restic through its
-environment, never its command line, and logged restic errors mask it and any credentials in a URL. Its cache goes to `RESTIC_CACHE_DIR`, or
+environment, never its command line. A failed restic call is logged with its exit status and known phrases only
+(such as `wrong password or no key found`), never restic's own output, which can echo the repository URL. Its cache goes to `RESTIC_CACHE_DIR`, or
 under `$HOME/.cache`, which must be writable.
 
 The process must be able to read the Docker socket and the repository. A local repository whose files restic wrote

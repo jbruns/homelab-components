@@ -26,6 +26,12 @@ VOLUME = {
     "Source": "/var/lib/docker/volumes/app_data/_data",
     "Destination": "/data",
 }
+
+
+def volume(name):
+    return {**VOLUME, "Name": name, "Source": f"/var/lib/docker/volumes/{name}/_data"}
+
+
 BIND = {"Type": "bind", "Source": "/srv/app", "Destination": "/srv"}
 STACK_BACK = container("ops", "stack-back", image="ghcr.io/lawndoc/stack-back:v1.5.4")
 
@@ -52,9 +58,9 @@ def test_every_stack_back_project_counts_but_not_its_backup_process_containers()
         STACK_BACK,
         container("nc", "stack-back", image="ghcr.io/lawndoc/stack-back:v1.5.4"),
         process,
-        container("ops", "a", {"stack-back.volumes": "true"}, [VOLUME]),
-        container("nc", "b", {"stack-back.volumes": "true"}, [VOLUME]),
-        container("media", "c", {"stack-back.volumes": "true"}, [VOLUME]),
+        container("ops", "a", {"stack-back.volumes": "true"}, [volume("a")]),
+        container("nc", "b", {"stack-back.volumes": "true"}, [volume("b")]),
+        container("media", "c", {"stack-back.volumes": "true"}, [volume("c")]),
     ]
     assert paths(containers) == ["/volumes/a/data", "/volumes/b/data"]
 
@@ -123,3 +129,18 @@ def test_auto_backup_all_dumps_databases_by_image_and_skips_their_data_unless_op
         "/databases/app/None.sql",
     ]
     assert paths(containers) == ["/databases/app/None.sql"]
+
+
+def test_a_volume_shared_by_several_containers_is_backed_up_once_at_the_last_ones_path():
+    # stack-back maps each mount source to one destination; the last container in Docker's list (the oldest) wins.
+    shared = {**VOLUME, "Destination": "/srv/shared"}
+    containers = [
+        STACK_BACK,
+        container("ops", "web", {"stack-back.volumes": "true"}, [VOLUME]),
+        container("ops", "db", {"stack-back.postgres": "true"}),
+        container("ops", "worker", {"stack-back.volumes": "true"}, [shared]),
+    ]
+    assert backup_paths(containers, Settings(), inspect) == [
+        BackupPath("volume", "ops", "worker", "/volumes/worker/srv/shared", OLD, "app_data"),
+        BackupPath("database", "ops", "db", "/databases/db/app.sql", OLD, None),
+    ]

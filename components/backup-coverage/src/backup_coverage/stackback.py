@@ -1,8 +1,9 @@
 """The paths stack-back backs up, worked out from Docker's container list the way stack-back v1.5.4 does.
 
-Mirrors restic_compose_backup's containers.py (RunningContainers, Container.volume_backup_enabled, filter_mounts,
-get_volume_backup_destination), containers_db.py (backup_destination_path) and config.py, including its settings,
-read from the same environment variables so a site can hand this Component stack-back's own env file.
+Mirrors restic_compose_backup's containers.py (RunningContainers.generate_backup_mounts,
+Container.volume_backup_enabled, filter_mounts, get_volume_backup_destination), containers_db.py
+(backup_destination_path) and config.py, including its settings, read from the same environment variables so a site
+can hand this Component stack-back's own env file.
 
 One deliberate difference: stack-back only looks at running containers, while this counts stopped ones too, so a
 stopped service whose data is not being backed up shows up as missing.
@@ -121,11 +122,14 @@ def _once(inspect, container_id):
 def backup_paths(containers, settings, inspect):
     """Every BackupPath for the containers of Docker's `/containers/json?all=1`, in container and mount order.
 
+    Like stack-back's generate_backup_mounts(), a mount source (a volume or bind shared by several containers) is
+    backed up once, at the path of the last container in the list that backs it up, in the place of the first.
+
     `inspect(id)` is the Config of a container's `/containers/{id}/json` (its Env and Image), asked only for Postgres
     containers and, with AUTO_BACKUP_ALL, for the image of every container that might be backed up.
     """
     projects = None if settings.include_all_compose_projects else _stack_back_projects(containers)
-    paths = []
+    paths, volume_paths = [], {}
     for c in containers:
         labels = c.get("Labels") or {}
         project = labels.get(PROJECT_LABEL, "")
@@ -143,5 +147,8 @@ def backup_paths(containers, settings, inspect):
             destination = m.get("Destination", "").strip().removeprefix("/")
             path = PurePosixPath("/volumes", *prefix, service, destination)
             volume = m.get("Name") if m.get("Type") == "volume" else None
-            paths.append(BackupPath("volume", project, service, str(path), created, volume))
-    return paths
+            source = m.get("Source", "")
+            if source not in volume_paths:
+                paths.append(source)
+            volume_paths[source] = BackupPath("volume", project, service, str(path), created, volume)
+    return [volume_paths[p] if isinstance(p, str) else p for p in paths]

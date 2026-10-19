@@ -44,6 +44,9 @@ CONTAINERS = {
         compose("ops", "exc", **{"stack-back.volumes": "true", "stack-back.volumes.exclude": "cache"}),
         ["ops_cache:/cache", "ops_exc:/data"],
     ),
+    # One volume in two services: stack-back backs it up once, under one service.
+    "web": (APP_IMAGE, compose("ops", "web", **{"stack-back.volumes": "true"}), ["ops_shared:/srv/www"]),
+    "worker": (APP_IMAGE, compose("ops", "worker", **{"stack-back.volumes": "true"}), ["ops_shared:/data"]),
     "auto": (APP_IMAGE, compose("ops", "auto"), ["ops_auto:/auto"]),
     "opt-out": (APP_IMAGE, compose("ops", "optout", **{"stack-back.volumes": "false"}), ["ops_optout:/x"]),
     "pg": (APP_IMAGE, compose("ops", "pg", **{"stack-back.postgres": "true"}), []),
@@ -76,12 +79,11 @@ for c in data:
     c["State"]["Running"] = True
 utils.list_containers = lambda: data
 socket.gethostname = lambda: sys.argv[1][:12]
-paths = []
-for c in containers.RunningContainers().containers_for_backup():
+running = containers.RunningContainers()
+paths = [["volume", v["bind"]] for v in running.generate_backup_mounts().values()]
+for c in running.containers_for_backup():
     if c.database_backup_enabled:
         paths.append(["database", str(c.instance.backup_destination_path())])
-    if c.volume_backup_enabled:
-        paths += [["volume", v["bind"]] for v in c.volumes_for_backup().values()]
 print(json.dumps(paths))
 """
 
@@ -129,7 +131,9 @@ def engine_with_containers(upstream):
 
 
 def stack_back_paths(stack_back, docker, ids, environ):
-    inspect = [json.loads(engine(docker.url, "GET", f"/containers/{i}/json")) for i in ids.values()]
+    # As docker-py's containers.list(all=True): Docker's list order (newest first), each container inspected.
+    listed = [c["Id"] for c in json.loads(engine(docker.url, "GET", "/containers/json?all=1"))]
+    inspect = [json.loads(engine(docker.url, "GET", f"/containers/{i}/json")) for i in listed]
     env = [arg for key, value in environ.items() for arg in ("--env", f"{key}={value}")]
     command = [*stack_back.command("--entrypoint", "python", *env), "-c", STACK_BACK_SCRIPT, ids["stack-back"]]
     return sorted(tuple(p) for p in json.loads(run(command, json.dumps(inspect))))
