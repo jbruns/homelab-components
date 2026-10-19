@@ -14,7 +14,7 @@ import urllib.request
 
 import pytest
 
-from backup_coverage.exporter import Config, collect, docker_get
+from backup_coverage.exporter import Config, Exporter, collect, docker_get
 from backup_coverage.stackback import Settings, backup_paths
 
 APP_IMAGE = "contract/app:1"
@@ -211,3 +211,21 @@ def test_reports_coverage_from_a_real_repository(engine_with_containers, upstrea
     assert float(series("backup_coverage_snapshot_timestamp", *db)) > 0
     assert series("backup_coverage_snapshot_timestamp", *pg) == "0"
     assert series("backup_coverage_snapshot_timestamp", *app) == series("backup_coverage_snapshot_timestamp", *conf)
+
+
+@pytest.mark.contract
+def test_a_malformed_repository_url_never_reaches_the_log(engine_with_containers, upstream, tmp_path, capsys):
+    docker, _ = engine_with_containers
+    command = restic_command(upstream("restic"), tmp_path, "--env", "RESTIC_REPOSITORY")
+    # Invalid userinfo: restic rewrites the URL (drops rest:, appends /) before echoing it in its error.
+    repository = "rest:https://demo:synthetic secret@127.0.0.1:1/repo"
+    config = Config(
+        restic_repository=repository,
+        docker_host=docker.url.replace("http://", "tcp://"),
+        stack_back=Settings.from_env(SETTINGS["home-ops"]),
+        restic_command=tuple(command),
+    )
+    Exporter(config).refresh()
+    out, err = capsys.readouterr()
+    assert "check failed: RuntimeError: restic snapshots exited 1" in err
+    assert "synthetic" not in out + err and "demo" not in out + err

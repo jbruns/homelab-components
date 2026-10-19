@@ -13,7 +13,6 @@ tells an empty snapshot directory that is expected (the volume is empty) from on
 import http.client
 import json
 import os
-import re
 import socket
 import subprocess
 import sys
@@ -33,6 +32,19 @@ DOCKER_TIMEOUT = 30
 # Docker walks every volume to size it, which can take tens of seconds.
 DOCKER_DISK_USAGE_TIMEOUT = 300
 RESTIC_TIMEOUT = 1800
+# Fixed phrases from restic's errors, safe to log because only the phrase is logged, never the line holding it.
+RESTIC_HINTS = (
+    "wrong password or no key found",
+    "repository does not exist",
+    "unable to open config file",
+    "unable to create lock",
+    "invalid userinfo",
+    "connection refused",
+    "no such host",
+    "permission denied",
+    "certificate",
+    "timeout",
+)
 
 HELP = {
     "backup_coverage_expected": "Path stack-back is configured to back up.",
@@ -109,8 +121,8 @@ def docker_get(host, path, timeout=DOCKER_TIMEOUT):
 def restic(config, *args):
     """The JSON lines restic prints for `args`, read-only (--no-lock) against the configured repository.
 
-    The repository goes to restic in RESTIC_REPOSITORY, never on its command line, and errors never repeat it: its
-    URL can hold credentials.
+    The repository goes to restic in RESTIC_REPOSITORY, never on its command line. Errors never carry restic's own
+    output, which can echo the repository URL and its credentials; only the RESTIC_HINTS it matches.
     """
     command = [*config.restic_command, "--no-lock", "--json", *args]
     env = {**os.environ, "RESTIC_REPOSITORY": config.restic_repository}
@@ -121,22 +133,9 @@ def restic(config, *args):
     except (OSError, subprocess.SubprocessError) as e:
         raise RuntimeError(f"restic {args[0]} did not run: {type(e).__name__}") from None
     if result.returncode != 0:
-        error = _restic_error(result.stderr).replace(config.restic_repository, "<RESTIC_REPOSITORY>")
-        error = re.sub(r"://[^/@\s]+@", "://<credentials>@", error)
-        raise RuntimeError(f"restic {args[0]} exited {result.returncode}: {error}")
+        hints = [hint for hint in RESTIC_HINTS if hint in result.stderr]
+        raise RuntimeError(f"restic {args[0]} exited {result.returncode}" + (f" ({'; '.join(hints)})" if hints else ""))
     return [json.loads(line) for line in result.stdout.splitlines() if line.startswith(("{", "["))]
-
-
-def _restic_error(stderr):
-    """The first line of restic's last error; with --json, restic 0.17+ prints it as a JSON exit_error."""
-    lines = stderr.strip().splitlines()
-    if not lines:
-        return ""
-    try:
-        message = json.loads(lines[-1])["message"]
-    except (ValueError, KeyError, TypeError):
-        message = lines[-1]
-    return message.splitlines()[0] if message else ""
 
 
 def _timestamp(rfc3339):

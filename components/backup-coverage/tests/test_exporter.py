@@ -325,7 +325,7 @@ def test_a_failed_check_raises_naming_the_upstream(docker, restic, failure):
         del docker.answers["/v1.44/volumes"]
     else:
         restic.answers["fail"] = True
-    with pytest.raises(RuntimeError, match=f"^{failure}.*(HTTP 404|exited 1: Fatal: unable to open repository)"):
+    with pytest.raises(RuntimeError, match=f"^{failure}.*(HTTP 404|exited 1 \\(connection refused\\))$"):
         collect(config(docker, restic))
 
 
