@@ -2,7 +2,7 @@
 upstreams:
   # The Docker Engine API (containers, volumes, volume disk usage), at the API version in exporter.DOCKER_API.
   docker:
-    image: docker:29.7.2-dind@sha256:3ef33f2e220b79ed3ef3b99d81746f06f306cd6340e2cb7331d17ae996e74cb6
+    image: docker:28.3.1-dind@sha256:4dd2f7e405b1a10fda628f22cd466be1e3be2bcfc46db653ab620e02eeed5794
     port: 2375
     privileged: true
     env:
