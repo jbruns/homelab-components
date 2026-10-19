@@ -52,19 +52,19 @@ ascending() { awk -v lo="$1" -v hi="$2" 'BEGIN { for (i = lo; i <= hi; i++) prin
 
 log() { echo "$(date '+%Y-%m-%dT%H:%M:%S%z') $*"; }
 
-# name<TAB>level for every container, running or not.
+# name<TAB>level for every container, running or not; fails when docker does.
 inventory() {
-    docker ps -a --format "{{.Names}}	{{.Label \"$LABEL\"}}" 2>/dev/null |
-        awk -F'\t' -v d="$DEFAULT_LEVEL" -v max="$MAX_LEVEL" '
-            $2 == "skip" { next }
-            { l = $2; if (l !~ /^(0|[1-9][0-9]*)$/ || l + 0 > max + 0) l = d; print $1 "\t" l + 0 }'
+    containers=$(docker ps -a --format "{{.Names}}	{{.Label \"$LABEL\"}}" 2>/dev/null) || return 1
+    printf '%s\n' "$containers" | awk -F'\t' -v d="$DEFAULT_LEVEL" -v max="$MAX_LEVEL" '
+        $1 == "" || $2 == "skip" { next }
+        { l = $2; if (l !~ /^(0|[1-9][0-9]*)$/ || l + 0 > max + 0) l = d; print $1 "\t" l + 0 }'
 }
 
 running() { docker ps --format '{{.Names}}' 2>/dev/null | sort; }
 
-# Names from $1 (newline list) whose level is $2.
+# Names from $1 (newline list) whose level is $2, per the inventory in $3 (default: a fresh one).
 at_level() {
-    inventory | WANT=$1 awk -F'\t' -v lvl="$2" '
+    { if [ $# -ge 3 ]; then printf '%s\n' "$3"; else inventory; fi; } | WANT=$1 awk -F'\t' -v lvl="$2" '
         BEGIN { n = split(ENVIRON["WANT"], w, "\n"); for (i = 1; i <= n; i++) if (w[i] != "") t[w[i]] = 1 }
         $2 == lvl && ($1 in t) { print $1 }'
 }
@@ -121,41 +121,54 @@ take_lock() {
     trap 'exit 143' TERM
 }
 
+# Leave the state file for the next run and fail; for errors that may leave targets stopped.
+abort() { log "run: $*; keeping $STATE for the next run"; exit 1; }
+
 cmd_run() {
     mkdir -p "$BASE"
     take_lock 2>/dev/null || { log "run: another run holds $LOCK"; return 1; }
     log "run: waiting for Docker"
     wait_docker || { log "run: Docker not ready after ${DOCKER_WAIT}s, giving up"; return 1; }
     [ "$DRY" = 1 ] || wait_settle
-    now=$(running)
+    now=$(docker ps --format '{{.Names}}' 2>/dev/null) || abort "cannot list running containers"
+    now=$(printf '%s\n' "$now" | sort)
+    inv=$(inventory) || abort "cannot list containers"
     saved=$(cat "$STATE" 2>/dev/null)
     # Names recorded at shutdown that no longer exist (e.g. --rm containers) are dropped by at_level.
     targets=$(printf '%s\n%s\n' "$now" "$saved" | sed '/^$/d' | sort -u)
     log "run: $(printf '%s\n' "$targets" | grep -c .) targets ($(printf '%s\n' "$now" | grep -c .) already running, state file: $([ -n "$saved" ] && echo yes || echo no))"
 
     # Persist every target before stopping anything, so a run interrupted mid-reorder leaves the next run a full
-    # recovery set. The state is removed only when this run finishes.
+    # recovery set. The state is removed only once every target is running.
     if [ "$DRY" != 1 ] && [ -n "$targets" ]; then
-        printf '%s\n' "$targets" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+        { printf '%s\n' "$targets" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"; } 2>/dev/null ||
+            { log "run: cannot save recovery state to $STATE; stopping nothing"; return 1; }
     fi
 
     # dockerd's restart policy started containers in no particular order; restart those at
     # STARTUP_ORDER_REORDER_FROM and above so they come up after what they depend on.
     for lvl in $(descending "$MAX_LEVEL" "$REORDER_FROM"); do
-        names=$(at_level "$now" "$lvl" | tr '\n' ' ')
+        names=$(at_level "$now" "$lvl" "$inv" | tr '\n' ' ')
         [ -n "$names" ] || continue
         log "run: stopping level $lvl for reorder: $names"
+        [ "$DRY" = 1 ] && continue
         # shellcheck disable=SC2086
-        [ "$DRY" = 1 ] || docker stop $names >/dev/null 2>&1 || log "run: stop errors at level $lvl"
+        docker stop $names >/dev/null 2>&1 || {
+            docker info >/dev/null 2>&1 || abort "Docker became unavailable"
+            log "run: stop errors at level $lvl"
+        }
     done
 
     for lvl in $(ascending 0 "$MAX_LEVEL"); do
-        names=$(at_level "$targets" "$lvl" | tr '\n' ' ')
+        names=$(at_level "$targets" "$lvl" "$inv" | tr '\n' ' ')
         [ -n "$names" ] || continue
         log "run: starting level $lvl: $names"
         [ "$DRY" = 1 ] && continue
         # shellcheck disable=SC2086
-        docker start $names >/dev/null 2>&1 || log "run: start errors at level $lvl"
+        docker start $names >/dev/null 2>&1 || {
+            docker info >/dev/null 2>&1 || abort "Docker became unavailable"
+            log "run: start errors at level $lvl"
+        }
         waited=0
         while :; do
             pending=""
@@ -169,7 +182,15 @@ cmd_run() {
         done
     done
 
-    [ "$DRY" = 1 ] || rm -f "$STATE"
+    [ "$DRY" = 1 ] && { log "run: done"; return 0; }
+    # Unhealthy is a warning (above); a target that still exists but is not running is a failure.
+    now=$(docker ps --format '{{.Names}}' 2>/dev/null) || abort "cannot confirm what is running"
+    inv=$(inventory) || abort "cannot confirm what is running"
+    missing=$(for lvl in $(ascending 0 "$MAX_LEVEL"); do at_level "$targets" "$lvl" "$inv"; done |
+        NOW=$now awk 'BEGIN { n = split(ENVIRON["NOW"], r, "\n"); for (i = 1; i <= n; i++) up[r[i]] = 1 }
+            !($0 in up) { printf "%s ", $0 }')
+    [ -z "$missing" ] || abort "not started: $missing"
+    rm -f "$STATE"
     log "run: done"
 }
 

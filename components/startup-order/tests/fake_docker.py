@@ -2,9 +2,10 @@
 
 It answers only the commands startup-order.sh runs (info, ps, inspect, start, stop) from a JSON state file
 ($FAKE_DOCKER_STATE) and appends each start/stop to a call log ($FAKE_DOCKER_CALLS). FAKE_DOCKER_SLOW=<command>=<s>
-makes that command take s seconds after it has acted. The Contract Tests run the same behaviours against a real engine.
+makes that command take s seconds after it has acted; FAKE_DOCKER_DOWN_AFTER=<command> takes the daemon down once
+that command has acted. The Contract Tests run the same behaviours against a real engine.
 
-State: {"up": bool, "containers": [{"name", "labels", "running", "healthcheck", "healthy_on_start"}]}
+State: {"up": bool, "containers": [{"name", "labels", "running", "healthcheck", "healthy_on_start", "start_fails"}]}
 """
 
 import json
@@ -49,9 +50,15 @@ def main(args):
                 print(f"Error response from daemon: No such container: {name}", file=sys.stderr)
                 rc = 1
                 continue
+            if command == "start" and c.get("start_fails"):
+                print(f"Error response from daemon: failed to start {name}", file=sys.stderr)
+                rc = 1
+                continue
             c["running"] = command == "start"
             if command == "start" and c.get("healthcheck"):
                 c["health"] = "healthy" if c.get("healthy_on_start", True) else "starting"
+        if os.environ.get("FAKE_DOCKER_DOWN_AFTER") == command:
+            state["up"] = False
         with open(state_path, "w") as f:
             json.dump(state, f)
         slow, _, seconds = os.environ.get("FAKE_DOCKER_SLOW", "").partition("=")

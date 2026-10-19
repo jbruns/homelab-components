@@ -43,6 +43,10 @@ class FakeHost:
             ["sh", str(SCRIPT), *args], env={**self.env, **env}, capture_output=True, text=True, timeout=60
         )
 
+    def daemon(self, up):
+        state = json.loads(self.state_file.read_text())
+        self.state_file.write_text(json.dumps({**state, "up": up}))
+
     def calls(self):
         return self.calls_file.read_text().splitlines() if self.calls_file.exists() else []
 
@@ -202,6 +206,7 @@ def test_run_warns_and_moves_on_when_a_level_is_not_healthy_in_time(host):
     assert result.returncode == 0
     assert "run: WARNING level 1 not ready after 0s: db; continuing" in result.stdout
     assert host.calls() == ["start db", "start app"]
+    assert not (host.dir / "state").exists()
 
 
 def test_plan_reports_what_run_would_do_and_changes_nothing(host):
@@ -279,6 +284,44 @@ def test_a_run_terminated_mid_reorder_leaves_what_it_stopped_for_the_next_run(ho
     assert result.returncode == 0, result.stdout
     assert host.running() == ["app", "db"]
     assert not (host.dir / "state").exists()
+
+
+def test_run_stops_nothing_when_it_cannot_save_the_recovery_state(host):
+    recorded(host, "db")
+    (host.dir / "state.tmp").mkdir()
+    host.containers(container("db", 1, running=False), container("app", 2))
+    result = host.run("run")
+    assert result.returncode == 1
+    assert "run: cannot save recovery state" in result.stdout
+    assert host.calls() == []
+    assert (host.dir / "state").read_text() == "db\n"
+
+
+def test_a_daemon_lost_mid_run_keeps_the_recovery_state_for_the_next_run(host):
+    recorded(host, "edge")
+    host.containers(container("edge", 0, running=False), container("db", 1), container("app", 2))
+    result = host.run("run", FAKE_DOCKER_DOWN_AFTER="stop")
+    assert result.returncode == 1, result.stdout
+    assert "run: done" not in result.stdout
+    assert host.calls() == ["stop app"]
+    assert (host.dir / "state").read_text().split() == ["app", "db", "edge"]
+
+    host.daemon(up=True)
+    result = host.run("run")
+    assert result.returncode == 0, result.stdout
+    assert host.running() == ["app", "db", "edge"]
+    assert not (host.dir / "state").exists()
+
+
+def test_a_container_that_fails_to_start_keeps_the_state_and_fails_the_run(host):
+    recorded(host, "db", "app")
+    host.containers(container("db", 1, running=False, start_fails=True), container("app", 2, running=False))
+    result = host.run("run", STARTUP_ORDER_LEVEL_TIMEOUT="0")
+    assert result.returncode == 1
+    assert "run: start errors at level 1" in result.stdout
+    assert "run: not started: db" in result.stdout
+    assert host.calls() == ["start db", "start app"]
+    assert (host.dir / "state").read_text().split() == ["app", "db"]
 
 
 def test_run_requires_flock(tmp_path):

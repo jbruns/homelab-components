@@ -59,15 +59,21 @@ startup-order.sh plan    # print what `run` would do, changing nothing
 
 At boot, `run` starts every container that is running now or was recorded at the last `stop`; a recorded name that
 no longer exists is dropped. Containers already running at `STARTUP_ORDER_REORDER_FROM` and above are stopped first
-so they come back after the levels below them. Before stopping anything, `run` writes every target to the state
-file, and removes it only when it finishes, so a run interrupted mid-reorder leaves the next run what it stopped. A
-level that is not ready within `STARTUP_ORDER_LEVEL_TIMEOUT` logs a `WARNING` and the next level starts anyway.
+so they come back after the levels below them. A level that is not ready within `STARTUP_ORDER_LEVEL_TIMEOUT` logs
+a `WARNING` and the next level starts anyway; an unhealthy but running container does not fail the run.
+
+Before stopping anything, `run` writes every target to the state file; if it cannot, it stops nothing and exits 1.
+It deletes the state file only once every target that still exists is running. When Docker fails (it cannot list
+containers, or goes away after a `stop`/`start` error) or a target is still not running at the end, `run` logs why,
+keeps the state file and exits 1, so the next run (or the next boot) starts what it left stopped. The same holds for
+a run that is interrupted.
 
 `run` holds an exclusive `flock` on `run.lock` (`plan` on `plan.lock`), so two runs never overlap. The kernel drops
 the lock when the run exits, is killed or the Host reboots, so a crash never leaves a lock to clear by hand.
 
-Exit status: 0 on success, 1 when Docker never answered or another run holds the lock, 2 for a bad command, an
-invalid setting or missing `flock`, 130/143 when interrupted.
+Exit status: 0 on success; 1 when Docker never answered or failed, a target is not running, the state cannot be
+saved, or another run holds the lock; 2 for a bad command, an invalid setting or missing `flock`; 130/143 when
+interrupted.
 
 Logs, all under `STARTUP_ORDER_DIR`: `shutdown.log` (appended by `stop`), `last.log` (the latest `start`). `run` and
 `plan` log to stdout.
