@@ -1,0 +1,21 @@
+# Upstreams this Component calls; see components/_template/upstreams.yaml for the fields.
+upstreams:
+  # The Docker Engine API (containers, volumes, volume disk usage), at the API version in exporter.DOCKER_API.
+  docker:
+    image: docker:28.3.1-dind@sha256:4dd2f7e405b1a10fda628f22cd466be1e3be2bcfc46db653ab620e02eeed5794
+    port: 2375
+    privileged: true
+    env:
+      DOCKER_TLS_CERTDIR: ""
+    ready_path: /_ping
+  # The restic CLI the image ships (Dockerfile copies it from this same image; keep the two pins together).
+  restic:
+    image: restic/restic:0.19.0@sha256:7f44e0057b82348597568ea209360762d0b38f8e1dbc8ad859661ac1055e45f2
+    env:
+      RESTIC_PASSWORD: contract-test
+  # stack-back's own code, run on the Contract Test's containers, decides which paths it backs up.
+  stack-back:
+    image: ghcr.io/lawndoc/stack-back:v1.5.4@sha256:adb0cf2c55223773f0e05956e74faae78c1332295559c4d625c0cb1280ee13d3
+    env:
+      RESTIC_REPOSITORY: /unused
+      RESTIC_PASSWORD: unused

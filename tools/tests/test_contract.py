@@ -29,3 +29,15 @@ def test_a_started_upstream_names_its_container_so_tests_can_seed_it():
         assert docker("inspect", "--format", "{{.State.Running}}", running.container) == "true"
     finally:
         remove_container(container)
+
+
+def test_a_cli_upstream_starts_no_container_and_runs_its_image_once_per_command():
+    repository, tag_digest = IMAGE.split(":", 1)
+    tag, digest = tag_digest.split("@")
+    spec = Upstream(name="cli", repository=repository, tag=tag, digest=digest, port=None, env={"A": "1"})
+    container, cli = _start(spec)
+    assert container is None
+    assert cli.url is None
+    assert cli.command("--volume", "/x:/y") == [
+        "docker", "run", "--rm", "--interactive", "--env", "A=1", "--volume", "/x:/y", IMAGE
+    ]  # fmt: skip

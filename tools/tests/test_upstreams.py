@@ -72,3 +72,13 @@ def test_an_upstream_must_pin_both_tag_and_digest(tmp_path, image):
     component = write_upstreams(tmp_path / "demo", f"upstreams:\n  whoami:\n    image: {image}\n    port: 80\n")
     with pytest.raises(ValueError, match="whoami.*tag@sha256"):
         load_upstreams(component)
+
+
+def test_an_upstream_without_a_port_is_a_cli(tmp_path):
+    component = write_upstreams(
+        tmp_path / "demo",
+        f"upstreams:\n  restic:\n    image: restic/restic:0.19.0@{DIGEST}\n    env:\n      RESTIC_PASSWORD: x\n",
+    )
+    (restic,) = load_upstreams(component)
+    assert restic.port is None
+    assert restic.env == {"RESTIC_PASSWORD": "x"}

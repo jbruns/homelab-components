@@ -9,6 +9,9 @@ A test marked `contract` asks for an upstream by its name in the Component's `up
         sonarr.env   # env from upstreams.yaml, e.g. the API key the container was started with
         sonarr.container   # container ID, e.g. to `docker exec` test data into the upstream
 
+An upstream declared without a `port` is a CLI (e.g. restic): nothing starts, and `.command(*docker_options)` is
+the argv that runs its image once with its env, e.g. `restic.command("--volume", f"{repo}:/repo") + ["init"]`.
+
 The container runs from the pinned image, or from the image a Canary names (tools/upstreams.contract_image).
 It starts once per test session and is removed at the end.
 """
@@ -32,9 +35,13 @@ READY_TIMEOUT = float(os.environ.get("CONTRACT_READY_TIMEOUT", "180"))
 class RunningUpstream:
     name: str
     image: str
-    url: str
+    url: str | None
     env: dict
-    container: str
+    container: str | None
+
+    def command(self, *docker_options):
+        """argv running this upstream's image once, with its env and any extra `docker run` options."""
+        return ["docker", "run", "--rm", "--interactive", *_env_options(self.env), *docker_options, self.image]
 
 
 def _docker(*args):
@@ -62,9 +69,16 @@ def _wait_ready(url, container):
     pytest.fail(f"upstream at {url} not ready after {READY_TIMEOUT:.0f}s; last logs:\n{logs.stdout}{logs.stderr}")
 
 
+def _env_options(env):
+    return [arg for key, value in env.items() for arg in ("--env", f"{key}={value}")]
+
+
 def _start(spec):
     image = contract_image(spec, os.environ)
-    options = [arg for key, value in spec.env.items() for arg in ("--env", f"{key}={value}")]
+    if spec.port is None:
+        _docker("pull", "--quiet", image)
+        return None, RunningUpstream(name=spec.name, image=image, url=None, env=dict(spec.env), container=None)
+    options = _env_options(spec.env)
     if spec.privileged:
         options.append("--privileged")
     container = _docker("run", "--detach", "--publish", f"127.0.0.1::{spec.port}", *options, image)
@@ -83,7 +97,8 @@ def _running_upstreams():
     running = {}
     yield running
     for container, _ in running.values():
-        remove_container(container)
+        if container:
+            remove_container(container)
 
 
 @pytest.fixture
