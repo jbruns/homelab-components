@@ -1,0 +1,11 @@
+# Upstreams this Component calls (fields documented in components/_template/upstreams.yaml). startup-order drives
+# the Docker CLI against the Host's Docker Engine; the Contract Tests run it inside a pinned dind container. Pin the
+# version the Host runs (TrueNAS ships its own Docker); the Canary tries newer X.Y.Z-dind tags.
+upstreams:
+  docker:
+    image: docker:28.3.1-dind@sha256:4dd2f7e405b1a10fda628f22cd466be1e3be2bcfc46db653ab620e02eeed5794
+    port: 2375
+    privileged: true
+    ready_path: /_ping
+    env:
+      DOCKER_TLS_CERTDIR: ""
