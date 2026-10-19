@@ -139,10 +139,10 @@ def collect(config):
     now = time.time()
     containers = docker_get(config.docker_host, "/containers/json?all=1")
 
-    def container_env(container_id):
-        return docker_get(config.docker_host, f"/containers/{container_id}/json")["Config"]["Env"] or []
+    def inspect(container_id):
+        return docker_get(config.docker_host, f"/containers/{container_id}/json")["Config"]
 
-    expected = backup_paths(containers, config.stack_back, container_env)
+    expected = backup_paths(containers, config.stack_back, inspect)
     volume_created = {
         v["Name"]: _timestamp(v["CreatedAt"]) for v in docker_get(config.docker_host, "/volumes")["Volumes"] or []
     }

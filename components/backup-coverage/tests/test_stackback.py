@@ -11,7 +11,13 @@ def container(project, service, labels=None, mounts=(), image="example/app:1"):
     return {"Id": service, "Image": image, "Created": OLD, "Labels": labels, "Mounts": list(mounts)}
 
 
-ENV = {"db": ["POSTGRES_USER=app", "POSTGRES_DB=app"], "nodb": ["POSTGRES_USER=app"]}
+ENV = {"db": ["POSTGRES_USER=app", "POSTGRES_DB=app"], "nodb": ["POSTGRES_USER=app"], "pg": ["POSTGRES_DB=pg"]}
+# Config.Image from container inspect, which stack-back reads; the list's Image can differ (e.g. after a re-tag).
+IMAGES = {"pg": "postgres:17", "maria": "mariadb:11", "my": "mysql:8.4", "pgoff": "postgres:17", "app": "app:1"}
+
+
+def inspect(container_id):
+    return {"Env": ENV.get(container_id, []), "Image": IMAGES.get(container_id, "example/app:1")}
 
 
 VOLUME = {
@@ -25,7 +31,7 @@ STACK_BACK = container("ops", "stack-back", image="ghcr.io/lawndoc/stack-back:v1
 
 
 def paths(containers, **environ):
-    return [p.path for p in backup_paths(containers, Settings.from_env(environ), ENV.get)]
+    return [p.path for p in backup_paths(containers, Settings.from_env(environ), inspect)]
 
 
 def test_by_default_backs_up_bind_mounts_too_and_only_stack_backs_own_project_without_its_name():
@@ -34,7 +40,7 @@ def test_by_default_backs_up_bind_mounts_too_and_only_stack_backs_own_project_wi
         container("ops", "app", {"stack-back.volumes": "true"}, [VOLUME, BIND]),
         container("media", "other", {"stack-back.volumes": "true"}, [VOLUME]),
     ]
-    assert backup_paths(containers, Settings(), ENV.get) == [
+    assert backup_paths(containers, Settings(), inspect) == [
         BackupPath("volume", "ops", "app", "/volumes/app/data", OLD, "app_data"),
         BackupPath("volume", "ops", "app", "/volumes/app/srv", OLD, None),
     ]
@@ -95,3 +101,25 @@ def test_dumps_mariadb_and_mysql_whole_and_postgres_as_its_one_database():
         "/databases/db/app.sql",
         "/databases/nodb/None.sql",
     ]
+
+
+def test_auto_backup_all_dumps_databases_by_image_and_skips_their_data_unless_opted_out():
+    data = {"Type": "volume", "Name": "db", "Source": "/x/db", "Destination": "/var/lib/postgresql/data"}
+    mysql = {"Type": "volume", "Name": "my", "Source": "/x/my", "Destination": "/var/lib/mysql"}
+    containers = [
+        STACK_BACK,
+        container("ops", "pg", mounts=[data, VOLUME], image="sha256:0123"),
+        container("ops", "maria", mounts=[mysql]),
+        container("ops", "my", mounts=[mysql]),
+        container("ops", "pgoff", {"stack-back.postgres": "false"}, [data]),
+        container("ops", "app", {"stack-back.postgres": "true"}),
+    ]
+    assert paths(containers, AUTO_BACKUP_ALL="true") == [
+        "/databases/pg/pg.sql",
+        "/volumes/pg/data",
+        "/databases/maria/all_databases.sql",
+        "/databases/my/all_databases.sql",
+        "/volumes/pgoff/var/lib/postgresql/data",
+        "/databases/app/None.sql",
+    ]
+    assert paths(containers) == ["/databases/app/None.sql"]

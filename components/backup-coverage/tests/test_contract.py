@@ -47,6 +47,15 @@ CONTAINERS = {
     "auto": (APP_IMAGE, compose("ops", "auto"), ["ops_auto:/auto"]),
     "opt-out": (APP_IMAGE, compose("ops", "optout", **{"stack-back.volumes": "false"}), ["ops_optout:/x"]),
     "pg": (APP_IMAGE, compose("ops", "pg", **{"stack-back.postgres": "true"}), []),
+    # Without a label, only AUTO_BACKUP_ALL dumps these, by image name, and skips their data dirs.
+    "auto-pg": ("postgres:17", compose("ops", "autopg"), ["ops_autopg:/var/lib/postgresql/data", "ops_autopg_x:/x"]),
+    "auto-mariadb": ("mariadb:11", compose("ops", "automaria"), ["ops_automaria:/var/lib/mysql"]),
+    "auto-mysql": ("mysql:8.4", compose("ops", "automysql"), ["ops_automysql:/var/lib/mysql"]),
+    "pg-opt-out": (
+        "postgres:17",
+        compose("ops", "pgoff", **{"stack-back.postgres": "false"}),
+        ["ops_pgoff:/var/lib/postgresql/data"],
+    ),
     "other-project": (APP_IMAGE, compose("media", "other", **{"stack-back.volumes": "true"}), ["media_other:/data"]),
     "one-off": (
         APP_IMAGE,
@@ -55,7 +64,7 @@ CONTAINERS = {
     ),
 }
 
-ENV = {"pg": ["POSTGRES_DB=app"]}
+ENV = {"pg": ["POSTGRES_DB=app"], "auto-pg": ["POSTGRES_DB=auto"]}
 
 # stack-back's own selection, given Docker's container inspect JSON on stdin and its container's id as argv[1].
 STACK_BACK_SCRIPT = """
@@ -107,7 +116,9 @@ def engine_with_containers(upstream):
     if docker.url not in _created:
         tar = empty_image_tar()
         engine(docker.url, "POST", "/images/create?fromSrc=-&repo=contract/app&tag=1", tar, "application/x-tar")
-        engine(docker.url, "POST", "/images/contract/app:1/tag?repo=contract/stack-back&tag=1")
+        for image in {image for image, _, _ in CONTAINERS.values()} - {APP_IMAGE}:
+            repo, tag = image.split(":")
+            engine(docker.url, "POST", f"/images/{APP_IMAGE}/tag?repo={repo}&tag={tag}")
         ids = {}
         for name, (image, labels, binds) in CONTAINERS.items():
             body = {"Image": image, "Cmd": ["none"], "Labels": labels, "Env": ENV.get(name, [])}
@@ -131,10 +142,10 @@ def test_expects_the_paths_stack_back_backs_up(engine_with_containers, upstream,
     host = docker.url.replace("http://", "tcp://")
     containers = docker_get(host, "/containers/json?all=1")
 
-    def container_env(container_id):
-        return docker_get(host, f"/containers/{container_id}/json")["Config"]["Env"]
+    def inspect(container_id):
+        return docker_get(host, f"/containers/{container_id}/json")["Config"]
 
-    ours = sorted((p.kind, p.path) for p in backup_paths(containers, Settings.from_env(environ), container_env))
+    ours = sorted((p.kind, p.path) for p in backup_paths(containers, Settings.from_env(environ), inspect))
     assert ours == stack_back_paths(upstream("stack-back"), docker, ids, environ)
     assert ours  # the comparison means something only when stack-back backs something up
 

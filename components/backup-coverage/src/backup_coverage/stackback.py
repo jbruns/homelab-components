@@ -8,13 +8,14 @@ One deliberate difference: stack-back only looks at running containers, while th
 stopped service whose data is not being backed up shows up as missing.
 """
 
+import functools
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 TRUE_VALUES = {"1", "true", "True", "TRUE"}
 FALSE_VALUES = {"0", "false", "False", "FALSE"}
-# A container with several of these is dumped as the first.
-DATABASE_LABELS = ("stack-back.mariadb", "stack-back.mysql", "stack-back.postgres")
+# stack-back's database kinds, each its label suffix and image prefix; a container with several is dumped as the first.
+DATABASES = ("mariadb", "mysql", "postgres")
 DATABASE_MOUNTS = {"/var/lib/mysql", "/var/lib/mariadb", "/var/lib/postgresql/data"}
 PROJECT_LABEL = "com.docker.compose.project"
 SERVICE_LABEL = "com.docker.compose.service"
@@ -94,18 +95,34 @@ def _mounts_for_backup(labels, mounts, settings, is_database):
     return [m for m in mounts if not (is_database and m.get("Destination") in DATABASE_MOUNTS)]
 
 
-def _dump_name(container, labels, container_env):
+def _database(labels, settings, config):
+    """The database stack-back dumps: one labelled true, or with AUTO_BACKUP_ALL one whose image (Config.Image)
+    starts with its name, unless labelled false. `config()` is asked only with AUTO_BACKUP_ALL."""
+    for kind in DATABASES:
+        label = labels.get(f"stack-back.{kind}")
+        automatic = settings.auto_backup_all and label not in FALSE_VALUES
+        if label in TRUE_VALUES or (automatic and (config()["Image"] or "").startswith(kind)):
+            return kind
+    return None
+
+
+def _dump_name(database, config):
     """stack-back dumps MariaDB and MySQL whole, and Postgres as the one database in the container's POSTGRES_DB."""
-    if labels.get("stack-back.mariadb") in TRUE_VALUES or labels.get("stack-back.mysql") in TRUE_VALUES:
+    if database != "postgres":
         return "all_databases.sql"
-    env = dict(entry.partition("=")[::2] for entry in container_env(container["Id"]))
+    env = dict(entry.partition("=")[::2] for entry in config()["Env"] or [])
     return f"{env.get('POSTGRES_DB')}.sql"  # stack-back writes "None.sql" when it is unset
 
 
-def backup_paths(containers, settings, container_env):
+def _once(inspect, container_id):
+    return functools.cache(lambda: inspect(container_id))
+
+
+def backup_paths(containers, settings, inspect):
     """Every BackupPath for the containers of Docker's `/containers/json?all=1`, in container and mount order.
 
-    `container_env(id)` is a container's environment (["NAME=value", ...]), asked only for Postgres containers.
+    `inspect(id)` is the Config of a container's `/containers/{id}/json` (its Env and Image), asked only for Postgres
+    containers and, with AUTO_BACKUP_ALL, for the image of every container that might be backed up.
     """
     projects = None if settings.include_all_compose_projects else _stack_back_projects(containers)
     paths = []
@@ -117,11 +134,12 @@ def backup_paths(containers, settings, container_env):
         service = labels.get(SERVICE_LABEL, "")
         prefix = [project] if settings.include_project_name and project else []
         created = float(c["Created"])
-        is_database = any(labels.get(label) in TRUE_VALUES for label in DATABASE_LABELS)
-        if is_database:
-            path = PurePosixPath("/databases", *prefix, service, _dump_name(c, labels, container_env))
+        config = _once(inspect, c["Id"])
+        database = _database(labels, settings, config)
+        if database:
+            path = PurePosixPath("/databases", *prefix, service, _dump_name(database, config))
             paths.append(BackupPath("database", project, service, str(path), created, None))
-        for m in _mounts_for_backup(labels, c.get("Mounts") or [], settings, is_database):
+        for m in _mounts_for_backup(labels, c.get("Mounts") or [], settings, database is not None):
             destination = m.get("Destination", "").strip().removeprefix("/")
             path = PurePosixPath("/volumes", *prefix, service, destination)
             volume = m.get("Name") if m.get("Type") == "volume" else None
