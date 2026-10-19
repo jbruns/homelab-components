@@ -1,0 +1,26 @@
+# Upstreams this Component calls. Contract Tests start each one from its pinned image; Renovate bumps the pin
+# (and that PR's Contract Tests gate it). The weekly Canary tries the newest stable tag with the same shape as
+# the pinned tag (same `v` prefix, number of version parts and variant suffix).
+#
+#   <name>:            used by tests as upstream("<name>") and in Canary issue titles
+#     image:           repository:tag@sha256:digest   (digest required)
+#     port:            container port the Component talks to; published on 127.0.0.1 for tests
+#     env:             optional container env, e.g. a fixed API key; tests read it back as .env
+#     ready_path:      optional HTTP path polled until it answers below 500 (default /)
+#     privileged:      optional, default false; e.g. docker:<version>-dind as a pinned Docker Engine API
+#                      (with env DOCKER_TLS_CERTDIR: "", port 2375, ready_path /_ping)
+upstreams:
+  # The Docker Engine API the exporter reads (production reaches it through a read-only docker-socket-proxy).
+  docker:
+    image: docker:28.3.1-dind@sha256:4dd2f7e405b1a10fda628f22cd466be1e3be2bcfc46db653ab620e02eeed5794
+    port: 2375
+    privileged: true
+    env:
+      DOCKER_TLS_CERTDIR: ""
+    ready_path: /_ping
+
+# Not an upstream: the image the Contract Tests run as workload containers inside dind. Kept here so the
+# upstreams.yaml Renovate manager bumps it; the harness reads only `upstreams`.
+test_images:
+  busybox:
+    image: busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
