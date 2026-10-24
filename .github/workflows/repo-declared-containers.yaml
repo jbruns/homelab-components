@@ -1,8 +1,8 @@
 name: repo declared-containers
 
 # Reusable: checks that the calling repo's committed declared-containers output (one .prom per Host in its
-# hosts.yaml) is current, with the shared declared-containers tool (repo-tools/declared-containers) installed from
-# this workflow's own commit unless tool-ref names another, so pinning this workflow pins the tool.
+# hosts.yaml) is current, with homelab-declared-containers (repo-tools/declared-containers) installed from this
+# workflow's own commit unless tool-ref names another, so pinning this workflow pins the tool.
 on:
   workflow_call:
     inputs:
@@ -10,6 +10,12 @@ on:
         description: the repo root holding hosts.yaml, relative to the checkout
         type: string
         default: .
+      extra-args:
+        description: >-
+          more homelab-declared-containers arguments, split like a shell command line but never run through a shell,
+          e.g. --host truenas
+        type: string
+        default: ""
       tool-ref:
         description: homelab-components ref (tag or commit) to install declared-containers from; empty means this workflow's commit
         type: string
@@ -50,4 +56,11 @@ jobs:
             exit 1
           fi
           uv tool install "git+$GITHUB_SERVER_URL/$repo@$ref#subdirectory=repo-tools/declared-containers"
-      - run: declared-containers --check
+      - name: homelab-declared-containers --check
+        env:
+          EXTRA_ARGS: ${{ inputs.extra-args }}
+        run: |
+          python3 -c 'import os, shlex, sys; sys.stdout.write("".join(a + "\0" for a in shlex.split(os.environ["EXTRA_ARGS"])))' \
+            > "$RUNNER_TEMP/extra-args"
+          mapfile -d '' -t extra < "$RUNNER_TEMP/extra-args"
+          homelab-declared-containers --check "${extra[@]}"

@@ -1,0 +1,13 @@
+# The Baseline every Service extends (homelab-validate's README, "The Baseline").
+services:
+  baseline:
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges=true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

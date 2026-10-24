@@ -91,6 +91,7 @@ jobs:
     uses: ./.github/workflows/repo-validate.yaml
     with:
       working-directory: .github/repo-ci-fixture
+      extra-args: --host example
 
   repo-declared-containers:
     needs: plan
@@ -98,6 +99,7 @@ jobs:
     uses: ./.github/workflows/repo-declared-containers.yaml
     with:
       working-directory: .github/repo-ci-fixture
+      extra-args: --host example
 
   # Single required check for branch protection.
   ci:

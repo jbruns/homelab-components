@@ -113,11 +113,14 @@ calling the reusable workflows, pinned to a `repo-ci-vX.Y.Z` release by its comm
 |---|---|---|
 | `repo-gitleaks.yaml` | gitleaks on the PR's commits, a push's commits, or (another event) every commit; the repo's `.gitleaks.toml` and `.gitleaksignore` apply | `full-history` (`false`), `gitleaks-version` |
 | `repo-lint.yaml` | actionlint on the repo's workflows; `renovate-config-validator --strict` | `renovate-configs` (`renovate.json`; empty skips), `actionlint-version`, `renovate-version` |
-| `repo-validate.yaml` | `validate [checks…]` from [`repo-tools/validate`](repo-tools/validate) (needs Docker for `compose` and `monitoring`, including promtool rule tests); pull requests compare against their base | `checks` (every check), `working-directory` (`.`), `tool-ref`, `timeout-minutes` (`30`), `uv-version` |
-| `repo-declared-containers.yaml` | `declared-containers --check` from [`repo-tools/declared-containers`](repo-tools/declared-containers) | `working-directory` (`.`), `tool-ref`, `uv-version` |
+| `repo-validate.yaml` | [`homelab-validate [checks…]`](repo-tools/validate/README.md) (Docker for `compose` and `monitoring`, including promtool rule tests); pull requests compare against their base; the image-config cache is kept between runs | `checks` (every check), `extra-args`, `working-directory` (`.`), `tool-ref`, `timeout-minutes` (`30`), `uv-version` |
+| `repo-declared-containers.yaml` | [`homelab-declared-containers --check`](repo-tools/declared-containers/README.md) | `extra-args`, `working-directory` (`.`), `tool-ref`, `uv-version` |
 
-`repo-validate` and `repo-declared-containers` install their tool from the workflow's own commit, so the one pin
-on `uses:` pins the tool too. Set `tool-ref` (a `<tool>-vX.Y.Z` tag or a commit) only to run a different tool
+`extra-args` passes the tool's options, split like a shell command line but never run by a shell: for example
+`--path dashboards=tools/dashboards/dashboards.py --legacy-volume media_config` for a repo that keeps an input
+outside its stack roots, or `--host truenas`. `repo-validate` and `repo-declared-containers` install their tools
+(`repo-validate` both, for the `monitoring` check) from the workflow's own commit, so the one pin on `uses:` pins
+the tools too. Set `tool-ref` (a `<tool>-vX.Y.Z` tag or a commit) only to run a different tool
 version than the workflow's; Renovate does not bump it. Each workflow is one job; keep the repo's own
 aggregate job as its required check:
 
@@ -144,6 +147,7 @@ jobs:
     uses: jbruns/homelab-components/.github/workflows/repo-validate.yaml@<sha> # repo-ci-v1.0.0
     with:
       checks: monitoring
+      extra-args: --path dashboards=tools/dashboards/dashboards.py
       timeout-minutes: 10
   declared-containers:
     uses: jbruns/homelab-components/.github/workflows/repo-declared-containers.yaml@<sha> # repo-ci-v1.0.0
