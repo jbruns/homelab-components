@@ -1,0 +1,129 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Shared Renovate rules for homelab repos with Stacks in <stack_root>/<stack>/compose.yaml and <service>/service.yaml; see jbruns/homelab-components README",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests",
+    ":dependencyDashboard",
+    ":enablePreCommit"
+  ],
+  "minimumReleaseAge": "5 days",
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
+  "schedule": [
+    "* 10-13 * * *"
+  ],
+  "prHourlyLimit": 0,
+  "timezone": "America/Los_Angeles",
+  "packageRules": [
+    {
+      "description": "Nextcloud can only upgrade one major at a time (the image refuses to skip one), so propose each major separately",
+      "matchPackageNames": [
+        "nextcloud"
+      ],
+      "separateMultipleMajor": true
+    },
+    {
+      "description": "Grafana logging stack",
+      "matchPackageNames": [
+        "grafana/grafana",
+        "grafana/loki",
+        "grafana/alloy"
+      ],
+      "groupName": "grafana stack"
+    },
+    {
+      "description": "Prometheus and Alertmanager",
+      "matchPackageNames": [
+        "prom/prometheus",
+        "prom/alertmanager"
+      ],
+      "groupName": "prometheus"
+    },
+    {
+      "description": "Automerge patch updates",
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Automerge pinning of digests",
+      "matchUpdateTypes": [
+        "pin",
+        "pinDigest"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Custom Components that run on a Host itself ship as release assets: never automerge, because the repo installs them on the Host by hand",
+      "matchDatasources": [
+        "github-release-attachments"
+      ],
+      "matchPackageNames": [
+        "jbruns/homelab-components"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "The custom manager below pins homelab-components reusable workflows, because only it knows their repo-ci-vX.Y.Z tags",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "jbruns/homelab-components"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "This preset's own pin: extends github>jbruns/homelab-components//renovate/<preset>#repo-ci-vX.Y.Z",
+      "matchManagers": [
+        "renovate-config"
+      ],
+      "matchPackageNames": [
+        "jbruns/homelab-components"
+      ],
+      "versioning": "regex:^repo-ci-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
+    },
+    {
+      "description": "The reusable workflows and this preset release together as repo-ci-vX.Y.Z, so bump them in one PR",
+      "matchDatasources": [
+        "github-tags"
+      ],
+      "matchPackageNames": [
+        "jbruns/homelab-components"
+      ],
+      "groupName": "homelab-components repo-ci"
+    }
+  ],
+  "docker-compose": {
+    "description": "Also each Service's <stack>/<service>/service.yaml under a Host's stack root; the defaults stay",
+    "managerFilePatterns": [
+      "/(^|/)service\\.ya?ml$/"
+    ]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Versions annotated with # renovate: comments in workflows",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+:\\s*\"?(?<currentValue>[^\\s\"]+)\"?"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "homelab-components reusable workflows: uses: jbruns/homelab-components/.github/workflows/repo-<name>.yaml@<sha> # repo-ci-vX.Y.Z",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "uses:\\s*(?<depName>jbruns/homelab-components)/\\.github/workflows/[^@\\s]+@(?<currentDigest>[0-9a-f]{40})\\s+#\\s*(?<currentValue>repo-ci-v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "regex:^repo-ci-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
+    }
+  ]
+}

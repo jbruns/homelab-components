@@ -1,0 +1,8 @@
+# A consuming repo in miniature: ci.yaml runs the reusable repo-validate and repo-declared-containers workflows here.
+# One Host with one Stack that meets the Baseline; no monitoring or Traefik, so those checks skip it.
+version: 1
+hosts:
+  example:
+    stack_root: example
+    deployer: doco-cd
+    capabilities: []

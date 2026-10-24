@@ -1,0 +1,90 @@
+name: repo validate
+
+# Reusable: runs homelab-validate (repo-tools/validate) against the calling repo, whose hosts.yaml names its Hosts and
+# stack roots. homelab-validate, and homelab-declared-containers for its monitoring check, are installed from this
+# workflow's own commit unless tool-ref names another, so pinning this workflow pins the tools. Pull requests compare
+# against their base (VALIDATE_BASE); other events against the default branch. Image configs that homelab-validate
+# fetches by digest are cached, keyed on every digest in the repo.
+on:
+  workflow_call:
+    inputs:
+      checks:
+        description: space-separated homelab-validate checks to run; empty runs every check
+        type: string
+        default: ""
+      extra-args:
+        description: >-
+          more homelab-validate arguments, split like a shell command line but never run through a shell, e.g.
+          --path dashboards=tools/dashboards/dashboards.py --legacy-volume old_data
+        type: string
+        default: ""
+      working-directory:
+        description: the repo root holding hosts.yaml, relative to the checkout
+        type: string
+        default: .
+      tool-ref:
+        description: homelab-components ref (tag or commit) to install the tools from; empty means this workflow's commit
+        type: string
+        default: ""
+      timeout-minutes:
+        description: job timeout
+        type: number
+        default: 30
+      uv-version:
+        description: uv version that installs the tools
+        type: string
+        # renovate: datasource=github-releases depName=astral-sh/uv
+        default: 0.13.5
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate ${{ inputs.checks }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: false
+      - name: install homelab-validate and homelab-declared-containers
+        env:
+          TOOL_REF: ${{ inputs.tool-ref }}
+          # job.workflow_* name this reusable workflow, not the caller; read through toJSON because actionlint does
+          # not know these properties yet.
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repo=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          ref=${TOOL_REF:-$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")}
+          if [ -z "$repo" ] || [ -z "$ref" ]; then
+            echo "::error::cannot tell which homelab-components commit to install the tools from; set tool-ref"; exit 1
+          fi
+          for tool in validate declared-containers; do
+            uv tool install "git+$GITHUB_SERVER_URL/$repo@$ref#subdirectory=repo-tools/$tool"
+          done
+      - id: digests
+        run: echo "hash=$(git grep -hoE 'sha256:[0-9a-f]{64}' -- . | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/homelab-validate
+          key: homelab-validate-${{ steps.digests.outputs.hash }}
+          restore-keys: homelab-validate-
+      - name: homelab-validate
+        env:
+          CHECKS: ${{ inputs.checks }}
+          EXTRA_ARGS: ${{ inputs.extra-args }}
+          VALIDATE_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          read -ra checks <<< "$CHECKS"
+          python3 -c 'import os, shlex, sys; sys.stdout.write("".join(a + "\0" for a in shlex.split(os.environ["EXTRA_ARGS"])))' \
+            > "$RUNNER_TEMP/extra-args"
+          mapfile -d '' -t extra < "$RUNNER_TEMP/extra-args"
+          homelab-validate "${extra[@]}" "${checks[@]}"

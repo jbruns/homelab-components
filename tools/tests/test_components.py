@@ -88,6 +88,22 @@ def test_a_repo_tool_tag_releases_without_an_image(release_dirs):
     }
 
 
+def test_a_repo_ci_tag_releases_the_reusable_workflows_and_renovate_preset(release_dirs):
+    assert release_target("repo-ci-v1.0.0", **release_dirs) == {
+        "kind": "repo-ci",
+        "name": "repo-ci",
+        "version": "1.0.0",
+        "image": "false",
+    }
+
+
+@pytest.mark.parametrize("folder", ["components_dir", "repo_tools_dir"])
+def test_a_component_or_repo_tool_named_repo_ci_is_rejected(release_dirs, folder):
+    (release_dirs[folder] / "repo-ci").mkdir()
+    with pytest.raises(ValueError, match="repo-ci"):
+        release_target("hosts-v1.0.0", **release_dirs)
+
+
 def test_a_tag_naming_nothing_is_rejected(release_dirs):
     with pytest.raises(ValueError, match="names no Component"):
         release_target("nothing-v1.0.0", **release_dirs)

@@ -91,6 +91,12 @@ jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shar
   reruns the tool's checks and creates a GitHub Release (no image, no assets). Consuming repos pin that tag (or a
   commit) in their install command, dependency or `uses:` line, and Renovate bumps the pin. Semver from the
   consumer's view: a renamed flag, key or exported name, or a stricter `hosts.yaml`, is a major bump.
+- **Reusable workflows and presets** take everything repo-specific from the calling repo (its `hosts.yaml`, its
+  config files) or from inputs with generic defaults; never hardcode a Host, stack root or repo path. Pin every
+  action by digest and every tool version as an input default annotated `# renovate:`. A workflow that runs a
+  `repo-tools/<tool>` installs it from its own commit (`job.workflow_sha`), and `ci.yaml` runs it against
+  `.github/repo-ci-fixture`. They release together as `repo-ci-vX.Y.Z` (see the
+  [README](README.md#consuming-the-ci-workflows-and-renovate-preset)).
 
 ## Release
 
