@@ -10,15 +10,15 @@ named in messages (0003, 0006, 0007, 0010) are jbruns/home-ops ADRs.
 | Check | What it enforces, for each Host |
 |---|---|
 | `secrets` | Sensitive files are tracked only SOPS-encrypted as `*.sops.*`, with no plaintext twin; Stack layout (`<stack root>/<stack>/compose.yaml`, each included file `<service>/service.yaml` and included by some Stack); at least one doco-cd deploy config (`.doco-cd*.y(a)ml`, anywhere) is tracked and every one keeps `auto_discovery.depth: 1` |
-| `env` | Every `${VAR}` a Stack uses is in its `env.template` and `.sops.env`; when the Host has `<prometheus>/dependencies.yml`, its placeholders reach `dependencies-render` |
+| `env` | Every `${VAR}` a Stack uses is in its `env.template` and `.sops.env`; when the Host uses [dependency rendering](#dependency-rendering), its `dependencies.yml` exists and its placeholders reach `dependencies-render` |
 | `compose` | `docker compose config` renders every Stack, and every `templates/<name>/` as a Stack of each Host; startup-order, logging, restart and Probe rules; no `env_file` `format` (doco-cd supports only the default); the [Baseline](#the-baseline); [volume names](#volumes) |
 | `monitoring` | Full Prometheus config and rule checks, behavioral rule suites, amtool/Loki/Alloy config checks, dashboard generation and query checks, declared-containers freshness, and Grafana provisioning boots, using the images the Host deploys; see [Monitoring checks](#monitoring-checks) |
 | `cloudflare` | Traefik's trusted Cloudflare ranges are valid and identical (see [Cloudflare ranges](#cloudflare-ranges)) |
 | `isolation` | A change to the Host's doco-cd Stack, or to its `_baseline.yaml`, ships in its own PR |
 
 No check depends on a Host capability: the only Host-specific inputs are its stack root, its doco-cd Stack name
-(`doco_cd.stack` in `hosts.yaml`) and the files found under its stack root. An input a Host does not have is
-skipped (see [Inputs](#inputs)), so a Host without TrueNAS, monitoring or Traefik passes on the checks that apply.
+(`doco_cd.stack` in `hosts.yaml`) and the files found under its stack root. An input a Host does not have by
+convention is skipped (see [Inputs](#inputs)), so a Host without TrueNAS, monitoring or Traefik passes on the checks that apply.
 
 ## Install
 
@@ -54,7 +54,8 @@ With no check named, every check runs, including `isolation`. Exit status is 1 i
 - `--root DIR`: the repository to check (default: the one containing the working directory, found by its
   `hosts.yaml`).
 - `--host NAME`: check only this Host (default: every Host).
-- `--path NAME=PATH`: move one [input](#inputs), relative to `--root` or absolute, for every selected Host. Repeat
+- `--path NAME=PATH`: move one [input](#inputs), relative to `--root` or absolute, for every selected Host. It must
+  exist (a directory or file, as the input needs) for every selected Host, or each check that reads it fails. Repeat
   it for several. To move an input differently per Host, run once per Host with `--host`.
 - `--legacy-volume NAME`: a volume name from before ADR 0010, allowed until its Stack renames it. Repeat it for
   several. A `compose` run over every Host fails while one is given that no Stack declares, so the list only
@@ -66,12 +67,14 @@ With no check named, every check runs, including `isolation`. Exit status is 1 i
 
 ### Inputs
 
-Each input is found by convention under each Host's stack root unless `--path` moves it. When it is missing, the
-check that reads it is skipped and says so.
+Each input is found by convention under each Host's stack root unless `--path` moves it. When a default is
+missing, the Host lacks that component: the check that reads it is skipped and says so. When a `--path` is missing
+or the wrong type (a file for a directory input, or the reverse), the check that reads it fails with
+`--path NAME=PATH: not a directory` (or `not a file`), so a typo cannot turn a check off.
 
 | Name | Default, under the stack root | When missing |
 |---|---|---|
-| `prometheus` | `monitoring/prometheus` (`service.yaml`, `prometheus.yml`, `*rules*.yml`, optional `dependencies.yml`) | `monitoring` skips the Host |
+| `prometheus` | `monitoring/prometheus` (`service.yaml`, `prometheus.yml`, `*rules*.yml`, `dependencies.yml` when [used](#dependency-rendering)) | `monitoring` skips the Host |
 | `rule-tests` | `monitoring/prometheus/tests` (`*.test.yml` promtool suites) | every rule fails for want of a case |
 | `alertmanager` | `monitoring/alertmanager` (`service.yaml`, `config.yml`) | amtool skipped |
 | `loki` | `monitoring/loki` (`service.yaml`, `loki.yaml`) | Loki check skipped; the Grafana check fails |
@@ -85,6 +88,13 @@ check that reads it is skipped and says so.
 
 For example, a repo that keeps its dashboard generator and promtool suites outside the stack root runs
 `homelab-validate --path dashboards=tools/dashboards/dashboards.py --path rule-tests=tools/validate/rules`.
+
+### Dependency rendering
+
+A Host uses dependency rendering when `<prometheus>/service.yaml` declares a `dependencies-render` Service,
+`<prometheus>/prometheus.yml` reads the rendered `dependencies.yml`, or `<prometheus>/dependencies.yml` exists.
+Then `env` and `monitoring` fail when the template is missing, and `env` fails when no `dependencies-render`
+Service renders it. A Host with none of the three needs no template.
 
 A generator (`dashboards`, `declared-containers`) is run with `--check` and must exit 0 when its committed output
 is current. A script path is run with the Python running validate; `dashboards` gets `--out <dashboards-json>`,
@@ -145,7 +155,7 @@ decrypted files Compose references.
 
 ## Monitoring checks
 
-- `promtool check config` mounts the real rules, a rendered `dependencies.yml` (when present) with dummy
+- `promtool check config` mounts the real rules, a rendered `dependencies.yml` (when used) with dummy
   URLs/keys at `/etc/prometheus/sd/dependencies.yml`, and dummy Compose secrets at `/run/secrets/<name>`.
 - `promtool test rules` runs every `rule-tests/*.test.yml` with the deployed rule files. Every alert needs firing
   and nonfiring cases (except the always-firing Watchdog), and every firing expectation must include the `tier`

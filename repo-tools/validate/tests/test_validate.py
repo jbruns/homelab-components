@@ -792,6 +792,98 @@ def test_monitoring_reports_stale_declared_containers_under_root(validate, repo,
     assert messages(validate) == f"stale --check --root {repo} --host truenas"
 
 
+# --- dependency rendering ---------------------------------------------------------------------
+
+DEPENDENCIES = "tn/monitoring/prometheus/dependencies.yml"
+PROM_SERVICE = "tn/monitoring/prometheus/service.yaml"
+
+
+def test_a_deleted_dependencies_template_fails_while_its_renderer_remains(validate, repo, runtime):
+    subprocess.run(["git", "rm", "-q", DEPENDENCIES], cwd=repo, check=True)
+    commit(repo)
+    expected = f"{DEPENDENCIES} is missing, but dependencies-render or prometheus.yml still uses it"
+    validate.check_env()
+    assert messages(validate) == expected
+    validate.failures.clear()
+    validate.check_monitoring()
+    assert expected in validate.failures
+
+
+def test_a_dependencies_template_fails_while_prometheus_reads_its_output(validate, repo, runtime):
+    write(
+        repo,
+        {
+            PROM_SERVICE: "services:\n  prometheus:\n    image: prom/prometheus:v1\n",
+            "tn/monitoring/prometheus/prometheus.yml": "scrape_configs:\n  - file_sd_configs:\n"
+            "      - files: [/etc/prometheus/sd/dependencies.yml]\n",
+        },
+    )
+    subprocess.run(["git", "rm", "-q", DEPENDENCIES], cwd=repo, check=True)
+    commit(repo)
+    validate.check_monitoring()
+    assert f"{DEPENDENCIES} is missing, but dependencies-render or prometheus.yml still uses it" in validate.failures
+
+
+def test_a_host_without_dependency_rendering_needs_no_template(validate, repo, runtime):
+    write(repo, {PROM_SERVICE: "services:\n  prometheus:\n    image: prom/prometheus:v1\n"})
+    subprocess.run(["git", "rm", "-q", DEPENDENCIES], cwd=repo, check=True)
+    commit(repo)
+    validate.check_env()
+    validate.check_monitoring()
+    assert messages(validate) == ""
+    assert "/etc/prometheus/sd/dependencies.yml" not in runtime.runs[0].mounts
+
+
+def test_a_dependencies_template_needs_its_renderer(validate, repo):
+    write(repo, {PROM_SERVICE: "services:\n  prometheus:\n    image: prom/prometheus:v1\n"})
+    validate.check_env()
+    assert messages(validate) == f"{DEPENDENCIES}: no dependencies-render Service in {PROM_SERVICE} renders it"
+
+
+# --- explicit inputs ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "arg,check,expected",
+    [
+        ("traefik=edge/typo.yaml", "cloudflare", "--path traefik=edge/typo.yaml: not a file"),
+        ("traefik=tn", "cloudflare", "--path traefik=tn: not a file"),
+        ("prometheus=tn/monitoring/typo", "monitoring", "--path prometheus=tn/monitoring/typo: not a directory"),
+    ],
+)
+def test_cli_fails_on_a_missing_explicit_path(repo, arg, check, expected):
+    r = run_cli("--root", str(repo), "--path", arg, check)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert f"ERROR: {expected}" in r.stdout
+    assert "skipped" not in r.stdout
+
+
+def test_env_fails_on_a_missing_explicit_prometheus(validate, repo):
+    configure(validate, repo, {"prometheus": "typo"})
+    validate.check_env()
+    assert messages(validate) == "--path prometheus=typo: not a directory"
+
+
+@pytest.mark.parametrize("name", ["alertmanager", "loki", "alloy", "grafana", "rule-tests", "dashboards-json"])
+def test_monitoring_fails_on_a_missing_explicit_directory(validate, repo, runtime, name):
+    configure(validate, repo, {name: "typo"})
+    validate.check_monitoring()
+    assert f"--path {name}=typo: not a directory" in validate.failures
+
+
+@pytest.mark.parametrize("name", ["dashboards", "declared-containers"])
+def test_monitoring_fails_on_a_missing_explicit_generator(validate, repo, runtime, name):
+    configure(validate, repo, {name: "typo.py"})
+    validate.check_monitoring()
+    assert f"--path {name}=typo.py: not a file" in validate.failures
+
+
+def test_probe_modules_fails_on_a_missing_explicit_blackbox(validate, repo):
+    configure(validate, repo, {"blackbox": "typo.yml"})
+    assert validate.probe_modules(validate.HOSTS[0]) == set()
+    assert messages(validate) == "--path blackbox=typo.yml: not a file"
+
+
 def test_configure_rejects_unknown_path(validate, repo):
     with pytest.raises(KeyError):
         validate.configure(repo, {"nope": "x"})

@@ -139,6 +139,21 @@ def path(name: str, host: Host) -> Path | None:
     return None if PATHS[name] is None else host_dir(host) / PATHS[name]
 
 
+def available(name: str, host: Host, kind: str = "dir", skip: str | None = None) -> bool:
+    """Whether an input of PATHS exists as a `kind` ("dir" or "file"). A missing default means the Host
+    lacks that component, so its check is skipped (printing `skip`); a missing --path is a failure."""
+    p = path(name, host)
+    if p is not None and (p.is_dir() if kind == "dir" else p.is_file()):
+        return True
+    if name in OVERRIDES:
+        msg = f"--path {name}={OVERRIDES[name]}: not a {'directory' if kind == 'dir' else 'file'}"
+        if msg not in failures:
+            fail(msg)
+    elif skip:
+        print(skip)
+    return False
+
+
 def host_dir(host: Host, base: Path | None = None) -> Path:
     """The Host's stack root under `base` (default ROOT), as written in hosts.yaml, so it matches git's paths."""
     return (base or ROOT) / host.stack_root
@@ -320,13 +335,35 @@ def check_host_env(host: Host) -> None:
     check_dependencies_env(host)
 
 
+def dependencies_template(host: Host) -> Path | None:
+    """The Host's dependencies.yml when it uses dependency rendering (it has the template, a
+    dependencies-render Service, or a prometheus.yml that reads the rendered file); else None. Fails when
+    the renderer or Prometheus still uses a template that is missing."""
+    prom = path("prometheus", host)
+    template = prom / "dependencies.yml"
+    if template.is_file():
+        return template
+    service = prom / INCLUDED_NAME
+    renderer = service.is_file() and "dependencies-render" in (
+        yaml.safe_load(service.read_text()).get("services") or {}
+    )
+    config = prom / "prometheus.yml"
+    if renderer or (config.is_file() and "dependencies.yml" in config.read_text()):
+        msg = f"{_rel(template)} is missing, but dependencies-render or prometheus.yml still uses it"
+        if msg not in failures:
+            fail(msg, template)
+    return None
+
+
 def check_dependencies_env(host: Host) -> None:
     """dependencies-render fails on any placeholder in dependencies.yml its environment lacks."""
     prom = path("prometheus", host)
-    template = prom / "dependencies.yml"
-    if not template.is_file():
+    if not available("prometheus", host) or not (template := dependencies_template(host)):
         return
-    svc = yaml.safe_load((prom / INCLUDED_NAME).read_text())["services"]["dependencies-render"]
+    svc = (yaml.safe_load((prom / INCLUDED_NAME).read_text()).get("services") or {}).get("dependencies-render")
+    if svc is None:
+        fail(f"{_rel(template)}: no dependencies-render Service in {_rel(prom / INCLUDED_NAME)} renders it", template)
+        return
     passed = {e.split("=", 1)[0] for e in svc.get("environment") or []}
     if missing := sorted(set(VAR_RE.findall(template.read_text())) - passed):
         fail(f"dependencies.yml placeholders not passed to dependencies-render: {', '.join(missing)}", template)
@@ -602,8 +639,9 @@ def router_problems(name: str, labels: dict) -> list[str]:
 
 def probe_modules(host: Host) -> set[str]:
     """The Host's blackbox-exporter modules; none when it has no blackbox.yml."""
-    blackbox = path("blackbox", host)
-    return set(yaml.safe_load(blackbox.read_text())["modules"]) if blackbox.is_file() else set()
+    if not available("blackbox", host, "file"):
+        return set()
+    return set(yaml.safe_load(path("blackbox", host).read_text())["modules"])
 
 
 def probe_problems(name: str, labels: dict, modules: set[str]) -> list[str]:
@@ -1247,6 +1285,8 @@ def alert_test_problems(name: str, rule: dict, cases: list[dict]) -> list[str]:
 
 
 def check_rule_tests(host: Host, image: str, rule_files: list[Path], mounts: dict[Path, str]) -> None:
+    if "rule-tests" in OVERRIDES and not available("rule-tests", host):
+        return
     rules = rule_definitions([yaml.safe_load(f.read_text()) or {} for f in rule_files])
     if not rules:
         return
@@ -1312,22 +1352,22 @@ DECLARED_CONTAINERS = "homelab-declared-containers"
 
 def generator_command(name: str, host: Host) -> list[str] | None:
     """How to run a generator: a configured script with this Python, else (declared-containers only) the
-    installed command; None when the dashboards generator is not configured."""
-    if script := path(name, host):
-        return [sys.executable, str(script)]
+    installed command; None when the dashboards generator is not configured or a --path script is missing."""
+    if path(name, host):
+        return [sys.executable, str(path(name, host))] if available(name, host, "file") else None
     if name == "declared-containers":
         return [shutil.which(DECLARED_CONTAINERS) or DECLARED_CONTAINERS]
     return None
 
 
-def skipped(missing: Path) -> None:
-    print(f"monitoring: no {_rel(missing)}; its check skipped")
+def skipped(missing: Path) -> str:
+    return f"monitoring: no {_rel(missing)}; its check skipped"
 
 
 def check_monitoring() -> None:
     for host in HOSTS:
-        if not path("prometheus", host).is_dir():
-            print(f"monitoring: {host.name} has no {_rel(path('prometheus', host))}; skipped")
+        skip = f"monitoring: {host.name} has no {_rel(path('prometheus', host))}; skipped"
+        if not available("prometheus", host, skip=skip):
             continue
         check_host_monitoring(host)
 
@@ -1340,9 +1380,9 @@ def check_host_monitoring(host: Host) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         dummy = Path(tmp)
         config_mounts = dict(prom_mounts)
-        if (prom / "dependencies.yml").is_file():
+        if template := dependencies_template(host):
             rendered = dummy / "dependencies.yml"
-            rendered.write_text(render_dummy((prom / "dependencies.yml").read_text())[0])
+            rendered.write_text(render_dummy(template.read_text())[0])
             config_mounts[rendered] = "/etc/prometheus/sd/dependencies.yml"
         compose = yaml.safe_load((prom / INCLUDED_NAME).read_text())
         for name in compose.get("secrets", {}):
@@ -1356,23 +1396,22 @@ def check_host_monitoring(host: Host) -> None:
     check_rule_tests(host, prom_image, rule_files, {f: f"/etc/prometheus/{f.name}" for f in rule_files})
 
     am = path("alertmanager", host)
-    if (am / "config.yml") in tracked_files():
-        am_image = deployed_image(am / INCLUDED_NAME, "alertmanager")
-        docker_run(
-            am_image,
-            {am / "config.yml": "/etc/alertmanager/config.yml"},
-            "amtool",
-            "check-config",
-            "/etc/alertmanager/config.yml",
-        )
-    elif am.is_dir():
-        warn("alertmanager config is encrypted-only; amtool check skipped until it is split from its secrets")
-    else:
-        skipped(am)
+    if available("alertmanager", host, skip=skipped(am)):
+        if (am / "config.yml") in tracked_files():
+            am_image = deployed_image(am / INCLUDED_NAME, "alertmanager")
+            docker_run(
+                am_image,
+                {am / "config.yml": "/etc/alertmanager/config.yml"},
+                "amtool",
+                "check-config",
+                "/etc/alertmanager/config.yml",
+            )
+        else:
+            warn("alertmanager config is encrypted-only; amtool check skipped until it is split from its secrets")
 
     loki = path("loki", host)
     loki_image = None
-    if loki.is_dir():
+    if available("loki", host, skip=skipped(loki)):
         loki_image = deployed_image(loki / INCLUDED_NAME, "loki")
         docker_run(
             loki_image,
@@ -1381,11 +1420,9 @@ def check_host_monitoring(host: Host) -> None:
             "-config.file=/etc/loki/loki.yaml",
             "-verify-config",
         )
-    else:
-        skipped(loki)
 
     alloy = path("alloy", host)
-    if alloy.is_dir():
+    if available("alloy", host, skip=skipped(alloy)):
         alloy_image = deployed_image(alloy / INCLUDED_NAME, "alloy")
         docker_run(
             alloy_image,
@@ -1394,18 +1431,15 @@ def check_host_monitoring(host: Host) -> None:
             "validate",
             "/etc/alloy/config.alloy",
         )
-    else:
-        skipped(alloy)
 
     if dashboards := generator_command("dashboards", host):
-        check_generator(dashboards, "grafana dashboards", "--out", str(path("dashboards-json", host)))
-    else:
+        if "dashboards-json" not in OVERRIDES or available("dashboards-json", host):
+            check_generator(dashboards, "grafana dashboards", "--out", str(path("dashboards-json", host)))
+    elif "dashboards" not in OVERRIDES:
         print("monitoring: no dashboards generator (--path dashboards=SCRIPT); its parity check skipped")
-    check_generator(
-        generator_command("declared-containers", host), "declared containers", "--root", str(ROOT), "--host", host.name
-    )
-    if not path("grafana", host).is_dir():
-        skipped(path("grafana", host))
+    if declared := generator_command("declared-containers", host):
+        check_generator(declared, "declared containers", "--root", str(ROOT), "--host", host.name)
+    if not available("grafana", host, skip=skipped(path("grafana", host))):
         return
     if not loki_image:
         fail(f"monitoring: the Grafana check needs Loki at {_rel(loki)}")
@@ -1419,8 +1453,7 @@ def check_host_monitoring(host: Host) -> None:
 def check_cloudflare() -> None:
     for host in HOSTS:
         traefik = path("traefik", host)
-        if not traefik.is_file():
-            print(f"cloudflare: {host.name} has no {_rel(traefik)}; skipped")
+        if not available("traefik", host, "file", f"cloudflare: {host.name} has no {_rel(traefik)}; skipped"):
             continue
         errs = cloudflare.problems(traefik.read_text())
         for err in errs:
