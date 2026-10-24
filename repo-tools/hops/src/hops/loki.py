@@ -18,12 +18,12 @@ from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 from hops.declared import Declared, Service
-from hops.errors import HopsError, UsageError
+from hops.errors import ConfigError, HopsError, UsageError
 from hops.runner import Runner
 
 ADDRESS = "loki:3100"
 NETWORK = "monitoring_default"
-TRANSPORT = ("monitoring", "dependencies-render")  # a Service whose image has python3
+TRANSPORT = "dependencies-render"  # a monitoring Stack Service whose image has python3
 # Lines per request. Loki returns at most MAX_ENTRIES (its max_entries_limit_per_query default)
 # per request; staying below it lets one request fetch every line tied at a page's last timestamp.
 PAGE = 4000
@@ -101,11 +101,13 @@ def rfc3339(ns: int) -> str:
     return datetime.fromtimestamp(seconds, UTC).strftime("%Y-%m-%dT%H:%M:%S") + f".{frac:09d}Z"
 
 
-def transport_image(declared: Declared, purpose: str = "logs --loki runs its image to reach Loki") -> str:
+def transport_image(declared: Declared, host: str, purpose: str = "logs --loki runs its image to reach Loki") -> str:
     """The python image the monitoring Stack pins, present on the Host; hops runs it for ad-hoc work."""
-    service = declared.get(*TRANSPORT)
-    if not service or not service.image:
-        raise HopsError(f"{'/'.join(TRANSPORT)} is not declared with a pinned image; hops {purpose}")
+    service = declared.monitoring(host, TRANSPORT)
+    if not service.image:
+        raise ConfigError(
+            f"Host {host!r} declares {TRANSPORT} in its monitoring Stack without a pinned image; hops {purpose}"
+        )
     return service.image.ref
 
 

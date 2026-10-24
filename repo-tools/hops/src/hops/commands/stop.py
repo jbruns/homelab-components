@@ -66,6 +66,7 @@ def run(args, ctx) -> int:
         result = alertmanager.amtool(
             ctx.runner,
             ctx.declared,
+            ctx.host.name,
             "silence",
             "add",
             *matcher_args,

@@ -97,7 +97,7 @@ def run_loki(args, ctx) -> int:
         if len(services) == 1:
             service, container = services[0].name, services[0].container_name
     query = loki.with_grep(query, args.grep)
-    fetch = loki.fetcher(ctx.runner, loki.transport_image(ctx.declared))
+    fetch = loki.fetcher(ctx.runner, loki.transport_image(ctx.declared, ctx.host.name))
     found, truncated = loki.query_range(fetch, query, start, end, limit)
     lines = [
         {"time": loki.rfc3339(ns), "stream": labels.get("logstream"), "text": text, "labels": labels}

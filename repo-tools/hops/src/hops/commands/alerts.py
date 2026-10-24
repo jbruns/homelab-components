@@ -21,7 +21,7 @@ def matcher(m: dict) -> str:
 
 def run(args, ctx) -> int:
     def query(*q):
-        return json.loads(alertmanager.amtool(ctx.runner, ctx.declared, *q, "-o", "json").stdout or "[]")
+        return json.loads(alertmanager.amtool(ctx.runner, ctx.declared, ctx.host.name, *q, "-o", "json").stdout or "[]")
 
     alerts = query("alert", "query", "--active", "--silenced", "--inhibited")
     silences = query("silence", "query")

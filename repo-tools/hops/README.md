@@ -115,7 +115,9 @@ without them simply cannot use that command:
   `alertmanager` Services (Prometheus's Alertmanager password at `/run/secrets/prometheus_password`), and
   `stop` reads `prometheus/prometheus.yml`, `alerting-rules.yml` and `alertmanager/config.yml` there.
   `logs --loki` and `volume move` run the python image pinned for its `dependencies-render` Service, and
-  `logs --loki` reaches Loki on the `monitoring_default` network.
+  `logs --loki` reaches Loki on the `monitoring_default` network. A Host that does not declare one of these
+  Services fails such a command before it touches the Host (exit 2): `Host 'X' declares no alertmanager in its
+  monitoring Stack`.
 - **Critical Tier:** a Service's `tier: critical` label, which `stop` refuses without `--force`.
 - **`homeops.db.users`:** the label `db --users` compares MariaDB users with.
 - **`startup-order=skip`:** the label on deliberate `docker run`s; `hops` puts it on its own.

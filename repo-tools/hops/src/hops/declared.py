@@ -29,6 +29,7 @@ DATASTORE_IMAGES = {
 # The labels Compose sets on each container; doco-cd's project is the Stack.
 PROJECT = "com.docker.compose.project"
 SERVICE = "com.docker.compose.service"
+MONITORING = "monitoring"  # the Stack whose Services hops runs in for alerts, silences, Loki and volume moves
 
 
 def compose_files(entry: Path) -> list[Path]:
@@ -154,6 +155,13 @@ class Declared:
                     )
                     names.setdefault(str(name), stack)
         return names
+
+    def monitoring(self, host: str, service: str) -> Service:
+        """A Service of the monitoring Stack that a command runs in; a ConfigError naming it when undeclared."""
+        found = self.get(MONITORING, service)
+        if not found:
+            raise ConfigError(f"Host {host!r} declares no {service} in its {MONITORING} Stack")
+        return found
 
     def get(self, stack: str, service: str) -> Service | None:
         return next((s for s in self.stacks.get(stack, []) if s.name == service), None)

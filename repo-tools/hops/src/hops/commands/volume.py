@@ -265,7 +265,7 @@ def run_move(args, ctx) -> int:
     zfs = ctx.has("truenas", "zfs")
     if args.take_snapshot:
         ctx.require("truenas", "zfs", what="--take-snapshot (a Rollback Snapshot)")
-    image = volumes.image(ctx.declared)
+    image = volumes.image(ctx.declared, ctx.host.name)
     warnings = [w for w in [volumes.convention(ctx.declared, new)] if w]
     for w in warnings:
         ctx.stderr.write(f"hops: warning: {w}\n")

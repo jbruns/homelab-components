@@ -254,8 +254,8 @@ def move(runner: Runner, image: str, directory: str, old: str, new: str) -> Prob
     return Probe.parse(result.stdout.strip().splitlines()[-1])
 
 
-def image(declared: Declared) -> str:
-    return loki.transport_image(declared, "volume move runs its image")
+def image(declared: Declared, host: str) -> str:
+    return loki.transport_image(declared, host, "volume move runs its image")
 
 
 def users(runner: Runner, name: str) -> list[Container]:

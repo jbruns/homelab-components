@@ -21,10 +21,11 @@ SCRIPT = (
 )
 
 
-def amtool(runner: Runner, declared, *args: str, check: bool = True) -> Result:
-    """Run `amtool <args>` against Alertmanager; returns its captured output."""
-    prometheus = docker.container_ref(runner, declared.resolve_one("monitoring/prometheus"))
-    alertmanager = docker.container_ref(runner, declared.resolve_one("monitoring/alertmanager"))
+def amtool(runner: Runner, declared, host: str, *args: str, check: bool = True) -> Result:
+    """Run `amtool <args>` against Alertmanager on Host `host`; returns its captured output."""
+    prometheus, alertmanager = (declared.monitoring(host, name) for name in ("prometheus", "alertmanager"))
+    prometheus = docker.container_ref(runner, prometheus)
+    alertmanager = docker.container_ref(runner, alertmanager)
     return runner.pipeline(
         ["exec", prometheus, "cat", PASSWORD_FILE],
         ["exec", "-i", alertmanager, "sh", "-c", SCRIPT, "amtool", *args],
