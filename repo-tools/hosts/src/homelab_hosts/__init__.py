@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -107,10 +108,9 @@ class Hosts(Mapping[str, Host]):
                 raise HostsError(f"no Host {name!r} in {HOSTS_FILE}; Hosts: {', '.join(self.hosts)}")
             return self.hosts[name]
         if path is not None:
-            target = Path(path).resolve()
-            containing = [h for h in self.hosts.values() if target.is_relative_to(h.path.resolve())]
-            if containing:
-                return max(containing, key=lambda h: len(h.path.resolve().parts))
+            for host in self.hosts.values():
+                if _is_within(path, host.path):
+                    return host
         if len(self.hosts) == 1:
             return next(iter(self.hosts.values()))
         where = f" contains {str(path)!r}" if path is not None else ""
@@ -184,11 +184,11 @@ def load_hosts(root: str | Path | None = None) -> Hosts:
         if host is None:
             continue
         for other in hosts.values():
-            if host.path == other.path:
+            if os.path.samefile(host.path, other.path):
                 problems.append(
                     f"hosts.{name}.stack_root: {host.stack_root!r} is already the stack root of Host {other.name!r}"
                 )
-            elif host.path.is_relative_to(other.path) or other.path.is_relative_to(host.path):
+            elif _is_within(host.path, other.path) or _is_within(other.path, host.path):
                 problems.append(
                     f"hosts.{name}.stack_root: {host.stack_root!r} and Host {other.name!r}'s stack root "
                     f"{other.stack_root!r} overlap; stack roots must not contain one another"
@@ -227,10 +227,10 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
         problems.append(f"{where}stack_root: {stack_root!r} must be relative to the repo root and stay inside it")
     else:
         path = (root / stack_root).resolve()
-        if not path.is_relative_to(root):
+        if not _is_within(path, root):
             problems.append(f"{where}stack_root: {stack_root!r} resolves outside the repo root (through a symlink)")
             path = None
-        elif path == root:
+        elif path.exists() and os.path.samefile(path, root):
             problems.append(
                 f"{where}stack_root: {stack_root!r} must be a directory under the repo root, not the root itself"
             )
@@ -290,12 +290,14 @@ def _check_doco_cd(stack_root: Path | None, doco_cd: dict, where: str, problems:
     stack = doco_cd["stack"]
     if stack is not None and not _STACK_NAME.fullmatch(stack):
         problems.append(f"{where}stack: {stack!r} must be one Stack directory name: lowercase letters, digits and '-'")
+    elif stack is not None and stack_root is not None and not _is_within(stack_root / stack, stack_root):
+        problems.append(f"{where}stack: {stack!r} resolves outside the stack root (through a symlink)")
     api_secret = doco_cd["api_secret"]
     if api_secret is not None:
         relative = Path(api_secret)
         if relative.is_absolute() or ".." in relative.parts or not relative.parts:
             problems.append(f"{where}api_secret: {api_secret!r} must be relative to the stack root and stay inside it")
-        elif stack_root is not None and not (stack_root / relative).resolve().is_relative_to(stack_root):
+        elif stack_root is not None and not _is_within(stack_root / relative, stack_root):
             problems.append(f"{where}api_secret: {api_secret!r} resolves outside the stack root (through a symlink)")
     network = doco_cd["network"]
     if network is not None and not _DOCKER_NETWORK.fullmatch(network):
@@ -303,6 +305,22 @@ def _check_doco_cd(stack_root: Path | None, doco_cd: dict, where: str, problems:
             f"{where}network: {network!r} is not a Docker network name: letters, digits, '_', '.' and '-', "
             "starting alphanumeric"
         )
+
+
+def _is_within(path: str | Path, directory: Path) -> bool:
+    """Whether `path`, once symlinks are resolved, is `directory` or under it. `path` need not exist. Directories
+    are compared by identity (device and inode), so a case-insensitive filesystem's case variants match and a
+    case-sensitive one's do not."""
+    target = os.stat(directory)
+    current = Path(path).resolve()
+    for candidate in (current, *current.parents):
+        try:
+            found = os.stat(candidate)
+        except OSError:
+            continue
+        if (found.st_dev, found.st_ino) == (target.st_dev, target.st_ino):
+            return True
+    return False
 
 
 def env_prefix(host: Host) -> str:

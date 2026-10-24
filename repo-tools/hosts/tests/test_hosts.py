@@ -364,3 +364,64 @@ def test_valid_doco_cd_overrides_are_kept(tmp_path):
     assert load_hosts(tmp_path)["nc8kg1101"].doco_cd == DocoCd(
         stack="deployer", api_secret="deployer/secrets/api.sops.txt", address="deployer:8080", network="ops_net.1"
     )
+
+
+@pytest.fixture
+def case_insensitive_fs(tmp_path):
+    (tmp_path / "probe").mkdir()
+    if not (tmp_path / "PROBE").exists():
+        pytest.skip("the filesystem is case-sensitive")
+    (tmp_path / "probe").rmdir()
+
+
+def test_stack_roots_differing_only_in_case_are_duplicates_on_a_case_insensitive_fs(tmp_path, case_insensitive_fs):
+    hosts_yaml = "version: 1\nhosts:\n  a:\n" + host_entry(stack_root="tn") + "  b:\n" + host_entry(stack_root="TN")
+    write_repo(tmp_path, hosts_yaml, ["tn"])
+
+    assert "'TN' is already the stack root of Host 'a'" in load_problems(tmp_path)
+
+
+def test_a_stack_root_nested_under_a_case_variant_is_rejected(tmp_path, case_insensitive_fs):
+    hosts_yaml = (
+        "version: 1\nhosts:\n  a:\n" + host_entry(stack_root="tn") + "  b:\n" + host_entry(stack_root="TN/monitoring")
+    )
+    write_repo(tmp_path, hosts_yaml, ["tn/monitoring"])
+
+    assert "stack roots must not contain one another" in load_problems(tmp_path)
+
+
+def test_a_path_spelled_in_another_case_picks_the_same_host(two_hosts, case_insensitive_fs):
+    (two_hosts.root / "tn" / "plex").mkdir()
+
+    assert two_hosts.pick(path=two_hosts.root / "TN" / "Plex" / "compose.yaml").name == "truenas"
+
+
+def test_a_path_through_a_symlink_into_a_stack_root_picks_that_host(two_hosts):
+    (two_hosts.root / "shortcut").symlink_to(two_hosts.root / "tn", target_is_directory=True)
+
+    assert two_hosts.pick(path=two_hosts.root / "shortcut" / "plex" / "compose.yaml").name == "truenas"
+
+
+def test_a_doco_cd_stack_symlinked_out_of_the_stack_root_is_rejected(repo_and_outside):
+    repo, outside = repo_and_outside
+    write_repo(repo, "version: 1\nhosts:\n  nc8kg1101:\n" + host_entry(doco_cd="{stack: deployer}"))
+    (repo / "nc8kg1101" / "deployer").symlink_to(outside, target_is_directory=True)
+
+    assert "doco_cd.stack: 'deployer' resolves outside the stack root" in load_problems(repo)
+
+
+def test_a_doco_cd_stack_need_not_exist_yet(tmp_path):
+    write_repo(tmp_path, "version: 1\nhosts:\n  nc8kg1101:\n" + host_entry(doco_cd="{stack: deployer}"))
+
+    assert load_hosts(tmp_path)["nc8kg1101"].doco_cd.stack == "deployer"
+
+
+def test_a_missing_api_secret_under_a_symlinked_intermediate_dir_out_of_the_stack_root_is_rejected(
+    repo_and_outside,
+):
+    repo, outside = repo_and_outside
+    write_repo(repo, "version: 1\nhosts:\n  nc8kg1101:\n" + host_entry(doco_cd="{api_secret: doco-cd/keys/api.txt}"))
+    (repo / "nc8kg1101" / "doco-cd").mkdir()
+    (repo / "nc8kg1101" / "doco-cd" / "keys").symlink_to(outside, target_is_directory=True)
+
+    assert "doco_cd.api_secret: 'doco-cd/keys/api.txt' resolves outside the stack root" in load_problems(repo)

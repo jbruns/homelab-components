@@ -44,6 +44,9 @@ hosts:                          # required; at least one Host
       network: metrics
 ```
 
+Paths are compared by directory identity after resolving symlinks, so on a case-insensitive filesystem `tn` and
+`TN` are the same stack root, and on a case-sensitive one they are not.
+
 Loading fails, listing every problem with its file and key path, when:
 
 - a key is unknown, at any level;
@@ -57,7 +60,8 @@ Loading fails, listing every problem with its file and key path, when:
 - `deployer` is missing or unknown;
 - `capabilities` is missing, is not a list, or names an unknown capability;
 - a `doco_cd` value or `default_branch` is not a non-empty string;
-- `doco_cd.stack` is not a single Stack directory name (`[a-z0-9][a-z0-9-]*`, no `/`);
+- `doco_cd.stack` is not a single Stack directory name (`[a-z0-9][a-z0-9-]*`, no `/`), or resolves (following
+  a symlink) outside the Host's stack root; it need not exist yet;
 - `doco_cd.api_secret` is absolute, uses `..`, or resolves (following symlinks) outside the Host's stack root;
 - `doco_cd.network` is not a Docker network name (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`). `address` is any non-empty string.
 
@@ -108,7 +112,8 @@ Everything below is exported from `homelab_hosts`; nothing else is public.
 - `Hosts`: a read-only mapping of Host name to `Host`, in file order, with `root` (the repo root),
   `default_branch`, and `pick(name=None, path=None) -> Host`, which returns:
   1. the Host called `name` (e.g. from `--host`), or an error listing the Hosts when there is none;
-  2. else the Host whose stack root contains `path` (relative paths resolve against the working directory);
+  2. else the Host whose stack root contains `path` (relative paths resolve against the working directory;
+     `path` need not exist);
   3. else the only Host;
   4. else an error listing the Hosts.
 - `Host`: `name`, `stack_root` (as written), `path` (the stack root, absolute with symlinks resolved), `deployer`, `capabilities`
