@@ -24,7 +24,7 @@ def register(subparsers) -> None:
         help=HELP,
         description=(
             HELP + ". Read-only. " + NOTE + ". Decrypts the API key with sops on this machine and sends it on "
-            "stdin to a container on the metrics network, which calls doco-cd."
+            "stdin to a container on doco-cd's network (hosts.yaml doco_cd.network), which calls doco-cd."
         ),
     )
     p.add_argument(

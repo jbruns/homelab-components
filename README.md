@@ -36,6 +36,8 @@ Shared tools, each documented in its README:
 
 - [`repo-tools/hosts`](repo-tools/hosts/README.md): the `homelab_hosts` package, the one loader and validator for
   a consuming repo's `hosts.yaml`.
+- [`repo-tools/hops`](repo-tools/hops/README.md): `hops`, the operator CLI for a consuming repo's Hosts: status,
+  logs, lifecycle, Strays, volume moves, image bumps, and TrueNAS reads on Hosts that have it.
 - [`repo-tools/agent-skills`](repo-tools/agent-skills/README.md): `setup-agent-skills`, which installs and checks
   the agent skills a consuming repo pins in its `.agent-skills.lock`.
 - [`repo-tools/validate`](repo-tools/validate/README.md): `homelab-validate`, the repository checks (secrets, env,
