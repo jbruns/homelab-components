@@ -60,7 +60,8 @@ def parse_release_tag(tag):
     m = _RELEASE_TAG.match(tag)
     if not m:
         raise ValueError(
-            f"{tag!r} is not a release tag (<component, repo-tool or repo-ci>-vX.Y.Z; names starting with _ never release)"
+            f"{tag!r} is not a release tag (<component, repo-tool or repo-ci>-vX.Y.Z;"
+            " names starting with _ never release)"
         )
     return m["name"], m["version"]
 
