@@ -157,6 +157,14 @@ def test_stop_without_a_declared_monitoring_stack_stops_and_warns_that_nothing_i
     assert "Stopped 1 container" in outcome.out
 
 
+@pytest.mark.parametrize("text", ["", "services: {}\n", "servics:\n  prometheus:\n    image: prom/prometheus\n"])
+def test_stop_with_a_monitoring_compose_file_that_declares_no_services_still_fails(hops, fake_host, repo, text):
+    (repo / "tn" / "monitoring" / "compose.yaml").write_text(text)
+    outcome = hops("stop", "sonarr/sonarr", "--for", "1h")
+    assert outcome.code == 2 and "declares no prometheus in its monitoring Stack" in outcome.err
+    assert [c for c in fake_host.docker_calls if c[0] == "stop"] == []
+
+
 def test_stop_with_a_monitoring_stack_under_other_service_names_still_fails(hops, fake_host, repo):
     compose = repo / "tn" / "monitoring" / "compose.yaml"
     compose.write_text(

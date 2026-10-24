@@ -26,10 +26,11 @@ SERVICES = ("prometheus", "alertmanager")  # the monitoring Stack's Services amt
 
 
 def monitoring_undeclared(declared: Declared) -> bool:
-    """True only on a Host mid-cutover: no Stack is named monitoring and no Stack has a Service named
-    prometheus or alertmanager. Anything else is declared monitoring, misconfigured or not, and amtool fails
-    naming what is missing, so a stop is never left unsilenced by a typo or a renamed Service."""
-    return MONITORING not in declared.stacks and not any(s.name in SERVICES for s in declared.services)
+    """True only on a Host mid-cutover: there is no <stack_root>/monitoring/compose.yaml at all (even one that
+    declares no Services counts) and no Stack has a Service named prometheus or alertmanager. Anything else is
+    declared monitoring, misconfigured or not, and amtool fails naming what is missing, so a stop is never left
+    unsilenced by a typo, an empty file or a renamed Service."""
+    return MONITORING not in declared.files and not any(s.name in SERVICES for s in declared.services)
 
 
 def amtool(runner: Runner, declared, host: str, *args: str, check: bool = True) -> Result:
