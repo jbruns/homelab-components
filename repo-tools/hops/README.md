@@ -65,7 +65,8 @@ under `.worktrees/` have no `.env` of their own, so they use the main one. Envir
 | `HOPS_<NAME>_TRUENAS_INSECURE` | no | `1`/`true`/`yes`/`on` skips TLS verification for a self-signed certificate |
 | `HOPS_<NAME>_HOST_DATASETS` | no | Dataset names, comma- or space-separated, that `hops host` also reports |
 
-A missing required key fails (exit 2) naming the key and the files searched; values are never printed.
+A missing required key fails any command that reaches the Host (exit 2), naming the key and the files searched;
+values are never printed. So on a `truenas` Host the TrueNAS keys are needed even for Docker-only commands.
 
 - **SSH:** `ssh [-i $HOPS_<NAME>_SSH_KEY] $HOPS_<NAME>_SSH_USER@$HOPS_<NAME>_SSH_HOST sudo -n docker …` with
   `BatchMode=yes`, so `hops` never prompts. Calls share one connection
@@ -216,8 +217,8 @@ capability, and Rollback Snapshots `truenas` and `zfs`:
   never prints a job's error or log: a failed run shows only as `FAILED` (Cloud Sync) or `ERROR`
   (snapshot); read the details in the TrueNAS UI.
 
-SMART and disk health stay in Prometheus, which alerts on them. On a Host without the `truenas` capability, or
-with it but without its TrueNAS keys, only the Docker section is shown, with a note. A TrueNAS read that fails leaves its section out with a
+SMART and disk health stay in Prometheus, which alerts on them. On a Host without the `truenas` capability,
+only the Docker section is shown, with a note. A TrueNAS read that fails leaves its section out with a
 note and the others still show; if TrueNAS is unreachable, every TrueNAS section is left out. A
 note names the section and the method that failed (e.g. `tasks: TrueNAS read failed
 (cloudsync.query)`), never the error's text, which can echo a task's scripts or credentials. The
@@ -494,8 +495,7 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
   second, so a snapshot created in the second of the stop is refused too. A snapshot taken while
   the Stack was still running is refused. `--take-snapshot` takes one instead, released by
   default in 7 days.
-  There is no override. Without its TrueNAS keys, `volume move` refuses, because a rename moves a
-  Stack's only live copy of its data.
+  There is no override, because a rename moves a Stack's only live copy of its data.
 - On any other Host, the [Rollback Volume](#rollback-volumes) `hops` would create does not exist yet.
   `--take-snapshot` is refused.
 - `<new>` should be named `<stack>_[<service>_]<purpose>` for a declared Stack. If it isn't,
@@ -914,8 +914,7 @@ continue, and the exit code is 1.
 - `refs`: the image's tags.
 - `removed`: `true` or `false` after an `--apply` that tried it, else `null`.
 - `snapshots`: expired Rollback Snapshots; `size` is bytes (`used`). `null` when they were not
-  checked, and then `snapshots_unchecked` says why (no `truenas`/`zfs` capability, TrueNAS not configured, or
-  its error).
+  checked, and then `snapshots_unchecked` says why (no `truenas`/`zfs` capability, or TrueNAS's error).
 
 ## `bump`: pin a newer image through a PR
 
@@ -986,7 +985,8 @@ Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-
   `core.get_jobs`). Errors raise `hops.truenas.TrueNASError` with its `errname` (e.g. `EACCES`).
   `truenas.redact(data, method)` masks credentials before printing. To show part of a TrueNAS
   object, build the record from named fields, as `hops/hygiene.py` does, rather than filtering it. On a Host
-  without the `truenas` capability or its keys, using `ctx.truenas` raises a ConfigError.
+  without the `truenas` capability, using `ctx.truenas` raises a ConfigError; on one with it, a missing TrueNAS
+  key already fails `ctx.runner` too.
 - Raise `hops.errors.UsageError` for bad input (exit 2) and `HopsError` for failures (exit 1).
 
 ## Test
@@ -995,7 +995,7 @@ Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-
 cd repo-tools/hops
 uv venv .venv && uv pip install --python .venv/bin/python -e . pytest
 .venv/bin/pytest                              # fake Hosts; runs in CI (test-repo-tool workflow)
-HOPS_CONSUMER_REPO=~/src/<repo> HOPS_CONSUMER_HOST=<host> .venv/bin/pytest -m consumer   # against a real repo's files
+HOPS_CONSUMER_REPO=~/src/<repo> .venv/bin/pytest tests/test_hops_consumer_silences.py   # stop's silences, a real repo
 HOPS_CONSUMER_REPO=~/src/<repo> HOPS_CONSUMER_HOST=<host> .venv/bin/pytest -m live       # read-only, a real Host
 ```
 
@@ -1006,6 +1006,7 @@ answers with canned `docker` output. The `hops` fixture runs the CLI against a f
 `hops_fakes.FakeSnapshots` builds on it with an in-memory set of snapshots; pass its `client` as
 `hops(..., truenas=)`. Tests fix today's date by patching `hops.snapshots.now`. The fixture repo declares
 one Host, `truenas` (stack root `tn`, capabilities `truenas` and `zfs`); `hops_fakes.hosts_yaml()` and the
-`plain_host` fixture give other `hosts.yaml`s, e.g. a Host with no capabilities or two Hosts. The
-`consumer` and `live` suites are skipped unless selected and `HOPS_CONSUMER_REPO` is set: `consumer` checks
-`stop`'s silences against that repo's monitoring config, and `live` reaches its Host and must only ever read.
+`plain_host` fixture give other `hosts.yaml`s, e.g. a Host with no capabilities or two Hosts. `test_hops_consumer_silences.py` derives `stop`'s silences from a
+consuming repo's monitoring config: `tests/fixtures/consumer` by default, or `HOPS_CONSUMER_REPO`. The `live`
+suite is skipped unless selected with `-m live`; it reaches the Host of `HOPS_CONSUMER_REPO` (Host
+`HOPS_CONSUMER_HOST`, else its only one) and must only ever read.

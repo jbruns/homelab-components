@@ -5,7 +5,7 @@ so no credential is involved. Each request is one `docker run --rm` of the image
 Stack already pins for dependencies-render (python), never pulled. The container's own output is
 the Loki response, so it runs with `--log-driver none`: otherwise Alloy would ship it back to Loki.
 
-Selectors use the `container` label Alloy sets (tn/monitoring/alloy/config.alloy). A container_name
+Selectors use the `container` label Alloy sets (the monitoring Stack's Alloy config). A container_name
 is the same across recreations and across a Stack's Compose project being renamed (the `stack`
 label holds legacy project names such as `arr`); a Service without one matches every
 <stack>-<service>-<n> Compose has given it.

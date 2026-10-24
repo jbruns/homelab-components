@@ -1,0 +1,5 @@
+services:
+  stack-back:
+    image: ghcr.io/lawndoc/stack-back:v1.6.0
+    container_name: stack-back
+    labels: {tier: critical}

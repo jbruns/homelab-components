@@ -167,7 +167,7 @@ def run(args, ctx) -> int:
     }
     try:
         client = ctx.truenas
-    except ConfigError as exc:  # truenas.Unavailable, or a malformed TRUENAS_URL: hops's own text
+    except ConfigError as exc:  # truenas.Unavailable, or a malformed HOPS_<NAME>_TRUENAS_URL: hops's own text
         client = None
         notes.append(str(exc))
     sections = {

@@ -490,6 +490,11 @@ def test_status_does_not_list_truenas_apps_as_undeclared(hops, host):
     assert [u["container"] for u in undeclared] == ["adhoc", "spike"]
 
 
+def test_status_lists_ix_containers_as_undeclared_on_a_host_without_truenas(hops, host, plain_host):
+    undeclared = [u["container"] for u in json.loads(hops("status", "--json").out)["undeclared"]]
+    assert {"adhoc", "spike"} < set(undeclared) and any(name.startswith("ix-") for name in undeclared)
+
+
 @pytest.mark.live
 def test_live_list_never_calls_a_stacks_data_a_stray(capsys):
     from hops import cli

@@ -1,0 +1,5 @@
+services:
+  calibre-web-automated:
+    image: crocodilestick/calibre-web-automated:v3.1.4
+    container_name: calibre-web-automated
+    labels: {tier: warning}

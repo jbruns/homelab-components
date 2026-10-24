@@ -208,7 +208,7 @@ def test_a_name_off_the_adr_0010_convention_only_warns(hops, host, pool):
     host.add(OLD, {"f": "x"})
     outcome = hops("volume", "move", OLD, "scratch-new", "--issue", "638", truenas=pool.client)
     assert outcome.code == 0, outcome.err
-    assert "warning: scratch-new does not follow ADR 0010" in outcome.err
+    assert "warning: scratch-new does not read <stack>_[<service>_]<purpose>" in outcome.err
 
 
 @pytest.mark.parametrize(

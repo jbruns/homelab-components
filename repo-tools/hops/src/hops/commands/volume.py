@@ -28,7 +28,7 @@ def register(subparsers) -> None:
         "move",
         help=HELP,
         description=(
-            HELP + ". The runtime half of a rename (ADR 0010); the PR changing the volume's name: is the declared "
+            HELP + ". The runtime half of a rename; the PR changing the volume's name: is the declared "
             "half. Refuses unless doco-cd and every container mounting OLD are stopped and NEW is missing or empty. "
             "On a Host with the truenas and zfs capabilities, a Rollback Snapshot for --issue must cover the dataset "
             "holding the volumes (or --take-snapshot takes one); on any other Host, OLD is first copied into a "
@@ -116,7 +116,7 @@ def truenas(ctx):
     try:
         return ctx.truenas
     except ConfigError as exc:
-        raise UsageError(f"refusing to move: a rename needs a Rollback Snapshot (ADR 0011), and {exc}") from None
+        raise UsageError(f"refusing to move: a rename on a zfs Host needs a Rollback Snapshot, and {exc}") from None
 
 
 def last_stop(containers) -> tuple[datetime, str] | None:

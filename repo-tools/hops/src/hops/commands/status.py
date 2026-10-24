@@ -33,14 +33,16 @@ def service_row(service: Service, container: docker.Container | None) -> dict:
     }
 
 
-def report(declared, services: list[Service], containers: list[docker.Container], undeclared: bool) -> dict:
+def report(
+    declared, services: list[Service], containers: list[docker.Container], undeclared: bool, *, truenas: bool
+) -> dict:
     by_service: dict[str, list[docker.Container]] = {}
     strays = []
     for c in containers:
         owner = declared.by_compose_labels(c.labels)
         if owner:
             by_service.setdefault(owner.key, []).append(c)
-        elif c.running and no_declared_service(declared, c):
+        elif c.running and no_declared_service(declared, c, truenas=truenas):
             strays.append(c)
     return {
         "services": [service_row(s, docker.pick(by_service.get(s.key, []))) for s in services],
@@ -55,7 +57,13 @@ def report(declared, services: list[Service], containers: list[docker.Container]
 
 def run(args, ctx) -> int:
     services = ctx.declared.resolve(args.targets) if args.targets else ctx.declared.services
-    data = report(ctx.declared, services, docker.all_containers(ctx.runner), undeclared=not args.targets)
+    data = report(
+        ctx.declared,
+        services,
+        docker.all_containers(ctx.runner),
+        undeclared=not args.targets,
+        truenas=ctx.has("truenas"),
+    )
     if args.json:
         output.print_json(data, ctx.stdout)
         return 0

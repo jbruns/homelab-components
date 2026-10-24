@@ -1,12 +1,12 @@
-"""The silences of `hops stop`, checked against a consuming repo's real alert rules and scrape config.
+"""The silences of `hops stop`, checked against a consuming repo's alert rules and scrape config.
 
-These read the consuming repo's Stacks and its monitoring Stack (Prometheus's alerting-rules.yml and
-prometheus.yml), so they run only against one:
+These read a consuming repo's Stacks and its monitoring Stack (Prometheus's alerting-rules.yml and
+prometheus.yml, Alertmanager's config.yml): by default tests/fixtures/consumer, a cut-down copy of
+home-ops's. To check a real one, whose Stacks and Services must include the ones named below:
 
-    HOPS_CONSUMER_REPO=~/src/home-ops pytest -m consumer
+    HOPS_CONSUMER_REPO=~/src/home-ops pytest tests/test_hops_consumer_silences.py
 
-The Host is HOPS_CONSUMER_HOST, else the consuming repo's only Host. The Stacks and Services named
-below are home-ops's.
+The Host is HOPS_CONSUMER_HOST, else the consuming repo's only Host.
 """
 
 import os
@@ -20,16 +20,10 @@ from hops import config
 from hops import silences as silences_module
 from hops.declared import Declared
 
-CONSUMER = os.environ.get("HOPS_CONSUMER_REPO")
-pytestmark = [
-    pytest.mark.consumer,
-    pytest.mark.skipif(not CONSUMER, reason="reads a consuming repo; set HOPS_CONSUMER_REPO"),
-]
-
-if CONSUMER:
-    REPO = Path(CONSUMER).expanduser().resolve()
-    STACK_ROOT = config.load_hosts(REPO).pick(os.environ.get("HOPS_CONSUMER_HOST")).stack_root
-    MONITORING = REPO / STACK_ROOT / "monitoring" / "prometheus"
+FIXTURE = Path(__file__).parent / "fixtures" / "consumer"
+REPO = Path(os.environ.get("HOPS_CONSUMER_REPO") or FIXTURE).expanduser().resolve()
+STACK_ROOT = config.load_hosts(REPO).pick(os.environ.get("HOPS_CONSUMER_HOST")).stack_root
+MONITORING = REPO / STACK_ROOT / "monitoring" / "prometheus"
 
 
 def rule(name: str) -> dict:

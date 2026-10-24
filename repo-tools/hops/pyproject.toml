@@ -32,7 +32,6 @@ addopts = "--strict-markers --import-mode=importlib"
 testpaths = ["tests"]
 markers = [
   "live: read-only checks against a real Host; run with -m live",
-  "consumer: checks a consuming repo's config; run with HOPS_CONSUMER_REPO set",
 ]
 
 [tool.ruff]

@@ -25,7 +25,7 @@ def truenas_app(name: str, project: str | None) -> bool:
     return name.startswith("ix-") or (project or "").startswith("ix-")
 
 
-def undeclared(declared: Declared, c: Container, truenas: bool = True) -> bool:
+def undeclared(declared: Declared, c: Container, *, truenas: bool) -> bool:
     """A container no declared Service accounts for, by its Compose labels or its declared
     container_name (a container deployed under a legacy Compose project), and, on a TrueNAS Host,
     not a TrueNAS App's."""
@@ -61,7 +61,7 @@ def classify(
     volumes: list[dict],
     networks: list[dict],
     *,
-    truenas: bool = True,
+    truenas: bool,
     on: date | None = None,
 ) -> dict:
     """The Strays of each kind, as the JSON `hops strays` prints (README). Rows are `docker … ls` JSON.
@@ -78,7 +78,7 @@ def classify(
 
     stray_containers, kept = [], []
     for c in containers:
-        if not undeclared(declared, c, truenas):
+        if not undeclared(declared, c, truenas=truenas):
             kept.append(c)
             continue
         keep = (

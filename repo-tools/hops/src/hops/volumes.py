@@ -145,7 +145,7 @@ def convention(declared: Declared, name: str) -> str | None:
     stack, sep, rest = name.partition("_")
     if sep and rest and stack in declared.stacks:
         return None
-    return f"{name} does not follow ADR 0010's <stack>_[<service>_]<purpose> for a declared Stack"
+    return f"{name} does not read <stack>_[<service>_]<purpose> for a declared Stack"
 
 
 def volumes_dir(runner: Runner) -> str:

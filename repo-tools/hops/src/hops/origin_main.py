@@ -29,7 +29,7 @@ def _git(repo_root: Path, *args: str) -> bytes:
         raise HopsError(f"git {' '.join(args)} failed: {detail.decode(errors='replace').strip() or exc}") from None
 
 
-def load(repo_root: Path, stack_root: str, branch: str = "main") -> tuple[Declared, str]:
+def load(repo_root: Path, stack_root: str, branch: str) -> tuple[Declared, str]:
     """Fetch `branch` from origin and load the Stack root of that commit; returns it and the commit's SHA.
 
     The tree is unpacked under the repository's git directory, so it never mixes with the checkout.

@@ -1,0 +1,4 @@
+services:
+  doco-cd:  # no container_name: Compose names it doco-cd-doco-cd-<n>
+    image: ghcr.io/kimdre/doco-cd:0.70.0
+    labels: {tier: warning}

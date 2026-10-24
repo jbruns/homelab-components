@@ -34,7 +34,7 @@ def json_lines(text: str) -> list[dict]:
 KINDS = ("containers", "images", "networks", "volumes")
 
 
-def read_host(runner, declared, truenas: bool = True) -> dict:
+def read_host(runner, declared, *, truenas: bool) -> dict:
     return strays.classify(
         declared,
         docker.all_containers(runner),
@@ -138,7 +138,7 @@ def image_label(image: dict) -> str:
     return " ".join(image["refs"]) or f"{image['repository'] or ''} (untagged)".lstrip()
 
 
-def print_report(report: dict, source: str, out, snapshots_possible: bool = True) -> None:
+def print_report(report: dict, source: str, out, *, snapshots_possible: bool) -> None:
     sections = [
         (
             "containers",
@@ -214,7 +214,7 @@ def run(args, ctx) -> int:
     unknown = strays.unresolved(declared.resource_names("volumes"))
     if args.volumes and unknown:
         raise ConfigError(f"cannot remove volumes: declared volume names use variables ({', '.join(unknown)})")
-    report = {"declared_from": source, **read_host(ctx.runner, declared, ctx.has("truenas"))}
+    report = {"declared_from": source, **read_host(ctx.runner, declared, truenas=ctx.has("truenas"))}
     snapshots_ok = True
     try:
         report["snapshots"], report["snapshots_unchecked"] = expired_snapshots(ctx)
@@ -224,7 +224,7 @@ def run(args, ctx) -> int:
         snapshots_ok = False
     say = (lambda _: None) if args.json else ctx.stdout.write
     if not args.json:
-        print_report(report, said, ctx.stdout, ctx.has("truenas", "zfs"))
+        print_report(report, said, ctx.stdout, snapshots_possible=ctx.has("truenas", "zfs"))
     ok = True
     if args.apply:
         if not args.json and any(removable(report, k) for k in KINDS):

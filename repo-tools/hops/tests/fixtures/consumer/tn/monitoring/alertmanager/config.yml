@@ -1,0 +1,12 @@
+inhibit_rules:
+  - source_matchers: [alertname="InternetDown"]
+    target_matchers: [alertname="ProbeFailed"]
+  - source_matchers: [alertname="ProbeFailed", container="traefik"]
+    target_matchers: [alertname="ProbeFailed", job=~"probe|probe-idp", container!="traefik"]
+  - source_matchers: [alertname="ContainerDown"]
+    target_matchers: [alertname="DatastoreDown"]
+    equal: [name]
+  - source_matchers: [alertname="IdpForwardAuthFailing"]
+    target_matchers: [alertname="ProbeFailed", job="probe-idp", auth="forward"]
+  - source_matchers: [alertname="ProbeFailed", container="traefik"]
+    target_matchers: [alertname="IdpForwardAuthFailing"]
