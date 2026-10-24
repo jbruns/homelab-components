@@ -105,7 +105,7 @@ One `key value` pair per line; `#` starts a comment line. Unknown keys, duplicat
 | `revision` | yes | The full lowercase commit SHA `ref` must resolve to; setup refuses a ref that has moved |
 | `exclude` | no | Skip a published skill: a bare name matches it in any category, a path matches exactly |
 | `include` | no | Add an unpublished skill, as a path under the source's `skills/` |
-| `target` | no | An install directory inside the repo (no `..`, `.` or `.git` segments, not nested in another target); default `.agents/skills` |
+| `target` | no | An install directory inside the repo (no `..`, `.` or `.git` segments, no symlink on its path, not nested in another target); default `.agents/skills` |
 
 The installed set is the source's published `.claude-plugin/plugin.json` `skills` array, minus `exclude`, plus
 `include`. Manifest paths must be under `skills/`; each skill installs by its final segment (`engineering/tdd`
@@ -137,7 +137,10 @@ setup to repair missing or changed files.
 
 Setup replaces local edits to managed skills and removes previously managed skills no longer selected. It never
 touches a directory it did not install: an unmanaged directory, file or symlink with a selected skill's name in any
-target fails setup before anything changes. Keep custom skills under other names. Setup records the skills it is
+target fails setup before anything changes. Keep custom skills under other names. Every command refuses a
+target whose path passes through a symlink before it reads or changes anything, so a target cannot reach
+outside the repo or into `.git`; state and lock files are written to a fresh temporary file and renamed into
+place. Setup records the skills it is
 about to copy before copying them, so an interrupted install stays managed: `check` fails, and setup or `clean`
 finishes the job. `clean` removes only the skills listed in each target's state; with a missing or invalid lock it
 cleans `.agents/skills`. If a state file is lost, move the conflicting skill directories aside before reinstalling.

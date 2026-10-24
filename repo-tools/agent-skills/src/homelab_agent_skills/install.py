@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import AgentSkillsError
+from .files import replace_file
 from .lock import skill_name, validate_skill_path, write_pin
 from .source import Checkout, git, resolve_skills, unmatched_excludes
 
@@ -40,6 +41,13 @@ class Target:
         self.relative = relative
         self.dir = root / relative
         self.state_file = self.dir / STATE_FILE
+        # The lock only allows plain relative segments, so with no symlink on the way the target stays inside the
+        # repo and outside .git. A target that does not exist yet is fine.
+        path = root
+        for segment in relative.split("/"):
+            path = path / segment
+            if path.is_symlink():
+                raise AgentSkillsError(f"target {relative} must not pass through a symlink ({path.relative_to(root)})")
 
     def read_state(self):
         """The lock settings recorded at install time, and (skill path, tree hash or None) for each managed skill.
@@ -64,9 +72,7 @@ class Target:
         return self.read_state()[1]
 
     def _write_state(self, lines):
-        partial = self.dir / f"{STATE_FILE}.new"
-        partial.write_text("\n".join(lines) + "\n")
-        partial.replace(self.state_file)
+        replace_file(self.state_file, "\n".join(lines) + "\n")
 
     def refuse_unmanaged(self, skills):
         managed = {skill_name(skill) for skill, _ in self.managed()}
@@ -177,5 +183,5 @@ def pin(root, lock, ref):
 
 
 def clean(root, targets):
-    removed = [Target(root, relative).clean() for relative in targets]
+    removed = [target.clean() for target in [Target(root, relative) for relative in targets]]
     print("Removed repository-managed agent skills." if any(removed) else "No managed agent skills are installed.")

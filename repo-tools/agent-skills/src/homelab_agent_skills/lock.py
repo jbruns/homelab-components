@@ -1,11 +1,11 @@
 """The consuming repo's `.agent-skills.lock`: where the skills come from, which ones, and where they install."""
 
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import AgentSkillsError
+from .files import replace_file
 
 LOCK_FILE = ".agent-skills.lock"
 DEFAULT_TARGET = ".agents/skills"
@@ -125,7 +125,4 @@ def write_pin(lock, ref, revision):
         if fields and fields[0] in replaced:
             line = replaced[fields[0]] + "\n"
         lines.append(line)
-    partial = lock.path.with_name(lock.path.name + ".new")
-    partial.write_text("".join(lines))
-    shutil.copymode(lock.path, partial)
-    partial.replace(lock.path)
+    replace_file(lock.path, "".join(lines), mode=lock.path.stat().st_mode & 0o777)

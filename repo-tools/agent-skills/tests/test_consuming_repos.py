@@ -133,3 +133,97 @@ def test_recovery_hints_name_the_command_the_repo_runs(project, source, run, mon
     code, _, err = run("check")
     assert code == 1
     assert err.endswith("; run tools/agent-skills/setup-agent-skills\n")
+
+
+@pytest.fixture
+def outside(tmp_path):
+    """A directory outside the repo that looks like a managed install, which nothing may touch."""
+    outside = tmp_path / "outside"
+    (outside / "tdd").mkdir(parents=True)
+    (outside / "tdd/SKILL.md").write_text("not yours\n")
+    (outside / ".agent-skills-managed").write_text("skill tdd\n")
+    return outside
+
+
+@pytest.fixture
+def published(project, source):
+    source.add_skill("tdd")
+    return source.publish("tdd")
+
+
+@pytest.mark.parametrize("link", [".agents/skills", ".agents"])
+@pytest.mark.parametrize("command", [[], ["check"], ["clean"]])
+def test_a_target_reached_through_a_symlink_is_refused_before_anything_changes(
+    project, published, outside, run, link, command
+):
+    project.write_lock(published)
+    (project.path / link).parent.mkdir(parents=True, exist_ok=True)
+    (project.path / link).symlink_to(outside if link == ".agents/skills" else outside.parent)
+    if link == ".agents":
+        (outside.parent / "skills").symlink_to(outside)
+
+    code, _, err = run(*command)
+    assert code == 1
+    assert "target .agents/skills must not pass through a symlink" in err
+    assert (outside / "tdd/SKILL.md").read_text() == "not yours\n"
+    assert (outside / ".agent-skills-managed").read_text() == "skill tdd\n"
+
+
+def test_a_symlink_into_git_is_refused(project, published, run):
+    (project.path / ".agents").mkdir()
+    (project.path / ".agents/skills").symlink_to(project.path / ".git")
+    project.write_lock(published)
+
+    code, _, err = run()
+    assert code == 1
+    assert "must not pass through a symlink" in err
+    assert not (project.path / ".git/tdd").exists()
+
+
+def test_clean_refuses_every_target_before_cleaning_any(project, published, outside, run):
+    project.write_lock(published, "target .agents/skills", "target .claude/skills")
+    assert run()[0] == 0
+    (project.path / ".claude/skills").rename(project.path / "moved")
+    (project.path / ".claude/skills").symlink_to(outside)
+
+    assert run("clean")[0] == 1
+    assert project.installed() == ["tdd"]
+    assert (outside / "tdd/SKILL.md").exists()
+
+
+def test_a_planted_staging_symlink_never_redirects_the_state_write(project, published, tmp_path, run):
+    victim = tmp_path / "victim"
+    victim.write_text("precious\n")
+    skills = project.path / ".agents/skills"
+    skills.mkdir(parents=True)
+    (skills / ".agent-skills-managed.new").symlink_to(victim)
+    project.write_lock(published)
+
+    assert run()[0] == 0
+    assert victim.read_text() == "precious\n"
+    assert not (skills / ".agent-skills-managed").is_symlink()
+    assert run("check")[0] == 0
+
+
+def test_a_planted_staging_symlink_never_redirects_the_lock_write(project, source, published, tmp_path, run):
+    victim = tmp_path / "victim"
+    victim.write_text("precious\n")
+    (project.path / ".agent-skills.lock.new").symlink_to(victim)
+    project.write_lock(published)
+    project.lock.chmod(0o640)
+    revision = source.publish("tdd")
+
+    assert run("pin", revision)[0] == 0
+    assert victim.read_text() == "precious\n"
+    assert not project.lock.is_symlink()
+    assert f"revision {revision}\n" in project.lock.read_text()
+    assert project.lock.stat().st_mode & 0o777 == 0o640
+
+
+def test_setup_and_pin_leave_no_staging_files(project, source, published, run):
+    project.write_lock(published)
+    assert run()[0] == 0
+    assert run("pin", source.publish("tdd"))[0] == 0
+
+    assert sorted(p.name for p in (project.path / ".agents/skills").iterdir()) == [".agent-skills-managed", "tdd"]
+    assert sorted(p.name for p in project.path.iterdir() if p.name != ".git") == [".agent-skills.lock", ".agents"]
