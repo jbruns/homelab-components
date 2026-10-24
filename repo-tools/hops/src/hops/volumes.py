@@ -126,8 +126,9 @@ def blocks(fd, size, path):
                 end = os.lseek(fd, start, os.SEEK_HOLE)
             except OSError as exc:
                 if exc.errno == errno.ENXIO:  # nothing but a hole from pos to the end, unless it shrank
-                    if os.fstat(fd).st_size < size:
-                        raise RuntimeError(ended(path, os.fstat(fd).st_size, size)) from None
+                    now = os.fstat(fd).st_size
+                    if now < size:
+                        raise RuntimeError(ended(path, now, size)) from None
                     return
                 if exc.errno != errno.EINVAL:
                     raise

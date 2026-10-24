@@ -981,11 +981,11 @@ def test_copy_keeps_holes_between_small_writes(tmp_path):
 
 
 CORRUPT = (
-    "real_pwrite = os.pwrite\n"
-    "os.pwrite = lambda fd, data, off: real_pwrite(fd, bytes(data).replace(b'end', b'END'), off)\n"
+    "corrupt_pwrite = os.pwrite\n"
+    "os.pwrite = lambda fd, data, off: corrupt_pwrite(fd, bytes(data).replace(b'end', b'END'), off)\n"
 )
-SHORT_READS = "real_pread = os.pread\nos.pread = lambda fd, n, off: real_pread(fd, min(n, 4096), off)\n"
-SHORT_WRITES = "real_pwrite = os.pwrite\nos.pwrite = lambda fd, data, off: real_pwrite(fd, bytes(data)[:4096], off)\n"
+SHORT_READS = "short_pread = os.pread\nos.pread = lambda fd, n, off: short_pread(fd, min(n, 4096), off)\n"
+SHORT_WRITES = "short_pwrite = os.pwrite\nos.pwrite = lambda fd, data, off: short_pwrite(fd, bytes(data)[:4096], off)\n"
 
 
 def patched(prelude: str, mode, root: Path) -> tuple[int, dict]:
