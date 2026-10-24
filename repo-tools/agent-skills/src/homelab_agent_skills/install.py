@@ -41,13 +41,16 @@ class Target:
         self.relative = relative
         self.dir = root / relative
         self.state_file = self.dir / STATE_FILE
-        # The lock only allows plain relative segments, so with no symlink on the way the target stays inside the
-        # repo and outside .git. A target that does not exist yet is fine.
+        # The lock allows only plain relative segments and no .git in any case, so with no symlink on the way the
+        # target stays inside the repo and outside .git; the resolved check backs that up. It need not exist yet.
         path = root
         for segment in relative.split("/"):
             path = path / segment
             if path.is_symlink():
                 raise AgentSkillsError(f"target {relative} must not pass through a symlink ({path.relative_to(root)})")
+        resolved, repo = self.dir.resolve(), root.resolve()
+        if not resolved.is_relative_to(repo) or resolved.is_relative_to((repo / ".git").resolve()):
+            raise AgentSkillsError(f"target {relative} must stay inside the repo and outside .git")
 
     def read_state(self):
         """The lock settings recorded at install time, and (skill path, tree hash or None) for each managed skill.

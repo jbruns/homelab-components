@@ -105,7 +105,7 @@ One `key value` pair per line; `#` starts a comment line. Unknown keys, duplicat
 | `revision` | yes | The full lowercase commit SHA `ref` must resolve to; setup refuses a ref that has moved |
 | `exclude` | no | Skip a published skill: a bare name matches it in any category, a path matches exactly |
 | `include` | no | Add an unpublished skill, as a path under the source's `skills/` |
-| `target` | no | An install directory inside the repo (no `..`, `.` or `.git` segments, no symlink on its path, not nested in another target); default `.agents/skills` |
+| `target` | no | An install directory inside the repo (no `..`, `.` or `.git` segments in any case, no symlink on its path, not nested in another target); default `.agents/skills` |
 
 The installed set is the source's published `.claude-plugin/plugin.json` `skills` array, minus `exclude`, plus
 `include`. Manifest paths must be under `skills/`; each skill installs by its final segment (`engineering/tdd`

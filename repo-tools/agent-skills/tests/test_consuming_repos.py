@@ -107,6 +107,7 @@ def test_clean_empties_every_target(two_targets, run):
         ("/abs/skills", "target must be a relative path inside the repo"),
         (".git/skills", "target must be a relative path inside the repo"),
         ("a/./b", "target must be a relative path inside the repo"),
+        (".GIT/hooks", "target must be a relative path inside the repo"),
     ],
 )
 def test_a_target_outside_the_repo_is_rejected(project, source, run, target, message):
@@ -115,6 +116,14 @@ def test_a_target_outside_the_repo_is_rejected(project, source, run, target, mes
     code, _, err = run("check")
     assert code == 1
     assert message in err
+
+
+def test_nested_targets_are_rejected_whatever_their_case(project, run):
+    project.write_lock("0" * 40, "target .agents", "target .Agents/skills")
+
+    code, _, err = run("check")
+    assert code == 1
+    assert "target '.Agents/skills' is inside target '.agents'" in err
 
 
 def test_nested_targets_are_rejected(project, run):

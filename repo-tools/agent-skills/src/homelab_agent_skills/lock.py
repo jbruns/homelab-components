@@ -34,7 +34,8 @@ def validate_skill_path(skill):
 
 def _validate_target(target, where):
     segments = target.split("/")
-    if not all(_TARGET_SEGMENT.fullmatch(s) and s not in (".", "..", ".git") for s in segments):
+    # Case-insensitive, because .GIT is .git on the default macOS and Windows filesystems.
+    if not all(_TARGET_SEGMENT.fullmatch(s) and s.lower() not in (".", "..", ".git") for s in segments):
         raise AgentSkillsError(f"target must be a relative path inside the repo without '.', '..' or '.git': {where}")
     return target
 
@@ -104,7 +105,7 @@ def load_lock(path):
     targets = lists["target"] or [DEFAULT_TARGET]
     for target in targets:
         for other in targets:
-            if other != target and other.startswith(target + "/"):
+            if other != target and other.lower().startswith(target.lower() + "/"):
                 raise AgentSkillsError(f"target '{other}' is inside target '{target}' in {path}")
 
     lock = Lock(
