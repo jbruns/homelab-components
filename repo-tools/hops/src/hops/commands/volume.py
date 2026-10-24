@@ -223,13 +223,16 @@ def state(ctx, image: str, directory: str, old: str, new: str, probe=None) -> st
 
 
 def keep_rollback(ctx, image: str, directory: str, rollback, entries: int) -> None:
-    """Create the Rollback Volume and copy <old> into it; raises before anything is moved if that fails."""
+    """Create the Rollback Volume and copy <old> into it; raises before anything is moved if that fails,
+    removing what there is of the Rollback Volume: <old> is as it was, so nothing is lost with it."""
+    name = rollback.name
 
-    def failed(step: str, detail: str):
-        raise HopsError(
-            f"{step} failed: {detail}. Nothing was moved and {rollback.of} is as it was; remove "
-            f"{rollback.name} (docker volume rm {rollback.name}) before running hops volume move again"
-        )
+    def failed(step: str, detail: str, running: bool = False):
+        if running:
+            then = f"once it has exited, remove {name} (docker volume rm {name}) before running hops volume move again"
+        else:
+            then = removed_partial(ctx, name)
+        raise HopsError(f"{step} failed: {detail}. Nothing was moved and {rollback.of} is as it was; {then}")
 
     try:
         ctx.runner.docker("volume", "create", *rollback.labels(), rollback.name)
@@ -246,6 +249,7 @@ def keep_rollback(ctx, image: str, directory: str, rollback, entries: int) -> No
             f"copying {rollback.of} into {rollback.name}",
             f"{exc}; its container (label {volumes.LABEL}="
             f"{rollback.of}) may still be running on the Host, so wait for it to exit",
+            running=True,
         )
     except HopsError as exc:
         failed(f"copying {rollback.of} into {rollback.name}", str(exc))
@@ -253,6 +257,20 @@ def keep_rollback(ctx, image: str, directory: str, rollback, entries: int) -> No
         failed(f"copying {rollback.of} into {rollback.name}", copied.error)
     if not copied.verified or copied.old is None or copied.old["entries"] != entries:
         failed("checking the copy", f"the copy reported no verified manifest of {entries} top-level entries")
+
+
+def removed_partial(ctx, name: str) -> str:
+    """Remove a Rollback Volume whose copy failed, and say how that went."""
+    result = ctx.runner.docker("volume", "rm", name, check=False)
+    if result.returncode == 0:
+        return f"removed the partial Rollback Volume {name}"
+    if "no such volume" in result.stderr.lower():
+        return f"no Rollback Volume {name} was left"
+    detail = result.stderr.strip() or f"exit code {result.returncode}"
+    return (
+        f"removing the partial Rollback Volume {name} failed too (docker volume rm {name} failed: {detail}): "
+        "remove it before running hops volume move again"
+    )
 
 
 def run_move(args, ctx) -> int:
@@ -395,6 +413,15 @@ def run_move(args, ctx) -> int:
         stopped("the move", f"{moved.error} after {moved.moved} of {probe.old['entries']} entries", moved)
     if moved.old is None or moved.new is None or moved.old["entries"] or moved.new["entries"] != probe.old["entries"]:
         stopped("checking the move", f"expected {old} empty and {probe.old['entries']} entries in {new}", moved)
+    if rollback is not None:
+        # The copy matched <old>'s manifest before the move; <new> must match it now, before <old> goes.
+        step = f"checking {new} against Rollback Volume {rollback.name}"
+        try:
+            checked = volumes.verify(ctx.runner, image, directory, rollback.name, new)
+        except HopsError as exc:
+            stopped(step, str(exc), moved)
+        if checked.error or not checked.verified:
+            stopped(step, checked.error or "it reported no verified manifest", moved)
     removed = []
 
     def removing(exc, probe):

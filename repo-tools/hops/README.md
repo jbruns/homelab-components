@@ -512,12 +512,18 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
    `FSETID,MKNOD,SETFCAP,SYS_ADMIN` as well. The image's `cp` is BusyBox's, which drops xattrs, POSIX ACLs and
    setgid bits, so the script copies with Python's own calls: every file type (device nodes and FIFOs too),
    owners, modes, times, hard links, symlinks (never followed) and every xattr, ACLs and `trusted.*` included.
-   It then walks both trees and compares each path's type, mode, owner, size, mtime, device number, symlink
-   target, xattrs and the hard links between its paths. A file hard-linked only from outside the volume becomes
-   a file with a single link in the copy. Any difference, or anything it could not keep, fails the copy and
-   names the paths. `SYS_ADMIN` is there because the kernel hides `trusted.*` xattrs without it, so a lost one would
-   look the same on both sides. If the copy fails, nothing has moved; remove the Rollback Volume before running
-   again.
+   Holes in sparse files stay holes (`SEEK_DATA`/`SEEK_HOLE`), and blocks of written zeros are left out too, so
+   a sparse disk image takes no more room in the copy than in `<old>`.
+   Before copying, it refuses unless the volumes filesystem, which every volume on the Host shares, has free
+   `<old>`'s allocated size plus a reserve of a tenth of it or 1 GiB, whichever is more.
+   It then walks both trees and compares each path's type, mode, owner, size, content (a hash of its non-zero
+   blocks, so a hole and written zeros compare equal), mtime, device number, symlink target, xattrs and the hard
+   links between its paths. A file hard-linked only from outside the volume becomes a file with a single link in
+   the copy. Any difference, or anything it could not keep, fails the copy and names the paths. `SYS_ADMIN` is
+   there because the kernel hides `trusted.*` xattrs without it, so a lost one would look the same on both sides.
+   If the copy fails, nothing has moved and `hops` removes the partial Rollback Volume (`<old>` is intact), or
+   says to remove it if it cannot. If the copy timed out, its container may still be writing, so `hops` leaves
+   the Rollback Volume for you to remove once the container has exited.
 2. Run `docker volume create <new>`, unless the volume exists.
 3. Check the containers on both volumes, and doco-cd's, again. It stops here, before anything
    moves, if any of them has been active since the first checks (a Deploy of the Stack, say): one
@@ -525,10 +531,13 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
 4. Start one container that bind-mounts Docker's volumes directory once, at `/volumes`. The
    container is
    `docker run --rm --label startup-order=skip --log-driver none --network none --pull never
-   --read-only --user 0:0 --cap-drop ALL --cap-add CHOWN,DAC_OVERRIDE,FOWNER` of the python
+   --read-only --user 0:0 --cap-drop ALL --cap-add CHOWN,DAC_OVERRIDE,FOWNER,FSETID,SYS_ADMIN` of the python
    image pinned for `monitoring/dependencies-render`, the same image `logs --loki` uses.
-   Its script first gives `<new>/_data` the owner and mode of `<old>/_data`. Then it calls
+   Its script calls
    `os.rename` on every top-level entry of `<old>/_data`, dotfiles included, into `<new>/_data`.
+   Then it gives `<new>/_data` all of `<old>/_data`'s metadata the way the copy does: owner, mode (setgid and
+   sticky included; `FSETID` keeps setgid on another group's directory), xattrs, access and default ACLs, and
+   times. It reads `<new>/_data` back and fails, naming the fields, unless it matches what `<old>/_data` was.
    Each entry moves instantly within one filesystem and keeps its ownership, permissions and
    times. A symlink is renamed, never followed. Names are passed as arguments, never through a
    shell, so spaces and newlines are safe. An entry already in `<new>` stops the move. Before
@@ -536,7 +545,8 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
 5. Check the containers again, the same way. If one was active during the move, it stops there,
    exits 1 and cleans up nothing. Stop that container first, then look at both volumes.
 6. Check that `<old>/_data` is empty and `<new>/_data` holds as many top-level entries as `<old>`
-   did.
+   did. With a Rollback Volume, also compare the whole manifest of `<new>` with the Rollback Volume's, as the
+   copy did with `<old>`'s; a difference stops it here, before `<old>` is removed.
 7. `docker rm` (never forced) the stopped containers that reference `<old>`. Docker will not
    remove a volume while any container references it, even a stopped one. This is runtime
    state: the Deploy after merge recreates them with the new name, since their volume changed.
@@ -1021,5 +1031,6 @@ one Host, `truenas` (stack root `tn`, capabilities `truenas` and `zfs`); `hops_f
 consuming repo's monitoring config: `tests/fixtures/consumer` by default, or `HOPS_CONSUMER_REPO`. The `live`
 suite is skipped unless selected with `-m live`; it reaches the Host of `HOPS_CONSUMER_REPO` (Host
 `HOPS_CONSUMER_HOST`, else its only one) and must only ever read. `test_hops_volume_copy_docker.py` (marker
-`docker`) runs the Rollback Volume copy in a real python Alpine container against Docker volumes holding ACLs,
-xattrs, device nodes and setuid/setgid files; it is skipped when no Docker daemon answers.
+`docker`) runs the Rollback Volume copy, the move and its check against the Rollback Volume in a real python
+Alpine container against Docker volumes holding ACLs (on the root too), xattrs, device nodes, a sparse file and
+setuid/setgid files; it is skipped when no Docker daemon answers.

@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -12,6 +14,7 @@ from hops_fakes import FakeSnapshots as Pool
 from hops_fakes import container, rollback
 
 from hops import snapshots, volumes
+from hops.errors import HostTimeout
 
 NOW = datetime(2026, 10, 23, 15, 47, 5, tzinfo=UTC)
 PYTHON = "python:3.14.8-alpine3.24@sha256:4444"
@@ -98,8 +101,7 @@ class Host:
         return call.docker[-1][-1] + "\n"
 
     def remove(self, call):
-        os.rmdir(self.root / call.docker[-1][-1] / "_data")
-        os.rmdir(self.root / call.docker[-1][-1])
+        shutil.rmtree(self.root / call.docker[-1][-1])
         return ""
 
     def ps(self, call):
@@ -115,15 +117,19 @@ class Host:
 
     def run(self, call):
         args = call.docker[-1]
-        mode, root, old, new = args[-4:]
+        code, mode, root, *rest = args[args.index("-c") + 1 :]
         assert root == volumes.ROOT and args[args.index("-v") + 1].startswith(f"{self.docker_root}/volumes:{root}")
         self.runs.append(mode)
-        done = subprocess.run(
-            [sys.executable, "-c", args[-5], mode, str(self.root), old, new], capture_output=True, text=True
-        )
+        done = subprocess.run([sys.executable, "-c", code, mode, str(self.root), *rest], capture_output=True, text=True)
         report = json.loads(done.stdout)
         report["mount"] = [self.fstype, self.dataset]
         return json.dumps(report)
+
+
+def mode_of(call) -> str:
+    """The SCRIPT mode of a `docker run` of the move container."""
+    args = call.docker[-1]
+    return args[args.index("-c") + 2]
 
 
 @pytest.fixture
@@ -399,7 +405,7 @@ def test_a_failure_part_way_reports_both_volumes_and_rolls_nothing_back(hops, ho
     run = host.run
 
     def fails_after_one(call):
-        if call.docker[-1][-4] == "check":
+        if mode_of(call) == "check":
             return run(call)
         report = json.loads(run(call))  # moves everything, then report as if it stopped after one
         report.update(
@@ -458,7 +464,7 @@ def test_a_consumer_appearing_during_the_move_stops_before_cleanup(hops, host, p
 
     def deploy_during_move(call):
         report = run(call)
-        if call.docker[-1][-4] == "move":
+        if mode_of(call) == "move":
             host.containers.setdefault(on, []).append(
                 mounting("mariadb", on, project="nextcloud", service="mariadb", status=status)
             )
@@ -506,7 +512,7 @@ def test_a_known_consumer_that_ran_during_the_move_stops_before_cleanup(hops, ho
 
     def runs_during_move(call):
         report = run(call)
-        if call.docker[-1][-4] == "move":
+        if mode_of(call) == "move":
             ran_and_exited(db, host)
         return report
 
@@ -583,7 +589,7 @@ def test_doco_cd_starting_during_the_move_stops_before_cleanup(hops, host, pool,
 
     def doco_cd_during_move(call):
         report = run(call)
-        if call.docker[-1][-4] == "move":
+        if mode_of(call) == "move":
             host.deployer = doco_cd("exited" if ran else "running")
             host.deployer["State"]["StartedAt"] = "2026-10-23T15:47:06.1Z"
         return report
@@ -631,7 +637,7 @@ def test_without_zfs_move_first_copies_old_into_a_labelled_rollback_volume(hops,
             ROLLBACK,
         ]
     ]
-    assert host.runs == ["check", "copy", "move", "check"]
+    assert host.runs == ["check", "copy", "move", "verify", "check"]
     kept = host.root / ROLLBACK / "_data"
     assert (kept / ".hidden").read_text() == "dot" and (kept / "nested" / "file").read_text() == "x"
     assert kept.stat().st_mode & 0o7777 == 0o710
@@ -683,7 +689,7 @@ def test_without_zfs_a_failed_copy_moves_nothing(hops, host, fake_host):
     run = host.run
 
     def copy_fails(call):
-        if call.docker[-1][-4] != "copy":
+        if mode_of(call) != "copy":
             return run(call)
         report = json.loads(run(call))
         report["error"] = "RuntimeError: /volumes/r/_data/f: No space left on device"
@@ -695,9 +701,71 @@ def test_without_zfs_a_failed_copy_moves_nothing(hops, host, fake_host):
     assert outcome.code == 1
     assert (
         f"copying {OLD} into {ROLLBACK} failed: RuntimeError: /volumes/r/_data/f: No space left on device. "
-        f"Nothing was moved and {OLD} is as it was; remove {ROLLBACK}"
+        f"Nothing was moved and {OLD} is as it was; removed the partial Rollback Volume {ROLLBACK}"
     ) in outcome.err
     assert "move" not in host.runs and (host.root / OLD / "_data" / "f").exists()
+    assert ["volume", "rm", ROLLBACK] in fake_host.docker_calls and not (host.root / ROLLBACK).exists()
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_a_partial_rollback_volume_that_cannot_be_removed_is_named(hops, host, fake_host):
+    host.add(OLD, {"f": "x"})
+    run = host.run
+
+    def copy_fails(call):
+        report = json.loads(run(call))
+        if mode_of(call) == "copy":
+            report["error"] = "RuntimeError: disk full"
+        return json.dumps(report)
+
+    fake_host.respond("run", stdout=copy_fails)
+    fake_host.respond("volume", "rm", stderr="volume is in use", returncode=1)
+
+    outcome = move(hops, None)
+    assert outcome.code == 1
+    assert (
+        f"Nothing was moved and {OLD} is as it was; removing the partial Rollback Volume {ROLLBACK} failed too "
+        f"(docker volume rm {ROLLBACK} failed: volume is in use): remove it before running hops volume move again"
+    ) in outcome.err
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_a_copy_that_timed_out_keeps_the_partial_rollback_volume(hops, host, fake_host):
+    host.add(OLD, {"f": "x"})
+    run = host.run
+
+    def copy_times_out(call):
+        if mode_of(call) == "copy":
+            raise HostTimeout("ssh did not finish within 600s")
+        return run(call)
+
+    fake_host.respond("run", stdout=copy_times_out)
+    outcome = move(hops, None)
+    assert outcome.code == 1
+    assert "may still be running on the Host, so wait for it to exit" in outcome.err
+    assert f"once it has exited, remove {ROLLBACK} (docker volume rm {ROLLBACK})" in outcome.err
+    assert not any(c[:2] == ["volume", "rm"] for c in fake_host.docker_calls)
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_the_moved_volume_is_verified_against_the_rollback_volume_before_old_goes(hops, host, fake_host):
+    host.add(OLD, {"f": "x"})
+    run = host.run
+
+    def moved_wrong(call):
+        out = run(call)
+        if mode_of(call) == "move":
+            (host.root / NEW / "_data" / "f").write_text("y")
+        return out
+
+    fake_host.respond("run", stdout=moved_wrong)
+    outcome = move(hops, None)
+    assert outcome.code == 1
+    assert host.runs == ["check", "copy", "move", "verify"]
+    assert f"checking {NEW} against Rollback Volume {ROLLBACK} failed: RuntimeError: {NEW} differs from {ROLLBACK}" in (
+        outcome.err
+    )
+    assert (host.root / OLD).exists() and not any(c[:2] == ["volume", "rm"] for c in fake_host.docker_calls)
 
 
 @pytest.mark.usefixtures("plain_host")
@@ -707,7 +775,7 @@ def test_without_zfs_a_copy_without_a_verified_manifest_moves_nothing(hops, host
 
     def unverified(call):
         report = json.loads(run(call))
-        if call.docker[-1][-4] == "copy":
+        if mode_of(call) == "copy":
             report.pop("verified")
         return json.dumps(report)
 
@@ -734,8 +802,10 @@ def test_without_zfs_a_failure_part_way_points_at_the_rollback_volume(hops, host
 XATTRS = hasattr(os, "setxattr")  # Linux; elsewhere there are none to keep
 
 
-def script(mode, root: Path, old="old", new="new") -> tuple[int, dict]:
-    done = subprocess.run([sys.executable, "-c", volumes.SCRIPT, mode, str(root), old, new], capture_output=True)
+def script(mode, root: Path, old="old", new="new", reserve=volumes.RESERVE) -> tuple[int, dict]:
+    done = subprocess.run(
+        [sys.executable, "-c", volumes.SCRIPT, mode, str(root), old, new, str(reserve)], capture_output=True
+    )
     return done.returncode, json.loads(done.stdout.decode().splitlines()[-1])
 
 
@@ -805,6 +875,13 @@ def _unlink(new):
     (new / "hardlink").write_text("data")
 
 
+def _rewrite(new):
+    file = new / "dir" / "file"
+    st = file.stat()
+    file.write_text("date")
+    os.utime(file, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
 def _xattr(new):
     if not XATTRS:
         pytest.skip("no xattrs on this platform")
@@ -822,6 +899,7 @@ def _xattr(new):
         (_retarget, "symlink"),
         (_unlink, "hardlink"),
         (_xattr, "dir/file"),
+        (_rewrite, "dir/file"),
     ],
 )
 def test_verify_names_any_difference_between_the_volumes(copied, change, path):
@@ -867,10 +945,80 @@ def test_copy_keeps_hard_links_between_files_that_are_not_regular(tmp_path):
     assert os.lstat(new / "symlink").st_ino == os.lstat(new / "symlink2").st_ino
 
 
-@pytest.mark.parametrize("mode", ["copy", "verify"])
-def test_the_modes_that_read_a_manifest_can_see_trusted_xattrs(mode, runner, fake_host):
+def sparse(path: Path, size: int, tail: bytes = b"end") -> None:
+    with open(path, "wb") as f:
+        f.write(b"start")
+        f.seek(size - len(tail))
+        f.write(tail)
+
+
+def test_copy_keeps_the_holes_of_a_sparse_file_and_verifies_its_content(tmp_path):
+    data = tmp_path / "old" / "_data"
+    data.mkdir(parents=True)
+    (tmp_path / "new" / "_data").mkdir(parents=True)
+    sparse(data / "disk.img", 1 << 30)
+    if data.joinpath("disk.img").stat().st_blocks * 512 > 1 << 24:
+        pytest.skip("this filesystem does not keep holes")
+    with open(data / "zeros", "wb") as f:  # written zeros, not a hole: the copy may leave them out too
+        f.write(bytes(1 << 20) + b"x")
+
+    code, report = script("copy", tmp_path)
+
+    assert (code, report["error"], report["verified"]) == (0, None, 3)
+    copy = tmp_path / "new" / "_data" / "disk.img"
+    assert copy.stat().st_size == 1 << 30 and copy.stat().st_blocks * 512 < 1 << 24
+    with open(copy, "rb") as f:
+        assert f.read(5) == b"start" and f.seek(-3, 2) and f.read() == b"end"
+    assert (tmp_path / "new" / "_data" / "zeros").read_bytes() == bytes(1 << 20) + b"x"
+
+
+def test_verify_compares_the_content_of_sparse_files(tmp_path):
+    for name, tail in (("old", b"end"), ("new", b"END")):
+        (tmp_path / name / "_data").mkdir(parents=True)
+        sparse(tmp_path / name / "_data" / "disk.img", 1 << 24, tail)
+        os.utime(tmp_path / name / "_data" / "disk.img", ns=(1, 1))
+        os.utime(tmp_path / name / "_data", ns=(1, 1))
+    code, report = script("verify", tmp_path)
+    assert code == 1 and "'disk.img' (content)" in report["error"]
+
+
+def test_copy_refuses_without_room_for_the_old_volume_and_a_reserve(tmp_path):
+    (tmp_path / "old" / "_data").mkdir(parents=True)
+    (tmp_path / "old" / "_data" / "f").write_text("x")
+    (tmp_path / "new" / "_data").mkdir(parents=True)
+    code, report = script("copy", tmp_path, reserve=1 << 60)
+    assert code == 1
+    assert re.fullmatch(
+        r"RuntimeError: new needs \d+ bytes free \(old's \d+ allocated bytes and a reserve of \d+\), "
+        r"and its filesystem has \d+",
+        report["error"],
+    ), report["error"]
+    assert report["verified"] is None and not any((tmp_path / "new" / "_data").iterdir())
+
+
+def test_move_gives_new_the_old_roots_mode_times_and_xattrs(tmp_path):
+    data = tmp_path / "old" / "_data"
+    data.mkdir(parents=True)
+    (data / "f").write_text("x")
+    (tmp_path / "new" / "_data").mkdir(parents=True)
+    if XATTRS:
+        os.setxattr(data, "user.note", b"root")
+    data.chmod(0o2750)
+    os.utime(data, ns=(1, 1_600_000_000_000_000_000))
+
+    code, report = script("move", tmp_path)
+
+    assert (code, report["error"], report["moved"]) == (0, None, 1)
+    root = (tmp_path / "new" / "_data").stat()
+    assert root.st_mode & 0o7777 == 0o2750 and root.st_mtime_ns == 1_600_000_000_000_000_000
+    if XATTRS:
+        assert os.getxattr(tmp_path / "new" / "_data", "user.note") == b"root"
+
+
+@pytest.mark.parametrize("mode", ["move", "copy", "verify"])
+def test_the_modes_that_keep_metadata_can_keep_setgid_and_trusted_xattrs(mode, runner, fake_host):
     fake_host.respond("run")
     volumes.run(runner, "img", "/volumes", mode, "old", "new")
     argv = fake_host.docker_calls[-1]
     caps = {argv[i + 1] for i, arg in enumerate(argv) if arg == "--cap-add"}
-    assert "SYS_ADMIN" in caps
+    assert {"FSETID", "SYS_ADMIN"} <= caps

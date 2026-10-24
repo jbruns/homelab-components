@@ -2,9 +2,9 @@
 
 One throwaway container bind-mounts Docker's volumes directory once, so each top-level entry of
 <old>/_data moves to <new>/_data with rename(2) within one filesystem: instant, and ownership,
-permissions and timestamps stay as they are. The new _data
-directory itself takes the old one's owner and mode. Symlinks are renamed, never followed. The image is the
-python one hops already runs for `logs --loki` (hops/loki.py), never pulled.
+permissions and timestamps stay as they are. The new _data directory itself then takes all of the old one's
+metadata (owner, mode, xattrs and ACLs, times), and the move checks it did. Symlinks are renamed, never
+followed. The image is the python one hops already runs for `logs --loki` (hops/loki.py), never pulled.
 
 SCRIPT runs in that container (or, in tests, on this machine against a directory). It prints one
 JSON document: the filesystem mounted at ROOT and, for each volume, its _data's device and number of
@@ -13,9 +13,10 @@ top-level entries. `check` only reads; `move` re-checks, renames, and reports th
 `copy` copies <old>/_data into an empty <new>/_data for a Rollback Volume (hops/rollback_volumes.py),
 leaving <old> as it was. The image's cp is BusyBox's, which drops xattrs, POSIX ACLs and setgid bits, so
 SCRIPT copies with Python's own calls: every file type, owners, modes, times, hard links and every xattr
-(ACLs are xattrs). It then compares a manifest of both trees (each path's type, mode, owner, size, mtime,
-device number, symlink target, xattrs and hard-link group) and fails, naming the paths, on any difference.
-`verify` is that comparison alone.
+(ACLs are xattrs); holes stay holes. It first refuses unless the filesystem has room for <old>'s allocated
+size and a reserve. It then compares a manifest of both trees (each path's type, mode, owner, size, content,
+mtime, device number, symlink target, xattrs and hard-link group) and fails, naming the paths, on any
+difference. `verify` is that comparison alone: after a move, of <new> against the Rollback Volume.
 """
 
 import json
@@ -33,18 +34,24 @@ from hops.runner import Runner
 NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]+")
 ROOT = "/volumes"  # where the container sees Docker's volumes directory
 TIMEOUT = 600
+RESERVE = 1 << 30  # the least a Rollback Volume copy leaves free on the volumes filesystem, in bytes
 LABEL = "hops.volume-move"
-# Capabilities by mode. Every mode reads and renames across owners. The copy also keeps setgid on another
-# group's files (FSETID), device nodes (MKNOD), file capabilities (SETFCAP), and trusted.* xattrs, which the
-# kernel hides from a process without SYS_ADMIN: without it, both manifests would lack them and a lost one would
-# pass verification, so verify needs it too.
+# Capabilities by mode. Every mode reads and renames across owners. Keeping metadata (the move's root, every
+# path of a copy) also needs FSETID, or setgid on another group's directory is dropped, and SYS_ADMIN for
+# trusted.* xattrs, which the kernel hides without it: both manifests would lack them and a lost one would pass
+# verification. The copy also makes device nodes (MKNOD) and keeps file capabilities (SETFCAP).
 _ACROSS_OWNERS = ("CHOWN", "DAC_OVERRIDE", "FOWNER")
-_MANIFEST = (*_ACROSS_OWNERS, "FSETID", "MKNOD", "SETFCAP", "SYS_ADMIN")
-CAPABILITIES = {"check": _ACROSS_OWNERS, "move": _ACROSS_OWNERS, "copy": _MANIFEST, "verify": _MANIFEST}
+_METADATA = (*_ACROSS_OWNERS, "FSETID", "SYS_ADMIN")
+CAPABILITIES = {
+    "check": _ACROSS_OWNERS,
+    "move": _METADATA,
+    "verify": _METADATA,
+    "copy": (*_METADATA, "MKNOD", "SETFCAP"),
+}
 SCRIPT = r"""
 import json, os, sys
 
-mode, root, old, new = sys.argv[1:5]
+mode, root, old, new, reserve = sys.argv[1:6]
 
 
 def mount():
@@ -75,6 +82,12 @@ if mode == "check":
     print(json.dumps(state()))
     sys.exit(0)
 
+import errno, hashlib, itertools, stat
+
+sys.setrecursionlimit(10000)
+BLOCK = 1 << 17
+ZERO = bytes(BLOCK)
+
 def xattrs(path):
     # Every extended attribute, POSIX ACLs (system.posix_acl_*) and trusted.* included. Off Linux (this
     # script's tests on macOS) Python has no xattr calls, so there are none to keep or compare.
@@ -99,31 +112,98 @@ def walk(top, rel=""):
             yield from walk(top, os.path.join(rel, name))
 
 
+def blocks(fd, size):
+    # (offset, bytes) of every BLOCK-aligned block of the file that holds anything but zeros. Holes are passed
+    # over with SEEK_DATA/SEEK_HOLE where the filesystem has them; zeros written out are read and left out.
+    # A sparse and a dense file with the same content give the same blocks.
+    pos = 0
+    while pos < size:
+        start, end = pos, size
+        if hasattr(os, "SEEK_DATA"):
+            try:
+                start = os.lseek(fd, pos, os.SEEK_DATA)
+                end = os.lseek(fd, start, os.SEEK_HOLE)
+            except OSError as exc:
+                if exc.errno == errno.ENXIO:  # nothing but a hole from pos to the end
+                    return
+                if exc.errno != errno.EINVAL:
+                    raise
+                start, end = pos, size
+        pos = start - start % BLOCK
+        while pos < end:
+            data = os.pread(fd, BLOCK, pos)
+            if not data:
+                return
+            if data != ZERO[: len(data)]:
+                yield pos, data
+            pos += BLOCK
+
+
+def content(path, size):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for offset, data in blocks(f.fileno(), size):
+            digest.update(offset.to_bytes(8, "little"))
+            digest.update(data)
+    return digest.hexdigest()
+
+
+def record(path, st, link=None):
+    # A path's manifest record: type, mode, owner, size, a hash of its content (holes and written zeros alike),
+    # mtime, device number, symlink target, a hash of each xattr, and `link` (see records).
+    kind = stat.S_IFMT(st.st_mode)
+    return {
+        "type": kind,
+        "mode": stat.S_IMODE(st.st_mode),
+        "uid": st.st_uid,
+        "gid": st.st_gid,
+        "size": st.st_size if kind == stat.S_IFREG else None,
+        "content": content(path, st.st_size) if kind == stat.S_IFREG else None,
+        "mtime": st.st_mtime_ns,
+        "rdev": st.st_rdev if kind in (stat.S_IFCHR, stat.S_IFBLK) else None,
+        "target": os.readlink(path) if kind == stat.S_IFLNK else None,
+        "xattrs": {n: hashlib.sha256(v).hexdigest() for n, v in xattrs(path).items()},
+        "link": link,
+    }
+
+
 def records(top):
-    # The manifest, one (rel, record) at a time so a large volume is never held in memory: type, mode,
-    # owner, size, mtime, device number, symlink target, a hash of each xattr, and, for every path of a
-    # hard-link group but its first, that first path. The first path has none, as a file whose other links are
-    # outside the volume has none: its copy is a file with a single link. A record is read before the next is,
-    # so the two walks stay in step.
+    # The manifest, one (rel, record) at a time so a large volume is never held in memory. `link` is, for every
+    # path of a hard-link group but its first, that first path. The first path has none, as a file whose other
+    # links are outside the volume has none: its copy is a file with a single link. A record is read before the
+    # next is, so the two walks stay in step.
     first = {}
     for rel, path, st in walk(top):
-        kind = stat.S_IFMT(st.st_mode)
         link = None
-        if kind != stat.S_IFDIR and st.st_nlink > 1:
+        if not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1:
             link = first.setdefault((st.st_dev, st.st_ino), rel)
             link = None if link == rel else link
-        yield rel, {
-            "type": kind,
-            "mode": stat.S_IMODE(st.st_mode),
-            "uid": st.st_uid,
-            "gid": st.st_gid,
-            "size": st.st_size if kind == stat.S_IFREG else None,
-            "mtime": st.st_mtime_ns,
-            "rdev": st.st_rdev if kind in (stat.S_IFCHR, stat.S_IFBLK) else None,
-            "target": os.readlink(path) if kind == stat.S_IFLNK else None,
-            "xattrs": {n: hashlib.sha256(v).hexdigest() for n, v in xattrs(path).items()},
-            "link": link,
-        }
+        yield rel, record(path, st, link)
+
+
+def allocated(top):
+    # The bytes top's tree takes on disk, each hard-linked file once: a hole takes none.
+    total, seen = 0, set()
+    for _, _, st in walk(top):
+        if not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1:
+            if (st.st_dev, st.st_ino) in seen:
+                continue
+            seen.add((st.st_dev, st.st_ino))
+        total += st.st_blocks * 512
+    return total
+
+
+def room(src, dst):
+    # Refuse a copy that could fill the volumes filesystem, which every volume on the Host shares.
+    size = allocated(src)
+    spare = max(size // 10, int(reserve))
+    vfs = os.statvfs(dst)
+    free = vfs.f_bavail * vfs.f_frsize
+    if free < size + spare:
+        raise RuntimeError(
+            f"{new} needs {size + spare} bytes free ({old}'s {size} allocated bytes and a reserve of {spare}), "
+            f"and its filesystem has {free}"
+        )
 
 
 def verify(src, dst):
@@ -156,11 +236,15 @@ def verify(src, dst):
 
 
 def keep(src, dst, st):
-    # dst takes src's owner, xattrs, mode and times, in that order: chown clears setuid, setgid and file
-    # capabilities, so xattrs and the mode come after it; setting them does not change the mtime.
+    # dst takes src's owner, xattrs (only src's), mode and times, in that order: chown clears setuid, setgid
+    # and file capabilities, so xattrs and the mode come after it; setting them does not change the mtime.
     kind = stat.S_IFMT(st.st_mode)
     os.chown(dst, st.st_uid, st.st_gid, follow_symlinks=False)
-    for name, value in xattrs(src).items():
+    wanted = xattrs(src)
+    for name in xattrs(dst):
+        if name not in wanted:
+            os.removexattr(dst, name, follow_symlinks=False)
+    for name, value in wanted.items():
         os.setxattr(dst, name, value, follow_symlinks=False)
     if kind != stat.S_IFLNK:
         os.chmod(dst, stat.S_IMODE(st.st_mode))
@@ -191,7 +275,11 @@ def copy_one(src, dst, st, links):
             copy(child, os.path.join(dst, name), os.lstat(child), links)
     elif kind == stat.S_IFREG:
         with open(src, "rb") as f, open(dst, "xb") as g:
-            shutil.copyfileobj(f, g, 1 << 20)
+            for offset, data in blocks(f.fileno(), st.st_size):
+                while data:  # a short write leaves the rest to write
+                    written = os.pwrite(g.fileno(), data, offset)
+                    data, offset = data[written:], offset + written
+            os.ftruncate(g.fileno(), st.st_size)  # the holes, up to the size
     elif kind == stat.S_IFLNK:
         os.symlink(os.readlink(src), dst)
     elif kind in (stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK):
@@ -204,9 +292,6 @@ def copy_one(src, dst, st, links):
 if mode in ("copy", "verify"):
     verified = None
     try:
-        import errno, hashlib, itertools, shutil, stat
-
-        sys.setrecursionlimit(10000)
         before = state()
         if not before["old"] or not before["new"]:
             raise RuntimeError("both volumes' _data must be directories under " + root)
@@ -214,6 +299,7 @@ if mode in ("copy", "verify"):
         if mode == "copy":
             if before["new"]["entries"]:
                 raise RuntimeError(new + " is not empty")
+            room(src, dst)
             copy(src, dst, os.lstat(src), {})
         verified = verify(src, dst)
     except Exception as exc:
@@ -232,15 +318,20 @@ try:
     if before["new"]["entries"]:
         raise RuntimeError(new + " is not empty")
     src, dst = os.path.join(root, old, "_data"), os.path.join(root, new, "_data")
-    # The new _data takes the old one's owner and mode: a Datastore's often belongs to its user.
+    # The new _data takes all of the old one's metadata once the entries are in it (renaming them changes its
+    # times): a Datastore's often belongs to its user, with setgid or default ACLs for what it creates.
     st = os.lstat(src)
-    os.chown(dst, st.st_uid, st.st_gid)
-    os.chmod(dst, st.st_mode & 0o7777)
+    want = record(src, st)
     for entry in os.listdir(src):
         if os.path.lexists(os.path.join(dst, entry)):
             raise RuntimeError("an entry already exists in " + new)
         os.rename(os.path.join(src, entry), os.path.join(dst, entry))
         moved += 1
+    keep(src, dst, st)
+    got = record(dst, os.lstat(dst))
+    fields = [k for k in want if want[k] != got[k]]
+    if fields:
+        raise RuntimeError(f"{new}'s _data did not take {old}'s {', '.join(fields)}")
 except Exception as exc:
     print(json.dumps(state(moved=moved, error=f"{type(exc).__name__}: {exc}")))
     sys.exit(1)
@@ -359,6 +450,7 @@ def run(runner: Runner, image: str, directory: str, mode: str, old: str, new: st
         ROOT,
         old,
         new,
+        str(RESERVE),
         check=False,
         timeout=TIMEOUT,
     )
@@ -367,10 +459,19 @@ def run(runner: Runner, image: str, directory: str, mode: str, old: str, new: st
 def copy(runner: Runner, image: str, directory: str, old: str, new: str) -> Probe:
     """Copy <old>/_data into the empty <new>/_data, keeping <old>. The Probe carries `error` when the
     copy failed; a HopsError means no report came back at all."""
-    result = run(runner, image, directory, "copy", old, new)
+    return reported(runner, image, directory, "copy", old, new)
+
+
+def verify(runner: Runner, image: str, directory: str, old: str, new: str) -> Probe:
+    """Compare the manifests of <old>/_data and <new>/_data. The Probe carries `error` when they differ."""
+    return reported(runner, image, directory, "verify", old, new)
+
+
+def reported(runner: Runner, image: str, directory: str, mode: str, old: str, new: str) -> Probe:
+    result = run(runner, image, directory, mode, old, new)
     if not result.stdout.strip():
         raise HopsError(
-            f"the volume-copy container gave no report: {result.stderr.strip() or f'exit code {result.returncode}'}"
+            f"the volume-{mode} container gave no report: {result.stderr.strip() or f'exit code {result.returncode}'}"
         )
     return Probe.parse(result.stdout.strip().splitlines()[-1])
 
@@ -386,14 +487,9 @@ def check(runner: Runner, image: str, directory: str, old: str, new: str) -> Pro
 
 
 def move(runner: Runner, image: str, directory: str, old: str, new: str) -> Probe:
-    """Rename every top-level entry of <old>/_data into <new>/_data. The Probe carries `error` when it
-    stopped part-way; a HopsError means no report came back at all."""
-    result = run(runner, image, directory, "move", old, new)
-    if not result.stdout.strip():
-        raise HopsError(
-            f"the volume-move container gave no report: {result.stderr.strip() or f'exit code {result.returncode}'}"
-        )
-    return Probe.parse(result.stdout.strip().splitlines()[-1])
+    """Rename every top-level entry of <old>/_data into <new>/_data, then give <new>/_data the metadata of
+    <old>/_data. The Probe carries `error` when it stopped part-way; a HopsError means no report came back."""
+    return reported(runner, image, directory, "move", old, new)
 
 
 def image(declared: Declared, host: str) -> str:
