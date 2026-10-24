@@ -616,7 +616,7 @@ def test_compose_reports_every_rule(validate, repo, capsys, monkeypatch):
     ) in out
     assert "web: volume at /scratch has no source (an anonymous volume)" in out
     assert "app: volumes (ADR 0010): app: volume app_config must be external: true" in out
-    assert "volumes (ADR 0010): legacy name media_gone is no longer declared; remove it from LEGACY_VOLUMES" in out
+    assert "volumes (ADR 0010): legacy name media_gone is no longer declared; drop its --legacy-volume" in out
     assert "media_web_config" not in out
     assert "compose ok: monitoring" not in out
     assert "Baseline: " in capsys.readouterr().out

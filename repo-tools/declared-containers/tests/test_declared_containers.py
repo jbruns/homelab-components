@@ -116,6 +116,12 @@ def test_render_rejects_what_it_cannot_resolve(root, service, problem):
         declared_containers.render(host(root))
 
 
+def test_render_names_an_include_outside_the_stack_root(root):
+    write(root, {"tn/app/compose.yaml": "include:\n  - ../../shared.yaml\n", "shared.yaml": "services:\n  x: {}\n"})
+    with pytest.raises(declared_containers.GeneratorError, match="shared.yaml: x: no tier label"):
+        declared_containers.render(host(root))
+
+
 def test_render_rejects_a_missing_include(root):
     (root / "tn/app/web/service.yaml").unlink()
     with pytest.raises(declared_containers.GeneratorError, match="includes missing .*web/service.yaml"):

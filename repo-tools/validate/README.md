@@ -57,7 +57,8 @@ With no check named, every check runs, including `isolation`. Exit status is 1 i
 - `--path NAME=PATH`: move one [input](#inputs), relative to `--root` or absolute, for every selected Host. Repeat
   it for several. To move an input differently per Host, run once per Host with `--host`.
 - `--legacy-volume NAME`: a volume name from before ADR 0010, allowed until its Stack renames it. Repeat it for
-  several. The `compose` check fails while one is given that no Stack declares, so the list only shrinks.
+  several. A `compose` run over every Host fails while one is given that no Stack declares, so the list only
+  shrinks.
 - `VALIDATE_BASE`: the comparison ref for `isolation`, rule-test freshness and the Grafana upgrade boot (default
   `origin/<default_branch>`, from `hosts.yaml`). In CI, fetch history and set it to the PR base.
 - `GITHUB_ACTIONS`: when set, failures print as GitHub annotations.
@@ -81,6 +82,9 @@ check that reads it is skipped and says so.
 | `declared-containers` | none: runs `homelab-declared-containers` | (always runs when `prometheus` exists) |
 | `blackbox` | `monitoring/blackbox-exporter/blackbox.yml` | no `probe.module` is valid |
 | `traefik` | `edge/traefik/service.yaml` | `cloudflare` skips the Host |
+
+For example, a repo that keeps its dashboard generator and promtool suites outside the stack root runs
+`homelab-validate --path dashboards=tools/dashboards/dashboards.py --path rule-tests=tools/validate/rules`.
 
 A generator (`dashboards`, `declared-containers`) is run with `--check` and must exit 0 when its committed output
 is current. A script path is run with the Python running validate; `dashboards` gets `--out <dashboards-json>`,

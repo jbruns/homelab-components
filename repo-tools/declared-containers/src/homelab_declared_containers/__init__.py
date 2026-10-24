@@ -61,7 +61,8 @@ def declared(host: Host) -> list[tuple[str, str, str, str]]:
                 spec = spec or {}
                 name = str(spec.get("container_name") or f"{stack}-{service}-1")
                 tier = labels_of(spec).get("tier", "")
-                where = f"{host.stack_root}/{f.relative_to(host.path)}: {service}"
+                where = f"{host.stack_root}/{f.relative_to(host.path)}" if f.is_relative_to(host.path) else str(f)
+                where += f": {service}"
                 if VARIABLE.search(name):
                     problems.append(f"{where}: container_name {name!r} must not use variables")
                 if not tier or VARIABLE.search(tier):

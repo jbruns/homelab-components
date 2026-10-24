@@ -55,6 +55,7 @@ from homelab_validate.registry import Registry, RegistryError, Response, urllib_
 # The repository being checked and the Hosts selected in it (configure()).
 ROOT = Path.cwd()
 HOSTS: list[Host] = []
+EVERY_HOST = True
 DEFAULT_BRANCH = "main"
 # Inputs individual checks read, relative to each Host's stack root. None: not checked unless configured.
 PATHS: dict[str, str | None] = {
@@ -117,12 +118,13 @@ def configure(
 ) -> None:
     """Point every check at a repository root and the Hosts its hosts.yaml declares (only `host`, if given),
     override entries of PATHS (relative to `root` or absolute) and set the LEGACY_VOLUMES."""
-    global ROOT, HOSTS, DEFAULT_BRANCH, LEGACY_VOLUMES
+    global ROOT, HOSTS, EVERY_HOST, DEFAULT_BRANCH, LEGACY_VOLUMES
     if unknown := set(paths or {}) - set(PATHS):
         raise KeyError(f"unknown path {sorted(unknown)[0]!r}; choose from {', '.join(PATHS)}")
     ROOT = root.resolve()
     hosts = load_hosts(ROOT)
     HOSTS = [hosts.pick(host)] if host else list(hosts.values())
+    EVERY_HOST = len(HOSTS) == len(hosts)
     DEFAULT_BRANCH = hosts.default_branch
     OVERRIDES.clear()
     OVERRIDES.update(paths or {})
@@ -629,8 +631,9 @@ def check_compose() -> None:
             for tpl in templates:
                 shutil.copytree(tpl.parent, host_dir(host, work) / f"_template-{tpl.parent.name}")
             declared_volumes |= check_host_compose(host, work, registry, read_images)
-    for name in sorted(LEGACY_VOLUMES - declared_volumes):
-        fail(f"volumes (ADR 0010): legacy name {name} is no longer declared; remove it from LEGACY_VOLUMES")
+    # Another Host may declare a legacy name, so only a run over every Host can tell one is gone.
+    for name in sorted(LEGACY_VOLUMES - declared_volumes) if EVERY_HOST else []:
+        fail(f"volumes (ADR 0010): legacy name {name} is no longer declared; drop its --legacy-volume")
 
 
 def check_host_compose(host: Host, work: Path, registry: Registry, read_images: dict) -> set[str]:
@@ -1293,7 +1296,11 @@ def check_rule_tests(host: Host, image: str, rule_files: list[Path], mounts: dic
 
 def check_generator(command: list[str], what: str, *args: str) -> None:
     """Run a generator's --check: its committed output must match what it would write."""
-    result = subprocess.run([*command, "--check", *args], capture_output=True, text=True)
+    try:
+        result = subprocess.run([*command, "--check", *args], capture_output=True, text=True)
+    except FileNotFoundError:
+        fail(f"{what}: cannot run {command[0]}; install it or set --path (see README.md)")
+        return
     if result.returncode:
         fail(result.stdout.strip() or result.stderr.strip(), Path(command[-1]))
     else:
@@ -1311,6 +1318,10 @@ def generator_command(name: str, host: Host) -> list[str] | None:
     if name == "declared-containers":
         return [shutil.which(DECLARED_CONTAINERS) or DECLARED_CONTAINERS]
     return None
+
+
+def skipped(missing: Path) -> None:
+    print(f"monitoring: no {_rel(missing)}; its check skipped")
 
 
 def check_monitoring() -> None:
@@ -1356,6 +1367,8 @@ def check_host_monitoring(host: Host) -> None:
         )
     elif am.is_dir():
         warn("alertmanager config is encrypted-only; amtool check skipped until it is split from its secrets")
+    else:
+        skipped(am)
 
     loki = path("loki", host)
     loki_image = None
@@ -1368,6 +1381,8 @@ def check_host_monitoring(host: Host) -> None:
             "-config.file=/etc/loki/loki.yaml",
             "-verify-config",
         )
+    else:
+        skipped(loki)
 
     alloy = path("alloy", host)
     if alloy.is_dir():
@@ -1379,13 +1394,18 @@ def check_host_monitoring(host: Host) -> None:
             "validate",
             "/etc/alloy/config.alloy",
         )
+    else:
+        skipped(alloy)
 
     if dashboards := generator_command("dashboards", host):
         check_generator(dashboards, "grafana dashboards", "--out", str(path("dashboards-json", host)))
+    else:
+        print("monitoring: no dashboards generator (--path dashboards=SCRIPT); its parity check skipped")
     check_generator(
         generator_command("declared-containers", host), "declared containers", "--root", str(ROOT), "--host", host.name
     )
     if not path("grafana", host).is_dir():
+        skipped(path("grafana", host))
         return
     if not loki_image:
         fail(f"monitoring: the Grafana check needs Loki at {_rel(loki)}")

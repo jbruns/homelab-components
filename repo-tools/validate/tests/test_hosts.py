@@ -147,6 +147,20 @@ def test_compose_holds_each_host_to_its_own_baseline(multi, repo, capsys):
     assert "Services on truenas meet it" in printed and "Services on nc8kg1101 meet it" in printed
 
 
+@pytest.mark.skipif(not docker_compose_available(), reason="needs docker compose")
+def test_a_legacy_volume_of_an_unselected_host_is_not_reported_gone(multi, repo, monkeypatch):
+    configure(multi, repo, host="nc8kg1101", legacy_volumes={"media_config"})
+    multi.check_compose()
+    assert "legacy name" not in messages(multi)
+
+
+def test_a_missing_declared_containers_command_fails_cleanly(validate, repo, runtime, monkeypatch):
+    monkeypatch.setattr(validate, "OVERRIDES", {})
+    monkeypatch.setattr(validate, "generator_command", lambda name, host: ["no-such-generator-cmd"])
+    validate.check_monitoring()
+    assert "declared containers: cannot run no-such-generator-cmd" in messages(validate)
+
+
 # --- a repo whose only Host has no TrueNAS, monitoring or Traefik ------------------------------
 
 
