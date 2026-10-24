@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import CIDRS, commit, configure, write
+from conftest import CIDRS, SOPS_ENV, commit, configure, write
 from registry_fixtures import RECORDINGS, Replay, Response
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -395,6 +395,168 @@ def test_secrets_rejects(validate, repo, files, expected):
     assert expected in messages(validate)
 
 
+LEGACY_STACK = {
+    "tn/old/docker-compose.yaml": "include:\n  - web/docker-compose.yaml\n",
+    "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: nginx:1\n",
+}
+
+
+def test_a_legacy_stack_keeps_its_docker_compose_files(validate, repo, capsys):
+    write(repo, LEGACY_STACK)
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert validate.failures == []
+    assert "secrets ok" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "files,expected",
+    [
+        ({"tn/old/stack.env": "X=1\n"}, "plaintext .env file is tracked; encrypt it as *.sops.env"),
+        ({"tn/old/web/secret.sops.env": "TOKEN=plain\n"}, "file is named *.sops.* but is not SOPS-encrypted"),
+        ({"tn/old/orphan/service.yaml": "services: {}\n"}, "no Stack's include: lists this service.yaml"),
+        ({"tn/older/docker-compose.yaml": "services: {}\n"}, "rename to service.yaml"),
+    ],
+)
+def test_a_legacy_stack_is_held_to_every_other_rule(validate, repo, files, expected):
+    write(repo, {**LEGACY_STACK, **files})
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert expected in messages(validate)
+
+
+@pytest.mark.parametrize(
+    "files,expected",
+    [
+        (
+            {
+                "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: nginx:1\n    secrets: [pw]\n"
+                "secrets:\n  pw:\n    file: password.yaml\n",
+                "tn/old/web/password.yaml": "hunter2\n",
+            },
+            "sensitive file tn/old/web/password.yaml must be SOPS-encrypted and named *.sops.*",
+        ),
+        (
+            {
+                "tn/old/docker-compose.yaml": "include:\n  - web/docker-compose.yaml\nservices:\n  db:\n"
+                "    image: postgres:16\n    env_file: foo.txt\n",
+                "tn/old/foo.txt": "PASSWORD=hunter2\n",
+            },
+            "sensitive file tn/old/foo.txt must be SOPS-encrypted and named *.sops.*",
+        ),
+        (
+            {
+                "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: nginx:1\n    volumes:\n"
+                "      - {type: bind, source: ./key.pem, target: /key.pem, x-sops: true}\n",
+                "tn/old/web/key.pem": "plain\n",
+            },
+            "sensitive file tn/old/web/key.pem must be SOPS-encrypted and named *.sops.*",
+        ),
+    ],
+)
+def test_a_legacy_stack_references_sensitive_files_only_encrypted(validate, repo, files, expected):
+    write(repo, {**LEGACY_STACK, **files})
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert expected in messages(validate)
+
+
+@pytest.mark.parametrize("ref,twin", [("web.env", "web.sops.env"), (".env", ".sops.env"), ("web.yml", "web.sops.yml")])
+def test_a_legacy_stack_may_reference_the_decrypted_copy_of_a_tracked_sops_file(validate, repo, ref, twin):
+    write(
+        repo,
+        {
+            **LEGACY_STACK,
+            "tn/old/web/docker-compose.yaml": f"services:\n  web:\n    image: nginx:1\n    env_file: {ref}\n",
+            f"tn/old/web/{twin}": "TOKEN=ENC[x]\n" + SOPS_ENV,
+        },
+    )
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert validate.failures == []
+
+
+def test_a_legacy_stack_fails_on_an_untracked_file_without_a_sops_twin(validate, repo):
+    write(
+        repo,
+        {
+            **LEGACY_STACK,
+            "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: nginx:1\n    env_file: web.env\n",
+        },
+    )
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert (
+        "referenced file tn/old/web/web.env is not tracked and no SOPS-encrypted tn/old/web/web.sops.env is"
+        in messages(validate)
+    )
+
+
+@pytest.mark.parametrize(
+    "ref,twin,content",
+    [
+        ("password", "password.sops", "hunter2\n"),  # extensionless: the repo-wide *.sops.* scan misses password.sops
+        (".yaml", ".sops.yaml", "creation_rules: []\n"),  # the SOPS config file, which the scan exempts
+        ("web.env", "web.sops.env", "TOKEN=hunter2\n"),  # named *.sops.* but not encrypted
+    ],
+)
+def test_a_legacy_stack_refuses_a_twin_that_is_not_a_sops_payload(validate, repo, ref, twin, content):
+    write(
+        repo,
+        {
+            **LEGACY_STACK,
+            "tn/old/web/docker-compose.yaml": f"services:\n  web:\n    image: nginx:1\n    env_file: '{ref}'\n",
+            f"tn/old/web/{twin}": content,
+        },
+    )
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert f"referenced file tn/old/web/{ref} is not tracked" in messages(validate)
+
+
+def test_a_legacy_stack_may_reference_an_encrypted_file(validate, repo):
+    write(
+        repo,
+        {
+            **LEGACY_STACK,
+            "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: nginx:1\n    env_file: web.sops.env\n",
+            "tn/old/web/web.sops.env": "TOKEN=ENC[x]\n" + SOPS_ENV,
+        },
+    )
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert validate.failures == []
+
+
+def test_a_legacy_stack_that_has_been_cut_over_fails(validate, repo):
+    write(repo, {**LEGACY_STACK, "tn/old/compose.yaml": "include: []\n"})
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert "--legacy-stack old: tn/old is a Stack now (it has compose.yaml); drop its --legacy-stack" in (
+        validate.failures
+    )
+
+
+@pytest.mark.parametrize("name", ["gone", "leftover"])
+def test_a_legacy_stack_without_legacy_compose_files_fails(validate, repo, name):
+    write(repo, {"tn/leftover/notes.conf": "x\n"})
+    commit(repo)
+    configure(validate, repo, legacy_stacks={name})
+    validate.check_secrets()
+    expected = (
+        f"--legacy-stack {name}: no Host has a legacy Stack {name} (docker-compose.yaml files and no compose.yaml)"
+    )
+    assert expected in messages(validate)
+
+
 def test_secrets_requires_tracked_stack_env(validate, repo):
     (repo / "tn/app/.sops.env").unlink()
     commit(repo)
@@ -778,6 +940,20 @@ def test_cli_root_and_path_override(repo):
     assert "ERROR: expected 3 Cloudflare range lists, found 1" in r.stdout
 
 
+def test_cli_legacy_stack(repo):
+    write(repo, LEGACY_STACK)
+    commit(repo)
+    assert run_cli("--root", str(repo), "secrets").returncode == 1
+    r = run_cli("--root", str(repo), "--legacy-stack", "old", "secrets")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("arg", ["a/b", "..", "Old", ""])
+def test_cli_rejects_a_legacy_stack_that_is_not_a_folder_name(arg):
+    r = run_cli("--legacy-stack", arg, "secrets")
+    assert r.returncode == 2 and "--legacy-stack takes a Stack folder name" in r.stderr
+
+
 @pytest.mark.parametrize("arg", ["nope=x", "traefik"])
 def test_cli_rejects_bad_path_override(arg):
     r = run_cli("--path", arg, "cloudflare")
@@ -928,6 +1104,59 @@ def test_monitoring_fails_on_a_missing_explicit_path_for_a_host_without_promethe
     assert messages(validate) == "--path grafana=typo: not a directory"
 
 
+@pytest.mark.parametrize("service", ["prometheus", "alertmanager", "loki", "alloy", "grafana"])
+def test_monitoring_fails_clearly_on_a_component_without_its_service_file(validate, repo, runtime, service):
+    subprocess.run(["git", "rm", "-q", f"tn/monitoring/{service}/service.yaml"], cwd=repo, check=True)
+    commit(repo)
+    validate.check_monitoring()
+    assert f"monitoring: tn/monitoring/{service}/service.yaml: missing; it must declare the {service} Service" in (
+        validate.failures
+    )
+
+
+def test_monitoring_fails_clearly_on_a_service_file_without_its_image(validate, repo, runtime):
+    write(repo, {"tn/monitoring/loki/service.yaml": "services:\n  other:\n    image: x:1\n"})
+    commit(repo)
+    validate.check_monitoring()
+    assert "monitoring: tn/monitoring/loki/service.yaml: no loki Service with an image" in validate.failures
+
+
+def legacy_monitoring(repo) -> None:
+    """tn/monitoring before its cutover: docker-compose.yaml files, no compose.yaml or service.yaml."""
+    for f in sorted((repo / "tn/monitoring").rglob("*.yaml")):
+        if f.name in ("compose.yaml", "service.yaml"):
+            subprocess.run(["git", "rm", "-q", str(f)], cwd=repo, check=True)
+    write(repo, {"tn/monitoring/prometheus/docker-compose.yaml": "services:\n  prometheus:\n    image: prom/prom:v1\n"})
+    commit(repo)
+
+
+def test_monitoring_skips_a_legacy_stack(validate, repo, runtime, capsys):
+    legacy_monitoring(repo)
+    configure(validate, repo, legacy_stacks={"monitoring"})
+    validate.check_monitoring()
+    validate.check_env()
+    assert validate.failures == []
+    assert runtime.runs == []
+    assert "monitoring: tn/monitoring/prometheus is in --legacy-stack monitoring; skipped" in capsys.readouterr().out
+
+
+def test_monitoring_fails_clearly_on_a_legacy_stack_not_declared_legacy(validate, repo, runtime):
+    legacy_monitoring(repo)
+    validate.check_monitoring()
+    assert "monitoring: tn/monitoring/prometheus/service.yaml: missing; it must declare the prometheus Service" in (
+        validate.failures
+    )
+
+
+def test_an_explicit_path_into_a_legacy_stack_is_still_checked(validate, repo, runtime):
+    legacy_monitoring(repo)
+    configure(validate, repo, {"prometheus": "tn/monitoring/prometheus"}, legacy_stacks={"monitoring"})
+    validate.check_monitoring()
+    assert "monitoring: tn/monitoring/prometheus/service.yaml: missing; it must declare the prometheus Service" in (
+        validate.failures
+    )
+
+
 def test_a_dependencies_template_without_its_service_file_fails(validate, repo):
     subprocess.run(["git", "rm", "-q", PROM_SERVICE], cwd=repo, check=True)
     commit(repo)
@@ -949,3 +1178,26 @@ def test_configure_rejects_unknown_path(validate, repo):
 def test_template_volumes_are_named_for_stack_app(validate):
     # Templates are not Stacks yet, so "app" is not among the Stack names.
     assert validate.volume_problems("app", {"app_config": {"name": "app_config", "external": True}}, {"edge"}) == []
+
+
+@pytest.mark.skipif(not docker_compose_available(), reason="needs docker compose")
+def test_compose_leaves_a_legacy_stack_to_its_cutover(validate, repo, capsys, monkeypatch):
+    """Deliberate: a --legacy-stack gets no Stack-level checks (render, Compose rules, Baseline, env) and its
+    Services are not counted in the Baseline report, until its cutover renames it to compose.yaml."""
+    monkeypatch.setattr(validate, "REGISTRY_HTTP", Replay("dockerhub"))
+    monkeypatch.setattr(validate, "LEGACY_VOLUMES", set())
+    compose_fixture(repo, WEB + '        labels: {startup-order: "2"}\n        tmpfs: [/attach, /config, /plugin]\n')
+    configure(validate, repo)
+    validate.check_compose()
+    before = [line for line in capsys.readouterr().out.splitlines() if line.startswith("Baseline: ")]
+    assert before
+
+    write(repo, {**LEGACY_STACK, "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: ${UNSET}\n"})
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_compose()
+    out = capsys.readouterr().out
+    assert [line for line in out.splitlines() if line.startswith("Baseline: ")] == before
+    assert "old" not in out + messages(validate)
+    validate.check_env()
+    assert "old" not in capsys.readouterr().out + messages(validate)

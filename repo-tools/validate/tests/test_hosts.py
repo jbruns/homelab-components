@@ -154,6 +154,17 @@ def test_a_legacy_volume_of_an_unselected_host_is_not_reported_gone(multi, repo,
     assert "legacy name" not in messages(multi)
 
 
+def test_a_legacy_stack_of_an_unselected_host_is_not_reported_gone(multi, repo):
+    write(repo, {"tn/old/docker-compose.yaml": "services: {}\n"})
+    commit(repo)
+    configure(multi, repo, host="nc8kg1101", legacy_stacks={"old"})
+    multi.check_secrets()
+    assert multi.failures == []
+    configure(multi, repo, legacy_stacks={"old"})
+    multi.check_secrets()
+    assert multi.failures == []
+
+
 def test_a_missing_declared_containers_command_fails_cleanly(validate, repo, runtime, monkeypatch):
     monkeypatch.setattr(validate, "OVERRIDES", {})
     monkeypatch.setattr(validate, "generator_command", lambda name, host: ["no-such-generator-cmd"])
