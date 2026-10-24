@@ -6,7 +6,11 @@ every site-specific value from its environment so any host can adopt it, and shi
 `ghcr.io/jbruns/<component>` consumed by digest. Background: [ADR 0008 in
 jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0008-custom-components-in-shared-repo.md).
 
-To add or change a Component, read [CONTRIBUTING.md](CONTRIBUTING.md).
+It also holds **shared Repo Tooling** (`repo-tools/`): tools that several homelab repos (jbruns/home-ops,
+asotbz/ops) run against their own Hosts, consumed by pinned tag like a Component. Background: [ADR 0012 in
+jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shared-repo-tooling.md).
+
+To add or change a Component or a shared tool, read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Layout
 
@@ -18,9 +22,18 @@ components/
     ├── upstreams.yaml    each upstream the Component calls, pinned tag@digest
     ├── Dockerfile        minimal base (distroless Python), nonroot, HEALTHCHECK
     └── README.md         Why, Retire when, Configuration (every env var)
-tools/                    Repo Tooling: README check, upstream pins, Canary planning, Contract Test harness
-.github/workflows/        ci, test-component (reusable), release, canary
+repo-tools/
+└── <tool>/               shared Repo Tooling for consuming repos; one Python package per tool
+    ├── pyproject.toml    its own package, dependencies and ruff/pytest config
+    ├── src/<package>/
+    ├── tests/
+    └── README.md         install, usage, and every contract consumers rely on
+tools/                    this repo's own Repo Tooling: README check, upstream pins, Canary planning, Contract Test harness
+.github/workflows/        ci, test-component and test-repo-tool (reusable), release, canary
 ```
+
+`repo-tools/hosts` is the `homelab_hosts` package, the one loader and validator for a consuming repo's
+`hosts.yaml`; see [its README](repo-tools/hosts/README.md).
 
 `components/_template` is the copy-from template. CI exercises it end to end (README check, unit tests, a
 Contract Test against a real `traefik/whoami`, image build reaching healthy), and it is never released.
@@ -30,6 +43,7 @@ Contract Test against a real `traefik/whoami`, image build reaching healthy), an
 | Check | When | Blocks merge |
 |---|---|---|
 | ruff, actionlint, Renovate config, Repo Tooling tests | every PR | yes |
+| each `repo-tools/<tool>`: install, ruff, pytest | every PR | yes |
 | README check, unit tests, Contract Tests, image build reaching healthy | each Component a PR touches (every Component when `tools/` or shared config changes) | yes |
 | Canary | weekly, and on demand | no; opens an issue |
 
@@ -52,7 +66,8 @@ issue titled `Canary: <component> fails against <upstream> <version>`, or commen
 
 ## Releasing
 
-Tag a commit on `main` `<component>-vX.Y.Z` (semver per Component) and push the tag:
+Tag a commit on `main` `<component>-vX.Y.Z` or `<tool>-vX.Y.Z` (semver per Component or shared tool) and push
+the tag:
 
 ```sh
 git tag arr-queue-exporter-v1.0.0 && git push origin arr-queue-exporter-v1.0.0
@@ -63,6 +78,15 @@ The `release` workflow refuses tags off `main`, runs the Component's checks, the
 GitHub Release naming the image digest. A Component without a `Dockerfile` (a Host script) gets a GitHub
 Release with its `src/` files attached instead. Consumers pin by digest; Renovate in the consuming repo picks
 up new versions.
+
+A tag naming a folder under `repo-tools/` (`hosts-v1.0.0`) runs that tool's checks, then creates a GitHub Release
+with no image and no assets. Consumers install the tool from the tag:
+
+```sh
+uv tool install "git+https://github.com/jbruns/homelab-components@hosts-v1.0.0#subdirectory=repo-tools/hosts"
+```
+
+A Component and a `repo-tools/` folder never share a name, so a tag always names exactly one of them.
 
 ## Renovate
 

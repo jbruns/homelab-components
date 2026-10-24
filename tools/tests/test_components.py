@@ -1,6 +1,6 @@
 import pytest
 
-from tools.components import affected_components, all_components, parse_release_tag
+from tools.components import affected_components, all_components, all_repo_tools, parse_release_tag, release_target
 
 COMPONENTS = ["_template", "arr-queue-exporter", "sabnzbd-status-exporter"]
 
@@ -36,3 +36,57 @@ def test_a_component_whose_readme_was_deleted_still_gets_tested(tmp_path):
     components = all_components(tmp_path)
     assert components == ["with-readme", "without-readme"]
     assert affected_components(["components/without-readme/README.md"], components) == ["without-readme"]
+
+
+def test_a_repo_tools_only_change_tests_no_component():
+    changed = ["repo-tools/hosts/src/homelab_hosts/__init__.py", "repo-tools/hosts/README.md"]
+    assert affected_components(changed, COMPONENTS) == []
+
+
+def test_every_repo_tool_folder_is_listed(tmp_path):
+    (tmp_path / "hosts").mkdir()
+    (tmp_path / "hops").mkdir()
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "README.md").write_text("")
+    assert all_repo_tools(tmp_path) == ["hops", "hosts"]
+    assert all_repo_tools(tmp_path / "missing") == []
+
+
+@pytest.fixture
+def release_dirs(tmp_path):
+    components, repo_tools = tmp_path / "components", tmp_path / "repo-tools"
+    (components / "arr-queue-exporter").mkdir(parents=True)
+    (components / "arr-queue-exporter" / "Dockerfile").write_text("FROM scratch\n")
+    (components / "startup-order").mkdir()
+    (repo_tools / "hosts").mkdir(parents=True)
+    return {"components_dir": components, "repo_tools_dir": repo_tools}
+
+
+def test_a_component_tag_releases_its_image_or_its_files(release_dirs):
+    assert release_target("arr-queue-exporter-v1.2.3", **release_dirs) == {
+        "kind": "component",
+        "name": "arr-queue-exporter",
+        "version": "1.2.3",
+        "image": "true",
+    }
+    assert release_target("startup-order-v0.1.0", **release_dirs)["image"] == "false"
+
+
+def test_a_repo_tool_tag_releases_without_an_image(release_dirs):
+    assert release_target("hosts-v1.0.0", **release_dirs) == {
+        "kind": "repo-tool",
+        "name": "hosts",
+        "version": "1.0.0",
+        "image": "false",
+    }
+
+
+def test_a_tag_naming_nothing_is_rejected(release_dirs):
+    with pytest.raises(ValueError, match="names no Component"):
+        release_target("nothing-v1.0.0", **release_dirs)
+
+
+def test_a_tag_naming_both_a_component_and_a_repo_tool_is_rejected(release_dirs):
+    (release_dirs["repo_tools_dir"] / "startup-order").mkdir()
+    with pytest.raises(ValueError, match="both"):
+        release_target("startup-order-v1.0.0", **release_dirs)

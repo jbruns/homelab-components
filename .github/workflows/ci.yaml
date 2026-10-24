@@ -40,6 +40,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       components: ${{ steps.affected.outputs.components }}
+      repo-tools: ${{ steps.repo-tools.outputs.repo-tools }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,6 +54,12 @@ jobs:
           components=$(python -m tools.components affected ${BASE:+--base "$BASE"})
           echo "components=$components" >> "$GITHUB_OUTPUT"
           echo "Components: $components" >> "$GITHUB_STEP_SUMMARY"
+      - id: repo-tools
+        run: |
+          # Every shared Repo Tooling package is tested on every run; they are small and consumers pin them.
+          tools=$(python -m tools.components repo-tools)
+          echo "repo-tools=$tools" >> "$GITHUB_OUTPUT"
+          echo "Repo Tooling: $tools" >> "$GITHUB_STEP_SUMMARY"
 
   component:
     name: ${{ matrix.component }}
@@ -66,11 +73,23 @@ jobs:
     with:
       component: ${{ matrix.component }}
 
+  repo-tool:
+    name: repo-tools/${{ matrix.tool }}
+    needs: plan
+    if: needs.plan.outputs.repo-tools != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: ${{ fromJSON(needs.plan.outputs.repo-tools) }}
+    uses: ./.github/workflows/test-repo-tool.yaml
+    with:
+      tool: ${{ matrix.tool }}
+
   # Single required check for branch protection.
   ci:
     name: ci
     if: always()
-    needs: [tooling, plan, component]
+    needs: [tooling, plan, component, repo-tool]
     runs-on: ubuntu-24.04
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

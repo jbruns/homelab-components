@@ -1,0 +1,35 @@
+name: test repo tool
+
+# One shared Repo Tooling package's checks: install it (proving it builds with its declared dependencies), ruff
+# with its own config, and its tests. Called by ci.yaml for every folder under repo-tools/ and by release.yaml
+# before a <tool>-vX.Y.Z release.
+on:
+  workflow_call:
+    inputs:
+      tool:
+        description: folder name under repo-tools/
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: repo-tools/${{ inputs.tool }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - name: install
+        run: python -m pip install --quiet .
+      - run: ruff check --output-format=github .
+      - run: ruff format --check .
+      # pytest exits 5 when it collects no tests.
+      - name: tests
+        run: |
+          python -m pytest || { rc=$?
+            [ "$rc" -eq 5 ] && echo "::error::no tests in repo-tools/${{ inputs.tool }}"; exit "$rc"; }

@@ -58,10 +58,40 @@ Python 3.13 matches the distroless base image. Test dependencies live in `requir
   and Canaries test the API the Component actually uses.
 - **Errors**: an exporter reports an upstream it cannot reach as a metric (`*_up 0`) and keeps serving.
 - **Logs**: one line per event on stdout/stderr; never log credentials.
-- **Repo Tooling** (`tools/`) is documented and tested like a Component, without a Retirement Condition.
+- **Repo Tooling** (`tools/`, `repo-tools/`) is documented and tested like a Component, without a Retirement
+  Condition.
+
+## Shared Repo Tooling
+
+Repo Tooling that more than one homelab repo runs (jbruns/home-ops, asotbz/ops) lives here under `repo-tools/`,
+so a fix lands once and every repo picks it up through a pin ([ADR 0012 in
+jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shared-repo-tooling.md)).
+
+- **Here or in the consuming repo?** A tool belongs here when a second repo needs it, or when it takes everything
+  repo-specific from the repo it runs in (its `hosts.yaml`, its `.env`, its stack roots). Tooling that only makes
+  sense for one repo stays in that repo's `tools/`. This repo's own `tools/` is internal tooling for Components,
+  not shared.
+- **Layout.** One tool per `repo-tools/<tool>/`, where `<tool>` is lowercase letters, digits and `-`, and never
+  the name of a Component (it becomes the release tag prefix). A Python tool is its own package: `pyproject.toml`
+  (Python >=3.11, few dependencies, its own ruff and pytest config), `src/<package>/`, `tests/`, and a `README.md`
+  documenting install, usage and every contract a consuming repo relies on. It must install with
+  `uv tool install "git+https://github.com/jbruns/homelab-components@<ref>#subdirectory=repo-tools/<tool>"`.
+  Reusable workflows for consuming repos are `.github/workflows/repo-<name>.yaml` (`on: workflow_call`), and
+  Renovate presets are `renovate/<preset>.json`.
+- **hosts.yaml.** A consuming repo declares its Hosts in a committed `hosts.yaml` at its root
+  ([schema](repo-tools/hosts/README.md)). `repo-tools/hosts` (`homelab_hosts`) is the only code that parses it:
+  every tool that needs Hosts depends on that package, takes the Host from `--host`, the stack path, or the only
+  Host (`Hosts.pick`), reads connection details from `.env` through `host_settings`, and gates Host-specific
+  features on `Host.has(...)`. Never assume a Host, a stack root or a capability.
+- **Test first**, as for a Component: CI installs every `repo-tools/<tool>` and runs ruff and its pytest suite on
+  every PR (`.github/workflows/test-repo-tool.yaml`).
+- **Release and pin.** Merge to `main`, then tag `<tool>-vX.Y.Z` on `main` and push it; the release workflow
+  reruns the tool's checks and creates a GitHub Release (no image, no assets). Consuming repos pin that tag (or a
+  commit) in their install command, dependency or `uses:` line, and Renovate bumps the pin. Semver from the
+  consumer's view: a renamed flag, key or exported name, or a stricter `hosts.yaml`, is a major bump.
 
 ## Release
 
-The version is the tag; nothing in the code changes. Tag `<component>-vX.Y.Z` on `main` and push it (see
-[README](README.md#releasing)). Follow semver from the consumer's view: a renamed metric or env var is a major
+The version is the tag; nothing in the code changes. Tag `<component>-vX.Y.Z` (or `<tool>-vX.Y.Z` for a shared
+tool) on `main` and push it (see [README](README.md#releasing)). Follow semver from the consumer's view: a renamed metric or env var is a major
 bump.
