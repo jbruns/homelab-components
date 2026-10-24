@@ -513,8 +513,9 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
    setgid bits, so the script copies with Python's own calls: every file type (device nodes and FIFOs too),
    owners, modes, times, hard links, symlinks (never followed) and every xattr, ACLs and `trusted.*` included.
    It then walks both trees and compares each path's type, mode, owner, size, mtime, device number, symlink
-   target, xattrs and hard-link group. Any difference, or anything it could not keep, fails the copy and names
-   the paths. `SYS_ADMIN` is there because the kernel hides `trusted.*` xattrs without it, so a lost one would
+   target, xattrs and the hard links between its paths. A file hard-linked only from outside the volume becomes
+   a file with a single link in the copy. Any difference, or anything it could not keep, fails the copy and
+   names the paths. `SYS_ADMIN` is there because the kernel hides `trusted.*` xattrs without it, so a lost one would
    look the same on both sides. If the copy fails, nothing has moved; remove the Rollback Volume before running
    again.
 2. Run `docker volume create <new>`, unless the volume exists.

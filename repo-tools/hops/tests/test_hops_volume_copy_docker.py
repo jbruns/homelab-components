@@ -19,9 +19,11 @@ pytestmark = pytest.mark.docker
 
 # python:3.14-alpine (BusyBox userland, as on a Host's dependencies-render), pinned by its index digest.
 IMAGE = "python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72"
-CAPS = ["--cap-drop", "ALL", *(f"--cap-add={c}" for c in ("CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "MKNOD"))]
+SETUP_CAPS = ("CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "MKNOD", "SETFCAP")
+CAPS = ["--cap-drop", "ALL", *(f"--cap-add={c}" for c in SETUP_CAPS)]
 
 # A POSIX ACL as the kernel stores it in system.posix_acl_*: version 2, then (tag u16, perm u16, id u32) entries.
+# A file capability as security.capability: revision 2 with the effective bit, then cap_net_bind_service permitted.
 SETUP = r"""
 import os, stat, struct
 
@@ -39,6 +41,7 @@ os.chmod(d + "/dir/file", 0o4750)
 os.setxattr(d + "/dir/file", "user.note", b"kept")
 os.setxattr(d + "/dir/file", "trusted.note", b"kept too")
 os.setxattr(d + "/dir/file", "system.posix_acl_access", ACL)
+os.setxattr(d + "/dir/file", "security.capability", struct.pack("<5I", 0x02000001, 1 << 10, 0, 0, 0))
 os.setxattr(d + "/dir", "system.posix_acl_default", ACL)
 os.utime(d + "/dir/file", ns=(1, 1_700_000_000_123_456_789))
 os.link(d + "/dir/file", d + "/hardlink")
@@ -139,6 +142,7 @@ def test_the_rollback_copy_keeps_owners_modes_times_links_devices_xattrs_and_acl
         "user.note",
         "trusted.note",
         "system.posix_acl_access",
+        "security.capability",
     }, "the fixture lost its xattrs; the test would prove nothing"
     assert "system.posix_acl_default" in source["dir"]["xattrs"]
     assert source["dir/file"]["mode"] == 0o4750 and source["dir/sub"]["mode"] == 0o2770

@@ -34,14 +34,13 @@ NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]+")
 ROOT = "/volumes"  # where the container sees Docker's volumes directory
 TIMEOUT = 600
 LABEL = "hops.volume-move"
-# Capabilities by mode (False: check, move; True: copy). Every mode reads and renames across owners. The copy
-# also keeps setgid on another group's files (FSETID), device nodes (MKNOD), file capabilities (SETFCAP), and
-# trusted.* xattrs, which the kernel hides from a process without SYS_ADMIN: without it, both manifests would
-# lack them and a lost one would pass verification.
-CAPABILITIES = {
-    False: ("CHOWN", "DAC_OVERRIDE", "FOWNER"),
-    True: ("CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "MKNOD", "SETFCAP", "SYS_ADMIN"),
-}
+# Capabilities by mode. Every mode reads and renames across owners. The copy also keeps setgid on another
+# group's files (FSETID), device nodes (MKNOD), file capabilities (SETFCAP), and trusted.* xattrs, which the
+# kernel hides from a process without SYS_ADMIN: without it, both manifests would lack them and a lost one would
+# pass verification, so verify needs it too.
+_ACROSS_OWNERS = ("CHOWN", "DAC_OVERRIDE", "FOWNER")
+_MANIFEST = (*_ACROSS_OWNERS, "FSETID", "MKNOD", "SETFCAP", "SYS_ADMIN")
+CAPABILITIES = {"check": _ACROSS_OWNERS, "move": _ACROSS_OWNERS, "copy": _MANIFEST, "verify": _MANIFEST}
 SCRIPT = r"""
 import json, os, sys
 
@@ -102,14 +101,17 @@ def walk(top, rel=""):
 
 def records(top):
     # The manifest, one (rel, record) at a time so a large volume is never held in memory: type, mode,
-    # owner, size, mtime, device number, symlink target, a hash of each xattr, and the first path of its
-    # hard-link group. A record is read before the next is, so the two walks stay in step.
+    # owner, size, mtime, device number, symlink target, a hash of each xattr, and, for every path of a
+    # hard-link group but its first, that first path. The first path has none, as a file whose other links are
+    # outside the volume has none: its copy is a file with a single link. A record is read before the next is,
+    # so the two walks stay in step.
     first = {}
     for rel, path, st in walk(top):
         kind = stat.S_IFMT(st.st_mode)
         link = None
         if kind != stat.S_IFDIR and st.st_nlink > 1:
             link = first.setdefault((st.st_dev, st.st_ino), rel)
+            link = None if link == rel else link
         yield rel, {
             "type": kind,
             "mode": stat.S_IMODE(st.st_mode),
@@ -126,22 +128,29 @@ def records(top):
 
 def verify(src, dst):
     # Compare the two manifests; raise naming the first differing paths and fields. Returns the path count.
-    count, diffs = 0, []
+    # Only the first five differences are kept, so a volume that differs everywhere does not fill the memory.
+    count, n, diffs = 0, 0, []
+
+    def differ(text):
+        nonlocal n
+        n += 1
+        if n <= 5:
+            diffs.append(text)
+
     for a, b in itertools.zip_longest(records(src), records(dst)):
         count += 1
         if a is not None and b is not None and a[0] == b[0]:
             fields = [k for k in a[1] if a[1][k] != b[1][k]]
             if fields:
-                diffs.append(f"{a[0]!r} ({', '.join(fields)})")
+                differ(f"{a[0]!r} ({', '.join(fields)})")
             continue
         # Paths out of step: an entry is missing on one side. Name it and stop comparing.
         rel = min(r[0] for r in (a, b) if r is not None)
         side = old if a is not None and a[0] == rel else new
-        diffs.append(f"{rel!r} (only in {side})")
+        differ(f"{rel!r} (only in {side})")
         break
-    if diffs:
-        n = len(diffs)
-        shown = ", ".join(diffs[:5]) + (", ..." if n > 5 else "")
+    if n:
+        shown = ", ".join(diffs) + (", ..." if n > 5 else "")
         raise RuntimeError(f"{new} differs from {old} at {n} path{'s' if n != 1 else ''}: {shown}")
     return count
 
@@ -169,6 +178,11 @@ def copy_one(src, dst, st, links):
     # src (lstat st) into dst, which must not exist except for the top directory; directories get their
     # metadata after their contents, so writing into them does not change the times kept.
     kind = stat.S_IFMT(st.st_mode)
+    if kind != stat.S_IFDIR and st.st_nlink > 1:
+        seen = links.setdefault((st.st_dev, st.st_ino), dst)
+        if seen != dst:
+            os.link(seen, dst, follow_symlinks=False)
+            return
     if kind == stat.S_IFDIR:
         if not os.path.lexists(dst):  # only the top directory, the new volume's _data, exists already
             os.mkdir(dst, 0o700)
@@ -176,11 +190,6 @@ def copy_one(src, dst, st, links):
             child = os.path.join(src, name)
             copy(child, os.path.join(dst, name), os.lstat(child), links)
     elif kind == stat.S_IFREG:
-        if st.st_nlink > 1:
-            seen = links.setdefault((st.st_dev, st.st_ino), dst)
-            if seen != dst:
-                os.link(seen, dst)
-                return
         with open(src, "rb") as f, open(dst, "xb") as g:
             shutil.copyfileobj(f, g, 1 << 20)
     elif kind == stat.S_IFLNK:
@@ -337,7 +346,7 @@ def run(runner: Runner, image: str, directory: str, mode: str, old: str, new: st
         "0:0",
         "--cap-drop",
         "ALL",
-        *(arg for cap in CAPABILITIES[mode == "copy"] for arg in ("--cap-add", cap)),
+        *(arg for cap in CAPABILITIES[mode] for arg in ("--cap-add", cap)),
         "--memory",
         "256m",
         "-v",

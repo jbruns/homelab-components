@@ -694,8 +694,8 @@ def test_without_zfs_a_failed_copy_moves_nothing(hops, host, fake_host):
     outcome = move(hops, None)
     assert outcome.code == 1
     assert (
-        f"copying {OLD} into {ROLLBACK} failed: RuntimeError: /volumes/r/_data/f: No space left on device. Nothing was moved "
-        f"and {OLD} is as it was; remove {ROLLBACK}"
+        f"copying {OLD} into {ROLLBACK} failed: RuntimeError: /volumes/r/_data/f: No space left on device. "
+        f"Nothing was moved and {OLD} is as it was; remove {ROLLBACK}"
     ) in outcome.err
     assert "move" not in host.runs and (host.root / OLD / "_data" / "f").exists()
 
@@ -832,7 +832,7 @@ def test_verify_names_any_difference_between_the_volumes(copied, change, path):
     code, report = script("verify", copied)
     assert code == 1
     assert report["error"].startswith("RuntimeError: new differs from old at ")
-    assert repr(path) in report["error"]  # a hard-linked pair differs at both its names
+    assert repr(path) in report["error"]
 
 
 def test_copy_refuses_a_destination_that_is_not_empty(tmp_path):
@@ -841,3 +841,36 @@ def test_copy_refuses_a_destination_that_is_not_empty(tmp_path):
     (tmp_path / "new" / "_data" / "f").write_text("")
     code, report = script("copy", tmp_path)
     assert code == 1 and report["error"] == "RuntimeError: new is not empty"
+
+
+def test_copy_keeps_a_file_whose_other_hard_link_is_outside_the_volume(tmp_path):
+    (tmp_path / "old" / "_data").mkdir(parents=True)
+    (tmp_path / "new" / "_data").mkdir(parents=True)
+    (tmp_path / "library").write_text("data")
+    os.link(tmp_path / "library", tmp_path / "old" / "_data" / "download")
+    code, report = script("copy", tmp_path)
+    assert (code, report["error"], report["verified"]) == (0, None, 2)
+
+
+def test_copy_keeps_hard_links_between_files_that_are_not_regular(tmp_path):
+    data = tmp_path / "old" / "_data"
+    data.mkdir(parents=True)
+    (tmp_path / "new" / "_data").mkdir(parents=True)
+    os.mkfifo(data / "fifo")
+    os.link(data / "fifo", data / "fifo2")
+    (data / "symlink").symlink_to("fifo")
+    os.link(data / "symlink", data / "symlink2", follow_symlinks=False)
+    code, report = script("copy", tmp_path)
+    assert (code, report["error"], report["verified"]) == (0, None, 5)
+    new = tmp_path / "new" / "_data"
+    assert os.path.samefile(new / "fifo", new / "fifo2")
+    assert os.lstat(new / "symlink").st_ino == os.lstat(new / "symlink2").st_ino
+
+
+@pytest.mark.parametrize("mode", ["copy", "verify"])
+def test_the_modes_that_read_a_manifest_can_see_trusted_xattrs(mode, runner, fake_host):
+    fake_host.respond("run")
+    volumes.run(runner, "img", "/volumes", mode, "old", "new")
+    argv = fake_host.docker_calls[-1]
+    caps = {argv[i + 1] for i, arg in enumerate(argv) if arg == "--cap-add"}
+    assert "SYS_ADMIN" in caps
