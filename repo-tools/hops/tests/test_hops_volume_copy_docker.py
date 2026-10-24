@@ -56,6 +56,10 @@ with open(d + "/disk.img", "wb") as f:  # 1 GiB, nearly all hole
     f.write(b"start")
     f.seek((1 << 30) - 3)
     f.write(b"end")
+with open(d + "/db", "wb") as f:  # 4 KiB written every 128 KiB: holes between small writes
+    for offset in range(0, 1 << 25, 1 << 17):
+        f.seek(offset)
+        f.write(b"x" * 4096)
 # The root last, so nothing above inherits its default ACL: another group's setgid directory, an xattr, ACLs.
 os.chown(d, 1234, 5678)
 os.chmod(d, 0o2750)
@@ -149,7 +153,7 @@ def test_the_rollback_copy_and_the_move_keep_owners_modes_times_links_devices_ho
     copied = volumes.copy(runner, IMAGE, directory, old, rollback)
 
     assert copied.error is None
-    assert copied.verified == 9  # _data and the 8 paths under it
+    assert copied.verified == 10  # _data and the 9 paths under it
     found = manifest(directory, old, rollback)
     source = without_allocation(found[old])
     assert set(source["dir/file"]["xattrs"]) == {
@@ -165,9 +169,11 @@ def test_the_rollback_copy_and_the_move_keep_owners_modes_times_links_devices_ho
     assert found[old]["disk.img"]["allocated"] < 1 << 24, "the fixture is not sparse; the test would prove nothing"
     assert without_allocation(found[rollback]) == source
     assert found[rollback]["disk.img"]["allocated"] < 1 << 24
+    assert found[old]["db"]["allocated"] <= 1 << 21, "the fixture is not sparse; the test would prove nothing"
+    assert found[rollback]["db"]["allocated"] <= 2 * found[old]["db"]["allocated"]
 
     moved = volumes.move(runner, IMAGE, directory, old, new)
-    assert (moved.error, moved.moved) == (None, 6)  # the top-level entries
+    assert (moved.error, moved.moved) == (None, 7)  # the top-level entries
     checked = volumes.verify(runner, IMAGE, directory, rollback, new)
-    assert (checked.error, checked.verified) == (None, 9)
+    assert (checked.error, checked.verified) == (None, 10)
     assert without_allocation(manifest(directory, new)[new]) == source

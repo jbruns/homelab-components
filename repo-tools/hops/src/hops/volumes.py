@@ -16,7 +16,8 @@ SCRIPT copies with Python's own calls: every file type, owners, modes, times, ha
 (ACLs are xattrs); holes stay holes. It first refuses unless the filesystem has room for <old>'s allocated
 size and a reserve. It then compares a manifest of both trees (each path's type, mode, owner, size, content,
 mtime, device number, symlink target, xattrs and hard-link group) and fails, naming the paths, on any
-difference. `verify` is that comparison alone: after a move, of <new> against the Rollback Volume.
+difference. `verify` is that comparison alone, without content: after a move, which renames and so changes
+no content, of <new> against the Rollback Volume.
 """
 
 import json
@@ -85,7 +86,7 @@ if mode == "check":
 import errno, hashlib, itertools, stat
 
 sys.setrecursionlimit(10000)
-BLOCK = 1 << 17
+BLOCK, PAGE = 1 << 17, 1 << 12  # read in blocks; leave out zeros in pages, a filesystem's usual block size
 ZERO = bytes(BLOCK)
 
 def xattrs(path):
@@ -113,9 +114,9 @@ def walk(top, rel=""):
 
 
 def blocks(fd, size):
-    # (offset, bytes) of every BLOCK-aligned block of the file that holds anything but zeros. Holes are passed
-    # over with SEEK_DATA/SEEK_HOLE where the filesystem has them; zeros written out are read and left out.
-    # A sparse and a dense file with the same content give the same blocks.
+    # (offset, bytes) of every run of PAGE-aligned pages within a BLOCK-aligned block that holds anything but
+    # zeros. Holes are passed over with SEEK_DATA/SEEK_HOLE where the filesystem has them; zeros written out
+    # are read and left out. A sparse and a dense file with the same content give the same runs.
     pos = 0
     while pos < size:
         start, end = pos, size
@@ -135,8 +136,19 @@ def blocks(fd, size):
             if not data:
                 return
             if data != ZERO[: len(data)]:
-                yield pos, data
+                yield from runs(pos, memoryview(data))
             pos += BLOCK
+
+
+def runs(pos, data):
+    start = None
+    for at in range(0, len(data) + PAGE, PAGE):
+        page = data[at : at + PAGE]
+        if page and page != ZERO[: len(page)]:
+            start = at if start is None else start
+        elif start is not None:
+            yield pos + start, data[start:at]
+            start = None
 
 
 def content(path, size):
@@ -148,9 +160,9 @@ def content(path, size):
     return digest.hexdigest()
 
 
-def record(path, st, link=None):
-    # A path's manifest record: type, mode, owner, size, a hash of its content (holes and written zeros alike),
-    # mtime, device number, symlink target, a hash of each xattr, and `link` (see records).
+def record(path, st, link=None, contents=False):
+    # A path's manifest record: type, mode, owner, size, with `contents` a hash of its content (holes and
+    # written zeros alike), mtime, device number, symlink target, a hash of each xattr, and `link` (see records).
     kind = stat.S_IFMT(st.st_mode)
     return {
         "type": kind,
@@ -158,7 +170,7 @@ def record(path, st, link=None):
         "uid": st.st_uid,
         "gid": st.st_gid,
         "size": st.st_size if kind == stat.S_IFREG else None,
-        "content": content(path, st.st_size) if kind == stat.S_IFREG else None,
+        "content": content(path, st.st_size) if contents and kind == stat.S_IFREG else None,
         "mtime": st.st_mtime_ns,
         "rdev": st.st_rdev if kind in (stat.S_IFCHR, stat.S_IFBLK) else None,
         "target": os.readlink(path) if kind == stat.S_IFLNK else None,
@@ -167,7 +179,7 @@ def record(path, st, link=None):
     }
 
 
-def records(top):
+def records(top, contents):
     # The manifest, one (rel, record) at a time so a large volume is never held in memory. `link` is, for every
     # path of a hard-link group but its first, that first path. The first path has none, as a file whose other
     # links are outside the volume has none: its copy is a file with a single link. A record is read before the
@@ -178,7 +190,7 @@ def records(top):
         if not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1:
             link = first.setdefault((st.st_dev, st.st_ino), rel)
             link = None if link == rel else link
-        yield rel, record(path, st, link)
+        yield rel, record(path, st, link, contents)
 
 
 def allocated(top):
@@ -206,8 +218,9 @@ def room(src, dst):
         )
 
 
-def verify(src, dst):
+def verify(src, dst, contents):
     # Compare the two manifests; raise naming the first differing paths and fields. Returns the path count.
+    # Without `contents` it reads no file's content: after a move, which renames and so changes no content.
     # Only the first five differences are kept, so a volume that differs everywhere does not fill the memory.
     count, n, diffs = 0, 0, []
 
@@ -217,7 +230,7 @@ def verify(src, dst):
         if n <= 5:
             diffs.append(text)
 
-    for a, b in itertools.zip_longest(records(src), records(dst)):
+    for a, b in itertools.zip_longest(records(src, contents), records(dst, contents)):
         count += 1
         if a is not None and b is not None and a[0] == b[0]:
             fields = [k for k in a[1] if a[1][k] != b[1][k]]
@@ -301,7 +314,7 @@ if mode in ("copy", "verify"):
                 raise RuntimeError(new + " is not empty")
             room(src, dst)
             copy(src, dst, os.lstat(src), {})
-        verified = verify(src, dst)
+        verified = verify(src, dst, contents=mode == "copy")
     except Exception as exc:
         print(json.dumps(state(verified=verified, error=f"{type(exc).__name__}: {exc}")))
         sys.exit(1)

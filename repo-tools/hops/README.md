@@ -512,12 +512,12 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
    `FSETID,MKNOD,SETFCAP,SYS_ADMIN` as well. The image's `cp` is BusyBox's, which drops xattrs, POSIX ACLs and
    setgid bits, so the script copies with Python's own calls: every file type (device nodes and FIFOs too),
    owners, modes, times, hard links, symlinks (never followed) and every xattr, ACLs and `trusted.*` included.
-   Holes in sparse files stay holes (`SEEK_DATA`/`SEEK_HOLE`), and blocks of written zeros are left out too, so
-   a sparse disk image takes no more room in the copy than in `<old>`.
+   Holes in sparse files stay holes (`SEEK_DATA`/`SEEK_HOLE`), and 4 KiB pages of written zeros are left out
+   too, so a sparse disk image takes no more room in the copy than in `<old>`.
    Before copying, it refuses unless the volumes filesystem, which every volume on the Host shares, has free
    `<old>`'s allocated size plus a reserve of a tenth of it or 1 GiB, whichever is more.
    It then walks both trees and compares each path's type, mode, owner, size, content (a hash of its non-zero
-   blocks, so a hole and written zeros compare equal), mtime, device number, symlink target, xattrs and the hard
+   pages, so a hole and written zeros compare equal), mtime, device number, symlink target, xattrs and the hard
    links between its paths. A file hard-linked only from outside the volume becomes a file with a single link in
    the copy. Any difference, or anything it could not keep, fails the copy and names the paths. `SYS_ADMIN` is
    there because the kernel hides `trusted.*` xattrs without it, so a lost one would look the same on both sides.
@@ -545,8 +545,9 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
 5. Check the containers again, the same way. If one was active during the move, it stops there,
    exits 1 and cleans up nothing. Stop that container first, then look at both volumes.
 6. Check that `<old>/_data` is empty and `<new>/_data` holds as many top-level entries as `<old>`
-   did. With a Rollback Volume, also compare the whole manifest of `<new>` with the Rollback Volume's, as the
-   copy did with `<old>`'s; a difference stops it here, before `<old>` is removed.
+   did. With a Rollback Volume, also compare the manifest of `<new>` with the Rollback Volume's, as the copy
+   did with `<old>`'s but without content, which renames do not change, so it reads no file again; a
+   difference stops it here, before `<old>` is removed.
 7. `docker rm` (never forced) the stopped containers that reference `<old>`. Docker will not
    remove a volume while any container references it, even a stopped one. This is runtime
    state: the Deploy after merge recreates them with the new name, since their volume changed.

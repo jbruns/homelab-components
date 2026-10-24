@@ -875,13 +875,6 @@ def _unlink(new):
     (new / "hardlink").write_text("data")
 
 
-def _rewrite(new):
-    file = new / "dir" / "file"
-    st = file.stat()
-    file.write_text("date")
-    os.utime(file, ns=(st.st_atime_ns, st.st_mtime_ns))
-
-
 def _xattr(new):
     if not XATTRS:
         pytest.skip("no xattrs on this platform")
@@ -899,7 +892,6 @@ def _xattr(new):
         (_retarget, "symlink"),
         (_unlink, "hardlink"),
         (_xattr, "dir/file"),
-        (_rewrite, "dir/file"),
     ],
 )
 def test_verify_names_any_difference_between_the_volumes(copied, change, path):
@@ -972,14 +964,52 @@ def test_copy_keeps_the_holes_of_a_sparse_file_and_verifies_its_content(tmp_path
     assert (tmp_path / "new" / "_data" / "zeros").read_bytes() == bytes(1 << 20) + b"x"
 
 
-def test_verify_compares_the_content_of_sparse_files(tmp_path):
-    for name, tail in (("old", b"end"), ("new", b"END")):
+def test_copy_keeps_holes_between_small_writes(tmp_path):
+    data = tmp_path / "old" / "_data"
+    data.mkdir(parents=True)
+    (tmp_path / "new" / "_data").mkdir(parents=True)
+    with open(data / "db", "wb") as f:  # 4 KiB written every 128 KiB, as a database or disk image might be
+        for offset in range(0, 1 << 23, 1 << 17):
+            f.seek(offset)
+            f.write(b"x" * 4096)
+    source = (data / "db").stat().st_blocks * 512
+    if source > 1 << 22:
+        pytest.skip("this filesystem does not keep holes")
+    code, report = script("copy", tmp_path)
+    assert (code, report["error"]) == (0, None)
+    assert (tmp_path / "new" / "_data" / "db").stat().st_blocks * 512 <= 2 * source
+
+
+def corrupting(mode, root: Path) -> tuple[int, dict]:
+    """SCRIPT with every write it makes turning b"end" into b"END": a copy that goes wrong unseen."""
+    code = (
+        "import os\nwrite = os.pwrite\n"
+        "os.pwrite = lambda fd, data, offset: write(fd, bytes(data).replace(b'end', b'END'), offset)\n"
+        f"exec({volumes.SCRIPT!r})"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code, mode, str(root), "old", "new", str(volumes.RESERVE)], capture_output=True
+    )
+    return done.returncode, json.loads(done.stdout.decode().splitlines()[-1])
+
+
+def test_the_copy_compares_the_content_of_sparse_files(tmp_path):
+    (tmp_path / "old" / "_data").mkdir(parents=True)
+    (tmp_path / "new" / "_data").mkdir(parents=True)
+    sparse(tmp_path / "old" / "_data" / "disk.img", 1 << 24)
+    code, report = corrupting("copy", tmp_path)
+    assert code == 1 and report["error"] == "RuntimeError: new differs from old at 1 path: 'disk.img' (content)"
+
+
+def test_verify_after_a_move_compares_metadata_not_content(tmp_path):
+    # Renames do not change content, so the check of <new> against the Rollback Volume does not read it again.
+    for name, text in (("old", "data"), ("new", "date")):
         (tmp_path / name / "_data").mkdir(parents=True)
-        sparse(tmp_path / name / "_data" / "disk.img", 1 << 24, tail)
-        os.utime(tmp_path / name / "_data" / "disk.img", ns=(1, 1))
+        (tmp_path / name / "_data" / "f").write_text(text)
+        os.utime(tmp_path / name / "_data" / "f", ns=(1, 1))
         os.utime(tmp_path / name / "_data", ns=(1, 1))
     code, report = script("verify", tmp_path)
-    assert code == 1 and "'disk.img' (content)" in report["error"]
+    assert (code, report["error"], report["verified"]) == (0, None, 2)
 
 
 def test_copy_refuses_without_room_for_the_old_volume_and_a_reserve(tmp_path):
