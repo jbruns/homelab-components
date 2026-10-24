@@ -27,10 +27,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: TEMP job context probe
-        env:
-          JOB_CONTEXT: ${{ toJSON(job) }}
-        run: jq -c '{workflow_repository, workflow_sha, workflow_ref}' <<< "$JOB_CONTEXT"; echo "github.sha=$GITHUB_SHA"
       - name: install gitleaks
         env:
           VERSION: ${{ inputs.gitleaks-version }}
