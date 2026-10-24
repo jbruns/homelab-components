@@ -1,10 +1,14 @@
-"""Read-only checks against the real Host. Skipped unless selected: python3 -m pytest tools/hops -m live
+"""Read-only checks against a real Host. Skipped unless selected, and run from a consuming repo's checkout:
 
-Needs TRUENAS_HOST (repo-root .env or environment) and the agent SSH key; the TrueNAS test also needs
-TRUENAS_URL and HOPS_TRUENAS_API_KEY. Never add a command
-here that changes anything on the Host.
+    HOPS_CONSUMER_REPO=~/src/home-ops .venv/bin/pytest -m live
+
+The Host is HOPS_CONSUMER_HOST, else the consuming repo's only Host; its HOPS_<NAME>_* keys come from that
+repo's .env. The Services named below are home-ops's; the TrueNAS and host tests need a Host with the
+truenas and zfs capabilities. Never add a command here that changes anything on the Host.
 """
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -13,8 +17,13 @@ from hops import cli
 pytestmark = pytest.mark.live
 
 
+def context() -> cli.Context:
+    repo = Path(os.environ.get("HOPS_CONSUMER_REPO", ".")).expanduser().resolve()
+    return cli.Context(cwd=repo, host=os.environ.get("HOPS_CONSUMER_HOST"))
+
+
 def hops_json(capsys, *argv):
-    code = cli.main([*argv, "--json"], ctx=cli.Context())
+    code = cli.main([*argv, "--json"], ctx=context())
     captured = capsys.readouterr()
     assert code == 0, captured.err
     return json.loads(captured.out)

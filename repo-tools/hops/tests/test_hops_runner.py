@@ -27,6 +27,16 @@ def test_docker_runs_over_ssh_with_a_shared_connection(runner, fake_host, host_c
     assert host_config.control_dir.is_dir()
 
 
+def test_without_a_key_ssh_picks_one(host_config, fake_host):
+    from dataclasses import replace
+
+    from hops.runner import Runner
+
+    fake_host.respond("ps")
+    Runner(replace(host_config, key=None), process=fake_host).docker("ps")
+    assert fake_host.calls[0].argv[:3] == ["ssh", "-o", "BatchMode=yes"]
+
+
 def test_pipeline_runs_each_docker_command_on_the_host_under_bash_pipefail(runner, fake_host):
     fake_host.respond("exec", "-i", "b")
     runner.pipeline(["exec", "a", "cat", "/x"], ["exec", "-i", "b", "sh", "-c", "read -r p; echo $p"], input="hi")

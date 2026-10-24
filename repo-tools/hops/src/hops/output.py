@@ -16,7 +16,7 @@ def table(headers: list[str], rows: list[list], file=None) -> None:
 
 
 def add_json_flag(parser) -> None:
-    parser.add_argument("--json", action="store_true", help="print JSON (schema in tools/hops/README.md)")
+    parser.add_argument("--json", action="store_true", help="print JSON (schema in the hops README)")
 
 
 def size(n: int | None) -> str | None:

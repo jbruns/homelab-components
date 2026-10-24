@@ -58,8 +58,9 @@ class Runner:
         return f"{self.host.user}@{self.host.host}"
 
     def ssh_argv(self, remote: str, *, tty: bool = False) -> list[str]:
+        key = ["-i", str(self.host.key)] if self.host.key else []
         return [
-            "ssh", "-i", str(self.host.key),
+            "ssh", *key,
             "-o", "BatchMode=yes",
             "-o", "ControlMaster=auto",
             "-o", f"ControlPath={self.host.control_dir}/%C",

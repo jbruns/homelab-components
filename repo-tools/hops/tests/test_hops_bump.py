@@ -8,7 +8,7 @@ import textwrap
 
 import pytest
 
-from hops_fakes import git
+from hops_fakes import HOSTS_YAML, git, write
 
 SONARR = "tn/sonarr/compose.yaml"
 OLD = "ghcr.io/home-operations/sonarr:4.0.20.3012@sha256:ffff"
@@ -156,7 +156,7 @@ def test_a_failed_validation_leaves_the_edit_uncommitted_in_the_worktree(hops, c
     outcome = hops("bump", "sonarr/sonarr")
     assert outcome.code == 1
     wt = worktree(checkout, "5.0.0.2742")
-    assert "validate.py failed" in outcome.err and str(wt) in outcome.err
+    assert "validate (python3 tools/validate/validate.py secrets env compose) failed" in outcome.err and str(wt) in outcome.err
     assert git(wt, "rev-parse", "HEAD") == head
     assert git(wt, "status", "--porcelain") == f"M {SONARR}"  # git() strips the leading space
 
@@ -300,3 +300,22 @@ def test_the_bump_starts_from_origin_main_not_the_callers_branch(hops, checkout,
     assert OLD in outcome.out  # the pin on main, not the feature branch's 9.9.9.9
     assert git(repo, "branch", "--show-current") == "feature"
     assert "9.9.9.9" in (repo / SONARR).read_text()
+
+
+def test_bump_works_from_the_default_branch_and_without_a_validate_command(hops, checkout, repo):
+    hosts = HOSTS_YAML.replace("    validate: [python3, tools/validate/validate.py, secrets, env, compose]\n", "")
+    write(repo, {"hosts.yaml": hosts.replace("version: 1", "version: 1\n    default_branch: trunk")})
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "trunk")
+    git(repo, "push", "-q", "origin", "HEAD:trunk")
+    trunk = git(repo, "rev-parse", "HEAD")
+
+    outcome = hops("bump", "sonarr/sonarr", "--pr")
+
+    assert outcome.code == 0, outcome.err
+    assert "hosts.yaml declares no validate command; committing unvalidated" in outcome.err
+    assert checkout.calls("validate") == []
+    assert git(worktree(checkout, "5.0.0.2742"), "rev-parse", "HEAD~1") == trunk
+    create = checkout.calls("gh")[-1]
+    assert create["argv"][create["argv"].index("--base") + 1] == "trunk"
+    assert "Not validated (hosts.yaml declares no validate)" in create["stdin"]

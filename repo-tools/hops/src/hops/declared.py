@@ -1,12 +1,10 @@
 """Declared state: the Stacks and Services the repo's Stack root declares, and target name resolution.
 
 Names resolve from the repo, never from running containers, so a typo fails before anything
-touches the Host. Parsing of Compose files and labels is shared with
-tools/declared-containers, which feeds ContainerDown the same list.
+touches the Host. Compose files are read as doco-cd deploys them: each Stack's entry file and
+everything it includes, recursively.
 """
 import difflib
-import functools
-import importlib.util
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +13,6 @@ import yaml
 
 from hops.errors import ConfigError, ResolveError
 
-_DECLARED_CONTAINERS = Path(__file__).resolve().parents[2] / "declared-containers" / "declared_containers.py"
 VARIABLE = re.compile(r"\$\{?[A-Za-z_]")
 # Datastore (GLOSSARY) engines, by the last path segment of the image repository.
 DATASTORE_IMAGES = {
@@ -30,14 +27,29 @@ PROJECT = "com.docker.compose.project"
 SERVICE = "com.docker.compose.service"
 
 
-@functools.cache
-def _dc():
-    spec = importlib.util.spec_from_file_location("declared_containers", _DECLARED_CONTAINERS)
-    if spec is None or not _DECLARED_CONTAINERS.is_file():
-        raise ConfigError(f"{_DECLARED_CONTAINERS} is missing; install hops with uv tool install -e")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def compose_files(entry: Path) -> list[Path]:
+    """A Stack's entry file plus everything it includes, recursively."""
+    seen: list[Path] = []
+    todo = [entry]
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        if not f.exists():
+            raise ConfigError(f"{entry}: includes missing {f}")
+        seen.append(f)
+        for inc in (yaml.safe_load(f.read_text()) or {}).get("include") or []:
+            paths = inc.get("path") if isinstance(inc, dict) else inc
+            todo += [(f.parent / p).resolve() for p in ([paths] if isinstance(paths, str) else paths or [])]
+    return seen
+
+
+def labels_of(service: dict) -> dict[str, str]:
+    """A Compose service's labels as a mapping, from either the list or the mapping form."""
+    labels = service.get("labels") or {}
+    if isinstance(labels, list):
+        labels = dict(item.split("=", 1) if "=" in item else (item, "") for item in labels)
+    return {k: str(v) for k, v in labels.items()}
 
 
 @dataclass(frozen=True)
@@ -104,22 +116,18 @@ class Declared:
             self.stacks.setdefault(s.stack, []).append(s)
 
     @classmethod
-    def load(cls, root: Path, stack_root: str = "tn") -> "Declared":
+    def load(cls, root: Path, stack_root: str) -> "Declared":
         """Every Service doco-cd deploys from <stack_root>/<stack>/compose.yaml and its includes."""
-        dc = _dc()
         services, stack_files = [], {}
         for entry in sorted((root / stack_root).glob("*/compose.yaml")):
             stack = entry.parent.name  # doco-cd's Compose project name
-            try:
-                files = dc.compose_files(entry)
-            except dc.GeneratorError as exc:
-                raise ConfigError(str(exc)) from exc
+            files = compose_files(entry)
             stack_files[stack] = files
             found = []
             for f in files:
                 for name, spec in ((yaml.safe_load(f.read_text()) or {}).get("services") or {}).items():
                     spec = spec or {}
-                    found.append(Service(stack, name, f, spec, dc.labels_of(spec)))
+                    found.append(Service(stack, name, f, spec, labels_of(spec)))
             services += sorted(found, key=lambda s: s.name)
         return cls(root, services, stack_files)
 

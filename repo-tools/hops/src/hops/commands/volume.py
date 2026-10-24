@@ -3,15 +3,16 @@
 The declared half is the PR changing the volume's `name:`. This creates <new>, renames every entry of
 <old>/_data into it from one container that mounts Docker's volumes directory once, removes the
 stopped containers that still reference <old> (the Deploy after merge recreates them under the new
-name), and removes <old>. A Rollback Snapshot (ADR 0011) of the dataset holding the volumes is
-required, and doco-cd must be stopped: on each poll it Deploys every Stack that differs from declared
+name), and removes <old>. On a Host with the truenas and zfs capabilities a Rollback Snapshot (ADR 0011)
+of the dataset holding the volumes is required; on any other Host the move first copies <old> into a
+Rollback Volume (hops/rollback_volumes.py). doco-cd must be stopped: on each poll it Deploys every Stack that differs from declared
 state, a Stack stopped for the move included. If anything fails part-way it stops, reports both
 volumes' state, and rolls nothing back.
 """
 import re
 from datetime import datetime, timezone
 
-from hops import docker, doco, output, snapshots, strays, volumes
+from hops import docker, doco, output, rollback_volumes, snapshots, strays, volumes
 from hops.errors import ConfigError, HopsError, HostTimeout, UsageError
 
 # Docker's FinishedAt: RFC 3339 in UTC, to the nanosecond.
@@ -24,16 +25,18 @@ def register(subparsers) -> None:
     sub = p.add_subparsers(dest="volume_command", metavar="<command>", required=True)
     mv = sub.add_parser("move", help=HELP, description=(
         HELP + ". The runtime half of a rename (ADR 0010); the PR changing the volume's name: is the declared "
-        "half. Refuses unless doco-cd and every container mounting OLD are stopped, NEW is missing or empty, "
-        "and a Rollback Snapshot for --issue covers the dataset holding the volumes (or --take-snapshot takes one). "
+        "half. Refuses unless doco-cd and every container mounting OLD are stopped and NEW is missing or empty. "
+        "On a Host with the truenas and zfs capabilities, a Rollback Snapshot for --issue must cover the dataset "
+        "holding the volumes (or --take-snapshot takes one); on any other Host, OLD is first copied into a "
+        "Rollback Volume released in " f"{snapshots.DEFAULT_DAYS} days. "
         "Stopped containers that mount OLD are removed so OLD can be; the Deploy recreates them. "
-        "Runbook: tools/hops/README.md#renaming-a-volume."))
+        "Runbook: hops' README.md, Renaming a volume."))
     mv.add_argument("old", help="the volume to move from; removed afterwards")
     mv.add_argument("new", help="the volume to move into; created unless it exists and is empty")
     mv.add_argument("--issue", required=True, metavar="N", help="the issue or PR of the rename")
     mv.add_argument("--take-snapshot", action="store_true",
                     help="take the Rollback Snapshot now (released by default in "
-                         f"{snapshots.DEFAULT_DAYS} days) instead of requiring one")
+                         f"{snapshots.DEFAULT_DAYS} days) instead of requiring one; needs a truenas and zfs Host")
     mv.add_argument("--dry-run", action="store_true", help="check every precondition and change nothing")
     output.add_json_flag(mv)
     mv.set_defaults(func=run_move)
@@ -57,7 +60,7 @@ def describe(declared, c) -> dict:
 def deployer(ctx):
     """doco-cd's container, or None. On each poll doco-cd Deploys every Stack that differs from declared
     state, so it would start a Stack stopped for the move."""
-    return docker.lookup(ctx.runner, ctx.declared.resolve_one(doco.DOCO_CD))
+    return docker.lookup(ctx.runner, ctx.declared.resolve_one(doco.service_key(ctx.host.doco_cd)))
 
 
 def check_deployer(ctx):
@@ -186,6 +189,34 @@ def state(ctx, image: str, directory: str, old: str, new: str, probe=None) -> st
     return f"{count(probe.old, old)}, {count(probe.new, new)}"
 
 
+def keep_rollback(ctx, image: str, directory: str, rollback, entries: int) -> None:
+    """Create the Rollback Volume and copy <old> into it; raises before anything is moved if that fails."""
+    def failed(step: str, detail: str):
+        raise HopsError(f"{step} failed: {detail}. Nothing was moved and {rollback.of} is as it was; remove "
+                        f"{rollback.name} (docker volume rm {rollback.name}) before running hops volume move again")
+
+    try:
+        ctx.runner.docker("volume", "create", *rollback.labels(), rollback.name)
+        created = volumes.inspect(ctx.runner, rollback.name)
+    except HopsError as exc:
+        failed(f"docker volume create {rollback.name}", str(exc))
+    problem = volumes.local_problem(created, directory) if created else "it does not exist"
+    if problem:
+        failed(f"docker volume create {rollback.name}", problem)
+    try:
+        copied = volumes.copy(ctx.runner, image, directory, rollback.of, rollback.name)
+    except HostTimeout as exc:
+        failed(f"copying {rollback.of} into {rollback.name}", f"{exc}; its container (label {volumes.LABEL}="
+               f"{rollback.of}) may still be running on the Host, so wait for it to exit")
+    except HopsError as exc:
+        failed(f"copying {rollback.of} into {rollback.name}", str(exc))
+    if copied.error:
+        failed(f"copying {rollback.of} into {rollback.name}", copied.error)
+    if copied.old is None or copied.new is None or copied.old["entries"] != entries \
+            or copied.new["entries"] != entries:
+        failed("checking the copy", f"expected {entries} top-level entries in both {rollback.of} and {rollback.name}")
+
+
 def run_move(args, ctx) -> int:
     old, new = args.old, args.new
     volumes.check_name(old)
@@ -193,6 +224,9 @@ def run_move(args, ctx) -> int:
     if old == new:
         raise UsageError("old and new are the same volume")
     snapshots.check_issue(args.issue)
+    zfs = ctx.has("truenas", "zfs")
+    if args.take_snapshot:
+        ctx.require("truenas", "zfs", what="--take-snapshot (a Rollback Snapshot)")
     image = volumes.image(ctx.declared)
     warnings = [w for w in [volumes.convention(ctx.declared, new)] if w]
     for w in warnings:
@@ -217,19 +251,27 @@ def run_move(args, ctx) -> int:
         refuse(f"{new} exists and is not empty ({probe.new['entries']} top-level entries)")
     if probe.old["dev"] != probe.dev or (probe.new is not None and probe.new["dev"] != probe.dev):
         refuse(f"the volumes are not all on the filesystem of {directory}, so rename(2) cannot move them")
-    if probe.fstype != "zfs" or not probe.source:
-        refuse(f"{directory} is on {probe.fstype or 'an unknown filesystem'}, not a ZFS dataset, "
-               "so no Rollback Snapshot can cover it")
-    dataset = probe.source
-    snap = snapshot_plan(ctx, args, dataset, on_old)
+    dataset, snap, rollback = None, None, None
+    if zfs:
+        if probe.fstype != "zfs" or not probe.source:
+            refuse(f"{directory} is on {probe.fstype or 'an unknown filesystem'}, not a ZFS dataset, "
+                   "so no Rollback Snapshot can cover it")
+        dataset = probe.source
+        snap = snapshot_plan(ctx, args, dataset, on_old)
+    else:
+        at = snapshots.now()
+        rollback = rollback_volumes.plan(old, args.issue, snapshots.expiry(None, None, at.date()), at)
+        volumes.check_name(rollback.name)
+        if volumes.inspect(ctx.runner, rollback.name) is not None:
+            refuse(f"the Rollback Volume {rollback.name} already exists")
 
     report = {"old": old, "new": new, "issue": args.issue, "dataset": dataset, "entries": probe.old["entries"],
-              "snapshot": None, "would_take": None, "created_new": new_volume is None,
-              "containers": [describe(ctx.declared, c) for c in on_old], "warnings": warnings, "dry_run": args.dry_run,
-              "moved": False}
+              "snapshot": None, "would_take": None, "rollback_volume": rollback.to_json() if rollback else None,
+              "created_new": new_volume is None, "containers": [describe(ctx.declared, c) for c in on_old],
+              "warnings": warnings, "dry_run": args.dry_run, "moved": False}
     if isinstance(snap, dict):
         report["would_take"] = snapshots.would_take(snap)
-    else:
+    elif snap is not None:
         report["snapshot"] = snap.to_json()
     if args.dry_run:
         return finish(ctx, args, report)
@@ -238,12 +280,18 @@ def run_move(args, ctx) -> int:
         snap = snapshots.take(ctx.truenas, snap)
         report["snapshot"], report["would_take"] = snap.to_json(), None
         ctx.stderr.write(f"Took Rollback Snapshot {snap.name} (release by {snap.expires}).\n")
+    if rollback is not None:
+        keep_rollback(ctx, image, directory, rollback, probe.old["entries"])
+        ctx.stderr.write(f"Kept Rollback Volume {rollback.name}, a copy of {old} (release by {rollback.expires}).\n")
+    kept = f"Rollback Snapshot {snap.name}" if snap is not None else f"Rollback Volume {rollback.name}"
 
     def stopped(step: str, detail: str, probe=None):
+        restore = (f"restore {old} from it (README, Risky changes)" if snap is not None
+                   else f"copy it back into {old} (README, Renaming a volume)")
         raise HopsError(
             f"{step} failed: {detail}. Stopped there and rolled nothing back: "
-            f"{state(ctx, image, directory, old, new, probe)}. Rollback Snapshot {snap.name} holds the data "
-            f"from before the move: restore {old} from it (README, Risky changes), or finish the move by hand")
+            f"{state(ctx, image, directory, old, new, probe)}. {kept} holds the data "
+            f"from before the move: {restore}, or finish the move by hand")
 
     if new_volume is None:
         try:
@@ -263,8 +311,9 @@ def run_move(args, ctx) -> int:
     if late:
         raise HopsError(
             f"{', '.join(late)} started after the checks passed (a Deploy of the Stack?), so nothing was moved: "
-            f"{state(ctx, image, directory, old, new)}. Stop it, then run hops volume move again; Rollback "
-            f"Snapshot {snap.name} is still there")
+            f"{state(ctx, image, directory, old, new)}. Stop it, then run hops volume move again; "
+            f"{kept} is still there" + ("" if snap is not None else
+                                        f" (remove it first: docker volume rm {rollback.name})"))
     try:
         moved = volumes.move(ctx.runner, image, directory, old, new)
     except HostTimeout as exc:
@@ -314,13 +363,18 @@ def finish(ctx, args, report: dict) -> int:
         return 0
     old, new, n = report["old"], report["new"], report["entries"]
     snap = report["snapshot"] or report["would_take"]
+    rollback = report["rollback_volume"]
     containers = ", ".join(f"{c['container']} ({c['state']})" for c in report["containers"]) or "none"
     if report["dry_run"]:
+        where = f" on {report['dataset']}" if report["dataset"] else ""
+        if snap:
+            kept = f"Rollback Snapshot: {snap['name']}{' (would take it)' if report['would_take'] else ''}"
+        else:
+            kept = f"Would first copy {old} into Rollback Volume {rollback['name']} (released {rollback['expires']})"
         ctx.stdout.write(
-            f"Would move {n} top-level entries from {old} to {new} ({'creating it' if report['created_new'] else 'empty'}) "
-            f"on {report['dataset']}, remove the stopped containers that reference {old} ({containers}), and "
-            f"remove {old}.\nRollback Snapshot: {snap['name']}"
-            f"{' (would take it)' if report['would_take'] else ''}. Nothing changed.\n")
+            f"Would move {n} top-level entries from {old} to {new} ({'creating it' if report['created_new'] else 'empty'})"
+            f"{where}, remove the stopped containers that reference {old} ({containers}), and "
+            f"remove {old}.\n{kept}. Nothing changed.\n")
         return 0
     stacks = sorted({c["service"].split("/")[0] for c in report["containers"] if c["service"]})
     ctx.stdout.write(
@@ -329,5 +383,7 @@ def finish(ctx, args, report: dict) -> int:
         f"  1. Merge the PR that renames {old} to {new}.\n"
         "  2. Start doco-cd: hops start doco-cd. Its Deploy of the merge recreates the Stack's containers.\n"
         f"  3. Verify: hops status {' '.join(stacks) or '<stack>'}, and the Stack works as before.\n"
-        f"  4. Release the Rollback Snapshot: hops snapshot release {snap['name']}\n")
+        + (f"  4. Release the Rollback Snapshot: hops snapshot release {snap['name']}\n" if snap else
+           f"  4. Rollback Volume {rollback['name']} is kept until {rollback['expires']}; after that hops strays "
+           "lists it and hops strays --apply --volumes removes it (or docker volume rm it once verified).\n"))
     return 0

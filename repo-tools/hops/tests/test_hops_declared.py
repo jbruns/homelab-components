@@ -7,7 +7,7 @@ from hops.errors import ResolveError
 
 @pytest.fixture
 def declared(repo):
-    return Declared.load(repo)
+    return Declared.load(repo, "tn")
 
 
 def keys(services):
@@ -81,7 +81,7 @@ def test_resolve_one_prefers_the_service_then_a_single_service_stack(declared):
 def test_resolve_one_needs_a_service_in_a_multi_service_stack(repo):
     (repo / "tn/nextcloud/nextcloud/service.yaml").write_text("services: {}\n")
     with pytest.raises(ResolveError, match=r"Stack nextcloud has several Services; name one: nextcloud/exporter, nextcloud/mariadb"):
-        Declared.load(repo).resolve_one("nextcloud")
+        Declared.load(repo, "tn").resolve_one("nextcloud")
 
 
 def test_finds_the_service_behind_compose_labels(declared):

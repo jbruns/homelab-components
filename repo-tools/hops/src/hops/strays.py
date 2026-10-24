@@ -2,8 +2,12 @@
 
 Pure classification over what the Host reports; hops/commands/strays.py reads the Host and removes.
 Data that belongs to a Stack is never a Stray: a volume is kept when its Compose project is a declared
-Stack or a Stack names it, even while nothing mounts it.
+Stack or a Stack names it, even while nothing mounts it. A Rollback Volume (hops/rollback_volumes.py) is no Stray
+until its release date has passed; then it is one that --apply --volumes removes.
 """
+from datetime import date, datetime, timezone
+
+from hops import rollback_volumes
 from hops.declared import PROJECT, VARIABLE, Declared
 from hops.docker import Container
 
@@ -20,10 +24,11 @@ def truenas_app(name: str, project: str | None) -> bool:
     return name.startswith("ix-") or (project or "").startswith("ix-")
 
 
-def undeclared(declared: Declared, c: Container) -> bool:
+def undeclared(declared: Declared, c: Container, truenas: bool = True) -> bool:
     """A container no declared Service accounts for, by its Compose labels or its declared
-    container_name (a container deployed under a legacy Compose project), and not a TrueNAS App's."""
-    return (declared.by_compose_labels(c.labels) is None and not truenas_app(c.name, c.compose[0])
+    container_name (a container deployed under a legacy Compose project), and, on a TrueNAS Host,
+    not a TrueNAS App's."""
+    return (declared.by_compose_labels(c.labels) is None and not (truenas and truenas_app(c.name, c.compose[0]))
             and c.name not in {s.container for s in declared.services})
 
 
@@ -46,16 +51,22 @@ def unresolved(names: dict[str, str]) -> list[str]:
 
 
 def classify(declared: Declared, containers: list[Container], images: list[dict], volumes: list[dict],
-             networks: list[dict]) -> dict:
+             networks: list[dict], *, truenas: bool = True, on: date | None = None) -> dict:
     """The Strays of each kind, as the JSON `hops strays` prints (README). Rows are `docker … ls` JSON.
 
     When ownership is unknown, a Stray is listed with the reason in `kept` and never removed. Images,
     volumes and networks used only by Strays that --apply removes are Strays too; what kept
-    containers use is not.
+    containers use is not. `truenas`: the Host runs TrueNAS, whose Apps' (ix-*) resources are never
+    Strays. `on` (default today, UTC) decides whether a Rollback Volume is past its release date.
     """
+    on = on or datetime.now(timezone.utc).date()
+
+    def app(name, project):
+        return truenas and truenas_app(name, project)
+
     stray_containers, kept = [], []
     for c in containers:
-        if not undeclared(declared, c):
+        if not undeclared(declared, c, truenas):
             kept.append(c)
             continue
         keep = None if c.status in REMOVABLE_STATES else f"{c.status}: only {', '.join(REMOVABLE_STATES[:-1])} " \
@@ -106,10 +117,15 @@ def classify(declared: Declared, containers: list[Container], images: list[dict]
         project = labels.get(PROJECT) or None
         name = row["Name"]
         if (project in kept_projects or name in declared_volumes or name in used_volumes
-                or truenas_app(name, project)):
+                or app(name, project)):
             continue
+        rollback = rollback_volumes.expired(labels, on)
+        if rollback is False:
+            continue  # a Rollback Volume before its release date
         anonymous = ANONYMOUS in labels
-        if project:
+        if rollback:
+            keep = None  # its release date has passed
+        elif project:
             keep = f"Compose project {project} is no declared Stack: ownership unknown"
         elif not anonymous:
             keep = "named, unlabelled and undeclared: ownership unknown"
@@ -117,8 +133,10 @@ def classify(declared: Declared, containers: list[Container], images: list[dict]
             keep = f"used by Stray container {', '.join(stray_mounts[name])}: removable once nothing references it"
         else:
             keep = None  # an anonymous volume nothing references or claims
-        stray_volumes.append({"volume": name, "stack": project, "anonymous": anonymous, "kept": keep,
-                              "removed": None})
+        entry = {"volume": name, "stack": project, "anonymous": anonymous, "kept": keep, "removed": None}
+        if rollback:
+            entry["rollback"] = rollback_volumes.describe(labels)
+        stray_volumes.append(entry)
 
     declared_networks = declared.resource_names("networks")
     stray_networks = []
@@ -126,7 +144,7 @@ def classify(declared: Declared, containers: list[Container], images: list[dict]
         project = parse_labels(row.get("Labels", "")).get(PROJECT) or None
         name = row["Name"]
         if (name in DEFAULT_NETWORKS or project in declared.stacks or name in declared_networks
-                or name in used_networks or truenas_app(name, project)):
+                or name in used_networks or app(name, project)):
             continue
         stray_networks.append({"network": name, "id": row["ID"], "stack": project, "kept": None,
                                "removed": None})

@@ -47,7 +47,7 @@ def run(args, ctx) -> int:
                          "pass --force to stop anyway")
     found = lifecycle.containers(ctx, services)
     author = f"hops ({ctx.env.get('USER') or 'unknown'})"
-    monitoring = silences.Monitoring.load(ctx.repo_root, config.stack_root_name(ctx.env))
+    monitoring = silences.Monitoring.load(ctx.repo_root, ctx.stack_root)
     for silence in silences.plan(ctx.declared, found, monitoring):
         matcher_args = [f"{k}={json.dumps(v)}" for k, v in silence.matchers.items()]
         result = alertmanager.amtool(

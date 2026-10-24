@@ -13,9 +13,6 @@ from hops.errors import HopsError, UsageError
 from hops.truenas import TrueNASError
 
 ISSUE, EXPIRES = "homeops:issue", "homeops:expires"
-# Docker's data-root on the Host (`docker info`: /mnt/.ix-apps/docker) is this dataset, which holds
-# every named volume under volumes/. It has no child datasets, so its snapshot is not recursive.
-DOCKER_DATASET = "luna/ix-apps/docker"
 DEFAULT_DAYS = 7
 PREFIX = "hops-"
 # `used`: the space only this snapshot holds, which releasing it frees.

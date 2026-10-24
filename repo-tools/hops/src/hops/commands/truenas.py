@@ -20,7 +20,7 @@ NAMESPACES = {
 # fields TrueNAS's own masking keys on, or rename a secret. `extra` is refused: it switches on
 # per-method data (e.g. disk.query's SED passwords).
 QUERY_OPTIONS = {"order_by", "count", "get", "offset", "limit"}
-README = "tools/hops/README.md (truenas call)"
+README = "hops' README.md (truenas call)"
 READS = ", ".join(f"*{m}" for m in READ_SUFFIXES) + ", " + ", ".join(sorted(READ_METHODS))
 METHOD = re.compile(r"[a-z0-9_]+(\.[a-z0-9_]+)+")
 
@@ -56,6 +56,7 @@ def check_query_options(options: dict) -> None:
 
 
 def run(args, ctx) -> int:
+    ctx.require("truenas", what="hops truenas call")
     if not is_read(args.method):
         raise UsageError(f"{args.method} is not a read method; hops truenas call only reads ({READS})")
     if not is_allowed(args.method):

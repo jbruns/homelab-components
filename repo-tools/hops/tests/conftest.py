@@ -1,6 +1,6 @@
 """Shared fixtures for hops tests: a fixture repository and a fake Host that records SSH argv.
 
-CI runs `python3 -m pytest tools host` without installing hops, so this puts the package on sys.path.
+hops is installed (uv pip install -e .); this puts the tests directory on sys.path for hops_fakes.
 """
 import os
 import sys
@@ -9,15 +9,9 @@ from pathlib import Path
 
 import pytest
 
-TOOL_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(TOOL_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hops_fakes import STACKS, FakeHost, write  # noqa: E402
-
-
-def pytest_configure(config):
-    config.addinivalue_line("markers", "live: read-only checks against the real Host; run with -m live")
+from hops_fakes import STACKS, FakeHost, hosts_yaml, write  # noqa: E402
 
 
 def pytest_collection_modifyitems(config, items):
@@ -31,10 +25,18 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def repo(tmp_path) -> Path:
-    """A home-ops checkout with the STACKS fixture (not a git repository)."""
+    """A consuming repo with the STACKS fixture: hosts.yaml with Host `truenas` (stack root tn) (not a git
+    repository)."""
     root = tmp_path / "repo"
     write(root, STACKS)
     return root
+
+
+@pytest.fixture
+def plain_host(repo) -> Path:
+    """The fixture repo with Host truenas declared without capabilities: a plain doco-cd Host."""
+    write(repo, {"hosts.yaml": hosts_yaml(capabilities="[]")})
+    return repo
 
 
 @pytest.fixture
@@ -72,10 +74,10 @@ def hops(repo, runner, capsys):
     """
     from hops import cli
 
-    env = {k: v for k, v in os.environ.items() if k not in ("TRUENAS_URL", "HOPS_TRUENAS_API_KEY")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HOPS_")}
 
     def run(*argv: str, truenas=None) -> Outcome:
-        ctx = cli.Context(repo_root=repo, runner=runner, truenas=truenas, env=env)
+        ctx = cli.Context(repo_root=repo, runner=runner, truenas=truenas, env=env, cwd=repo)
         code = cli.main(list(argv), ctx=ctx)
         captured = capsys.readouterr()
         return Outcome(code, captured.out, captured.err)

@@ -9,13 +9,18 @@ from hops_fakes import prop, rollback, snap
 from hops import snapshots
 
 NOW = datetime(2026, 10, 23, 15, 47, 5, tzinfo=timezone.utc)
-DOCKER = snapshots.DOCKER_DATASET
+DOCKER = "luna/ix-apps/docker"  # holds Docker's data-root, /mnt/.ix-apps/docker (FakeSnapshots)
 PERIODIC = f"{DOCKER}@luna-2026-10-19_23-00"
 
 
 @pytest.fixture(autouse=True)
 def clock(monkeypatch):
     monkeypatch.setattr(snapshots, "now", lambda: NOW)
+
+
+@pytest.fixture(autouse=True)
+def docker_root(fake_host):
+    fake_host.respond("info", stdout='"/mnt/.ix-apps/docker"\n')
 
 
 def test_take_snapshots_dockers_data_root_with_its_properties_set_at_creation(hops):
@@ -49,6 +54,15 @@ def test_take_refuses_bad_input_before_creating(hops, args, message):
     pool = Pool()
     outcome = hops("snapshot", "take", "--issue", "637", *args, truenas=pool.client)
     assert outcome.code == 2 and message in outcome.err
+    assert pool.called("pool.snapshot.create") == []
+
+
+def test_take_refuses_when_dockers_data_root_is_not_on_zfs(hops, fake_host):
+    fake_host.respond("info", stdout='"/var/lib/docker"\n')
+    pool = Pool()
+    outcome = hops("snapshot", "take", "--issue", "637", truenas=pool.client)
+    assert outcome.code == 2
+    assert "Docker's data-root /var/lib/docker is not on a ZFS dataset; name the dataset with --dataset" in outcome.err
     assert pool.called("pool.snapshot.create") == []
 
 

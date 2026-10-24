@@ -1,15 +1,17 @@
 """hops strays [--apply [--volumes]]: list, or remove, what no Stack declares or uses."""
 import json
 
-from hops import config, docker, origin_main, output, snapshots, strays
+from hops import docker, origin_main, output, snapshots, strays
 from hops.errors import ConfigError, HopsError, UsageError
 
-HELP = "Stray containers, images, volumes, networks and expired Rollback Snapshots; --apply removes them"
+HELP = ("Stray containers, images, volumes, networks, and expired Rollback Snapshots and Rollback Volumes; "
+        "--apply removes them")
 DESCRIPTION = (HELP + ". Lists by default (against this checkout) and changes nothing. --apply fetches "
-               "origin/main, classifies against it, and removes stopped Stray containers, then Stray images and "
-               "networks; volumes, the only Strays that can hold data, only with --apply --volumes. Anything "
-               "whose ownership is unknown is listed but never removed. Expired Rollback Snapshots are listed "
-               "(through TrueNAS, when configured) and released only with hops snapshot release.")
+               "origin/<default branch>, classifies against it, and removes stopped Stray containers, then Stray "
+               "images and networks; volumes (expired Rollback Volumes included), the only Strays that can hold "
+               "data, only with --apply --volumes. Anything whose ownership is unknown is listed but never removed. "
+               "On a Host with the truenas and zfs capabilities, expired Rollback Snapshots are listed (through "
+               "TrueNAS) and released only with hops snapshot release.")
 
 
 def register(subparsers) -> None:
@@ -27,13 +29,15 @@ def json_lines(text: str) -> list[dict]:
 KINDS = ("containers", "images", "networks", "volumes")
 
 
-def read_host(runner, declared) -> dict:
+def read_host(runner, declared, truenas: bool = True) -> dict:
     return strays.classify(
         declared,
         docker.all_containers(runner),
         json_lines(runner.docker("image", "ls", "--no-trunc", "--format", "json").stdout),
         json_lines(runner.docker("volume", "ls", "--format", "json").stdout),
         json_lines(runner.docker("network", "ls", "--no-trunc", "--format", "json").stdout),
+        truenas=truenas,
+        on=snapshots.now().date(),
     )
 
 
@@ -46,6 +50,8 @@ SNAPSHOT_KEPT = "released only with hops snapshot release, once its change is ve
 
 def expired_snapshots(ctx) -> tuple[list[dict] | None, str | None]:
     """Rollback Snapshots past their release date, as Strays; or None and why they weren't checked."""
+    if not ctx.has("truenas", "zfs"):
+        return None, f"Host {ctx.host.name!r} has no truenas and zfs capabilities, so it has no Rollback Snapshots"
     try:
         found = snapshots.rollback_snapshots(ctx.truenas)
     except ConfigError as exc:
@@ -124,7 +130,7 @@ def image_label(image: dict) -> str:
     return " ".join(image["refs"]) or f"{image['repository'] or ''} (untagged)".lstrip()
 
 
-def print_report(report: dict, source: str, out) -> None:
+def print_report(report: dict, source: str, out, snapshots_possible: bool = True) -> None:
     sections = [
         ("containers", "Stray containers:", ["CONTAINER", "IMAGE", "STATE", "COMPOSE PROJECT", "NOTE"],
          lambda c: [c["container"], c["image"], c["state"], c["stack"], note(c)]),
@@ -140,13 +146,14 @@ def print_report(report: dict, source: str, out) -> None:
     first = True
     out.write(f"Declared state: {source}\n\n")
     if not any(report[k] for k in KINDS) and not report["snapshots"]:
-        out.write("No Strays" + (".\n" if report["snapshots"] is not None else " among Docker resources.\n"))
+        complete = report["snapshots"] is not None or not snapshots_possible
+        out.write("No Strays" + (".\n" if complete else " among Docker resources.\n"))
     for key, title, headers, row in sections:
         if report[key]:
             out.write(("" if first else "\n") + title + "\n")
             output.table(headers, [row(e) for e in report[key]], out)
             first = False
-    if report["snapshots"] is None:
+    if report["snapshots"] is None and snapshots_possible:
         out.write(f"\nRollback Snapshots not checked: {report['snapshots_unchecked']}\n")
 
 
@@ -156,6 +163,9 @@ def note(entry: dict) -> str | None:
         notes.append(f"deliberate docker run ({strays.DELIBERATE_LABEL}={strays.DELIBERATE_VALUE})")
     if entry.get("anonymous"):
         notes.append("anonymous")
+    if entry.get("rollback"):
+        r = entry["rollback"]
+        notes.append(f"Rollback Volume of {r['of']} for issue #{r['issue']}, released {r['expires']}")
     if entry["kept"]:
         notes.append("kept: " + entry["kept"])
     return "; ".join(notes) or None
@@ -167,16 +177,18 @@ def run(args, ctx) -> int:
     if args.apply:
         # Removal trusts only what doco-cd deploys: a missing or partial checkout must not make a
         # Stack's resources Strays.
-        declared, commit = origin_main.load(ctx.repo_root, config.stack_root_name(ctx.env))
-        source, said = f"{origin_main.REF}@{commit}", f"{origin_main.REF} at {commit}, fetched now"
+        branch = ctx.hosts.default_branch
+        declared, commit = origin_main.load(ctx.repo_root, ctx.stack_root, branch)
+        ref = origin_main.ref(branch)
+        source, said = f"{ref}@{commit}", f"{ref} at {commit}, fetched now"
     else:
         declared, source = ctx.declared, "checkout"
-        said = f"this checkout ({ctx.repo_root}); --apply reads {origin_main.REF} instead"
+        said = f"this checkout ({ctx.repo_root}); --apply reads {origin_main.ref(ctx.hosts.default_branch)} instead"
     # A Stack's volume is never a Stray: refuse rather than guess which volume a variable names.
     unknown = strays.unresolved(declared.resource_names("volumes"))
     if args.volumes and unknown:
         raise ConfigError(f"cannot remove volumes: declared volume names use variables ({', '.join(unknown)})")
-    report = {"declared_from": source, **read_host(ctx.runner, declared)}
+    report = {"declared_from": source, **read_host(ctx.runner, declared, ctx.has("truenas"))}
     snapshots_ok = True
     try:
         report["snapshots"], report["snapshots_unchecked"] = expired_snapshots(ctx)
@@ -186,7 +198,7 @@ def run(args, ctx) -> int:
         snapshots_ok = False
     say = (lambda _: None) if args.json else ctx.stdout.write
     if not args.json:
-        print_report(report, said, ctx.stdout)
+        print_report(report, said, ctx.stdout, ctx.has("truenas", "zfs"))
     ok = True
     if args.apply:
         if not args.json and any(removable(report, k) for k in KINDS):

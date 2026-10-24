@@ -1,16 +1,10 @@
 """hops restart, start, stop --for and recreate: runtime state only, with the Disruptive guardrails."""
 import json
-import re
-from pathlib import Path
 
 import pytest
-import yaml
-
 from hops import doco
-from hops import silences as silences_module
-from hops.declared import Declared
 from hops.errors import HopsError, HostTimeout
-from hops_fakes import container
+from hops_fakes import container, hosts_yaml, write
 
 KEY = "fake-doco-cd-key"
 PASSWORD = ["exec", "prometheus", "cat", "/run/secrets/prometheus_password"]
@@ -142,134 +136,6 @@ def test_stop_does_not_stop_when_the_silence_fails(hops, fake_host):
     assert [c for c in fake_host.docker_calls if c[0] == "stop"] == []
 
 
-# What the silences of `stop` cover, checked against the repo's real alert rules and scrape config.
-REPO = Path(__file__).resolve().parents[3]
-MONITORING = REPO / "tn" / "monitoring" / "prometheus"
-
-
-def rule(name: str) -> dict:
-    groups = yaml.safe_load((MONITORING / "alerting-rules.yml").read_text())["groups"]
-    return next(r for g in groups for r in g["rules"] if r.get("alert") == name)
-
-
-def scrape_target(job: str, **having) -> dict:
-    """The labels Prometheus gives a static target's series: job, instance and the target labels."""
-    config = yaml.safe_load((MONITORING / "prometheus.yml").read_text())
-    for sc in config["scrape_configs"]:
-        for static in sc.get("static_configs") or []:
-            labels = static.get("labels") or {}
-            if sc["job_name"] == job and having.items() <= labels.items():
-                return {"job": job, "instance": static["targets"][0], **labels}
-    raise AssertionError(f"no {job} target with {having}")
-
-
-def alert(name: str, series: dict) -> dict:
-    """The labels the alert carries for a series: its expr's label_replace copies, then the rule's labels."""
-    r = rule(name)
-    labels = dict(series)
-    for dst, src in re.findall(r'"(\w+)", "\$1", "(\w+)", "\(\.\+\)"', r["expr"]):
-        if src in labels:
-            labels[dst] = labels[src]
-    return {**labels, **(r.get("labels") or {}), "alertname": name}
-
-
-def silenced(matcher_sets: list[dict], labels: dict) -> bool:
-    return any(m.items() <= labels.items() for m in matcher_sets)
-
-
-def stop_plan(*stopped: tuple[str, str]) -> list:
-    """The silences `hops stop` would create for (stack/service, container) pairs, from the real repo."""
-    declared = Declared.load(REPO)
-    found = [(declared.resolve_one(key), container) for key, container in stopped]
-    return silences_module.plan(declared, found, silences_module.Monitoring.load(REPO, "tn"))
-
-
-def stop_silences(key: str, container: str) -> list[dict]:
-    return [s.matchers for s in stop_plan((key, container))]
-
-
-def probe_failed(stack: str, service: str, container: str, job: str = "probe", **labels) -> dict:
-    """ProbeFailed as the probe jobs relabel it from the probed container's Compose labels."""
-    service_ = Declared.load(REPO).get(stack, service)
-    return alert("ProbeFailed", {"job": job, "instance": "https://example", "container": container,
-                                 "service": service, "stack": stack, "tier": service_.tier, **labels})
-
-
-def test_stopping_traefik_silences_its_target_down_page():
-    found = stop_silences("edge/traefik", "traefik")
-    assert silenced(found, alert("TargetDown", scrape_target("traefik")))
-    assert not silenced(found, alert("TargetDown", scrape_target("crowdsec")))
-
-
-def test_stopping_a_datastore_silences_datastore_down():
-    found = stop_silences("nextcloud/mariadb", "nextcloud-mariadb")
-    assert silenced(found, alert("DatastoreDown", scrape_target("mysqld", datastore="nextcloud-mariadb")))
-    assert not silenced(found, alert("DatastoreDown", scrape_target("mysqld", datastore="vaultwarden-mariadb")))
-
-
-def test_stopping_a_service_without_container_name_silences_its_target_by_service_name():
-    found = stop_silences("doco-cd/doco-cd", "doco-cd-doco-cd-6")
-    assert silenced(found, alert("TargetDown", scrape_target("doco-cd")))
-
-
-def test_stopping_a_service_silences_container_down():
-    found = stop_silences("sonarr/sonarr", "sonarr")
-    assert silenced(found, alert("ContainerDown", {"stack": "sonarr", "service": "sonarr", "name": "sonarr",
-                                                   "tier": "warning"}))
-
-
-def test_stopping_traefik_silences_every_probe_its_own_missing_probe_no_longer_inhibits():
-    """Docker SD drops a stopped container's Probe, so ProbeFailed{container="traefik"} never fires."""
-    plan = stop_plan(("edge/traefik", "traefik"))
-    found = [s.matchers for s in plan]
-    assert silenced(found, probe_failed("vaultwarden", "vaultwarden", "vaultwarden"))
-    assert silenced(found, probe_failed("nextcloud", "nextcloud", "nextcloud"))
-    assert silenced(found, probe_failed("calibre-web-automated", "calibre-web-automated", "calibre-web-automated",
-                                        job="probe-idp", auth="forward"))
-    assert silenced(found, alert("IdpForwardAuthFailing", {}))
-    (every_probe,) = [s for s in plan if s.matchers == {"alertname": "ProbeFailed"}]
-    assert "all Probes" in every_probe.reason
-
-
-def test_stopping_other_services_leaves_other_probes_paging():
-    for key, container in [("sonarr/sonarr", "sonarr"), ("edge/crowdsec", "crowdsec"),
-                           ("nextcloud/mariadb", "nextcloud-mariadb")]:
-        found = stop_silences(key, container)
-        assert not silenced(found, probe_failed("vaultwarden", "vaultwarden", "vaultwarden")), key
-
-
-def test_stopping_a_datastore_silences_the_services_in_its_stack_that_depend_on_it():
-    found = stop_silences("vaultwarden/mariadb", "vaultwarden-mariadb")
-    assert silenced(found, probe_failed("vaultwarden", "vaultwarden", "vaultwarden"))
-    assert silenced(found, alert("TargetDown", scrape_target("mysqld", datastore="vaultwarden-mariadb")))
-    assert not silenced(found, alert("DatastoreDown", scrape_target("mysqld", datastore="nextcloud-mariadb")))
-    nextcloud = stop_silences("nextcloud/mariadb", "nextcloud-mariadb")
-    assert silenced(nextcloud, probe_failed("nextcloud", "nextcloud", "nextcloud"))
-    assert silenced(nextcloud, alert("ContainerDown", {"stack": "nextcloud", "service": "nextcloud-cron",
-                                                       "name": "nextcloud-cron", "tier": "warning"}))
-    assert not silenced(found, probe_failed("nextcloud", "nextcloud", "nextcloud"))
-
-
-def test_stopping_a_service_silences_its_stacks_alerts_that_name_no_service():
-    found = stop_silences("ops/stack-back", "stack-back")
-    assert silenced(found, alert("BackupStale", {"kind": "volumes"}))
-    assert silenced(found, alert("BackupMetricsMissing", {}))
-    assert not silenced(stop_silences("sonarr/sonarr", "sonarr"), alert("BackupStale", {"kind": "volumes"}))
-
-
-def test_stopping_a_monitoring_service_never_silences_the_heartbeat():
-    found = stop_silences("monitoring/grafana", "grafana")
-    assert not silenced(found, alert("Watchdog", {}))
-
-
-@pytest.mark.parametrize("key, container", [("edge/traefik", "traefik"), ("ops/stack-back", "stack-back"),
-                                            ("vaultwarden/mariadb", "vaultwarden-mariadb"),
-                                            ("monitoring/prometheus", "prometheus")])
-def test_every_silence_is_narrow_and_explained(key, container):
-    for s in stop_plan((key, container)):
-        assert s.matchers and set(s.matchers) != {"stack"} and s.reason, s
-
-
 # recreate
 
 # On the metrics network: prometheus, traefik, sonarr's exporter (no nc -e), and a stopped alertmanager.
@@ -312,6 +178,27 @@ def test_recreate_sends_the_api_key_on_stdin_never_in_argv(hops, metrics, api_ke
     assert request.startswith("POST /v1/api/project/sonarr/recreate?service=sonarr HTTP/1.0\r\n")
     assert f"\r\nx-api-key: {KEY}\r\n" in request and request.endswith("\r\n\r\n")
     assert "Recreated sonarr/sonarr" in outcome.out
+
+
+def test_recreate_reaches_doco_cd_where_hosts_yaml_says(hops, fake_host, api_key, repo):
+    write(repo, {"hosts.yaml": hosts_yaml(extra="""
+        doco_cd:
+          stack: deployer
+          api_secret: deployer/key.sops.txt
+          address: cd.internal:8080
+          network: ops
+    """)})
+    fake_host.respond("network", "inspect", "ops", stdout="prometheus \n")
+    fake_host.respond("inspect", stdout=json.dumps(METRICS[:1]))
+    fake_host.respond("exec", "prometheus", "sh")
+    fake_host.respond("exec", "-i", "prometheus", stdout=http_response("200 OK", {}))
+
+    assert hops("recreate", "sonarr/sonarr").code == 0
+
+    assert api_key == [repo / "tn" / "deployer" / "key.sops.txt"]
+    (call,) = requests(fake_host)
+    assert call.docker[0][-3:] == ["600", "cd.internal", "8080"]
+    assert "\r\nHost: cd.internal\r\n" in call.input
 
 
 def test_recreate_reports_doco_cds_error(hops, metrics, api_key):
@@ -373,14 +260,14 @@ def test_recreate_bounds_the_request_on_the_host_and_here(hops, metrics, api_key
     assert hops("recreate", "sonarr/sonarr", "--timeout", "90").code == 0
     (call,) = requests(metrics)
     script_args = call.docker[0][call.docker[0].index("-c") + 1:]
-    assert "timeout" in script_args[0] and script_args[-1] == "90"
+    assert "timeout" in script_args[0] and script_args[2:] == ["90", "doco-cd", "80"]
     assert call.timeout > 90
 
 
 def test_recreate_defaults_to_a_generous_deadline(hops, metrics, api_key):
     metrics.respond("exec", "-i", "prometheus", stdout=http_response("200 OK", {}))
     assert hops("recreate", "sonarr/sonarr").code == 0
-    assert requests(metrics)[0].docker[0][-1] == "600"
+    assert requests(metrics)[0].docker[0][-3] == "600"
 
 
 @pytest.mark.parametrize("value", ["0", "-5"])

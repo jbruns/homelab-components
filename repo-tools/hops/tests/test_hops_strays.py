@@ -429,11 +429,55 @@ def test_strays_apply_never_releases_a_snapshot(hops):
     assert pool.called("pool.snapshot.delete") == []
 
 
-def test_strays_without_truenas_says_snapshots_were_not_checked(hops, fake_host):
+def test_strays_without_truenas_keys_says_snapshots_were_not_checked(hops, fake_host):
     answer(fake_host)
     outcome = hops("strays", "--json")
     assert outcome.code == 0, outcome.err
     report = json.loads(outcome.out)
     assert report["snapshots"] is None
-    assert report["snapshots_unchecked"].startswith("TrueNAS is not available on this host")
-    assert "Rollback Snapshots not checked: TrueNAS is not available" in hops("strays").out
+    assert "HOPS_TRUENAS_TRUENAS_URL is not set" in report["snapshots_unchecked"]
+    assert "Rollback Snapshots not checked: HOPS_TRUENAS_SSH_HOST is not set" in hops("strays").out
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_strays_on_a_host_without_zfs_has_no_rollback_snapshots_to_check(hops, fake_host):
+    answer(fake_host)
+    outcome = hops("strays", "--json")
+    assert outcome.code == 0, outcome.err
+    report = json.loads(outcome.out)
+    assert report["snapshots"] is None
+    assert report["snapshots_unchecked"] == "Host 'truenas' has no truenas and zfs capabilities, so it has no Rollback Snapshots"
+    assert "Rollback Snapshots" not in hops("strays").out
+
+
+def rollback_volume(name: str, expires: str) -> dict:
+    labels = f"hops.rollback.issue=638,hops.rollback.of=home_db,hops.rollback.expires={expires}"
+    return {"Name": name, "Driver": "local", "Labels": labels}
+
+
+@pytest.mark.usefixtures("today")
+def test_a_rollback_volume_is_a_stray_only_after_its_release_date(hops, host):
+    kept = rollback_volume("home_db.rollback-638-20261020T000000Z", "2026-10-23")
+    gone = rollback_volume("home_db.rollback-638-20261001T000000Z", "2026-10-22")
+    answer(host, volumes=[*VOLUMES, kept, gone])
+
+    outcome = hops("strays", "--apply", "--volumes", "--json")
+
+    assert outcome.code == 0, outcome.err
+    volumes = {v["volume"]: v for v in json.loads(outcome.out)["volumes"]}
+    assert kept["Name"] not in volumes
+    assert volumes[gone["Name"]] == {
+        "volume": gone["Name"], "stack": None, "anonymous": False, "kept": None, "removed": True,
+        "rollback": {"of": "home_db", "issue": "638", "expires": "2026-10-22"}}
+    assert ["volume", "rm", gone["Name"]] in host.docker_calls
+    assert ["volume", "rm", kept["Name"]] not in host.docker_calls
+    answer(host, volumes=[gone])
+    assert "Rollback Volume of home_db for issue #638, released 2026-10-22" in hops("strays").out
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_on_a_host_without_truenas_ix_resources_are_no_truenas_apps(hops, fake_host):
+    answer(fake_host)
+    report = json.loads(hops("strays", "--json").out)
+    (app,) = [c for c in report["containers"] if c["container"] == "ix-foo-web-1"]
+    assert app["kept"] == KEPT_STATE.format("running")

@@ -7,11 +7,11 @@ from hops.errors import ConfigError, HopsError
 
 HELP = ("the Host's pools, key datasets, Docker disk usage, Rollback Snapshots, and snapshot and "
         "Cloud Sync task status")
-SETTING = "HOPS_HOST_DATASETS"
+SETTING = "HOST_DATASETS"  # .env: HOPS_<NAME>_HOST_DATASETS
 # stack-back writes the restic repository to a bind mount; its image names the Service in any Stack.
 RESTIC_IMAGE = "lawndoc/stack-back"
-# Where that mount is in the container: RESTIC_REPOSITORY, which is encrypted in
-# tn/ops/stack-back.sops.env, so it is named here. Keep in step with tn/ops/stack-back/service.yaml.
+# Where that mount is in the container. RESTIC_REPOSITORY is usually in an encrypted env file, so the
+# mount is named here: stack-back's own convention.
 RESTIC_MOUNT = "/backups"
 DOCKER_TYPES = {"Images": "images", "Containers": "containers", "Local Volumes": "volumes",
                 "Build Cache": "build_cache"}
@@ -24,7 +24,8 @@ UNITS = {"": 1, "k": 10**3, "M": 10**6, "G": 10**9, "T": 10**12, "P": 10**15}
 def register(subparsers) -> None:
     p = subparsers.add_parser("host", help=HELP, description=(
         HELP + ". Read-only. Datasets: the one holding Docker's data-root, the restic repository's, and "
-        f"those listed in {SETTING}. Without TrueNAS configured, only Docker usage is shown."))
+        f"those listed in HOPS_<NAME>_{SETTING}. On a Host without the truenas capability, only Docker usage "
+        "is shown; Rollback Snapshots need the zfs capability too."))
     output.add_json_flag(p)
     p.set_defaults(func=run)
 
@@ -107,7 +108,7 @@ def datasets(ctx, client, notes: list[str]) -> list[dict]:
             add(name, role)
         else:
             notes.append(f"{role} path {path} is not on a ZFS dataset")
-    for name in re.split(r"[\s,]+", config.load_values(ctx.repo_root, ctx.env).get(SETTING) or ""):
+    for name in re.split(r"[\s,]+", config.host_setting(ctx.repo_root, ctx.host, SETTING, ctx.env) or ""):
         add(name, "configured")
     out = []
     for name, role_list in roles.items():
@@ -148,6 +149,8 @@ def run(args, ctx) -> int:
         notes.append(str(exc))
     sections = {"pools": hygiene.pools, "datasets": lambda c: datasets(ctx, c, notes),
                 "rollback_snapshots": rollback_summary, "tasks": hygiene.tasks}
+    if not ctx.has("zfs"):
+        del sections["rollback_snapshots"]
     for key, read in sections.items() if client is not None else ():
         try:
             report[key] = read(client)

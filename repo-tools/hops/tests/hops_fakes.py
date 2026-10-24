@@ -22,9 +22,46 @@ def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
 
 
+# hosts.yaml as home-ops declares it: one Host, `truenas`, whose stack root is tn/.
+HOSTS_YAML = """
+    version: 1
+    validate: [python3, tools/validate/validate.py, secrets, env, compose]
+    hosts:
+      truenas:
+        stack_root: tn
+        deployer: doco-cd
+        capabilities: [truenas, zfs]
+"""
+
+
+def hosts_yaml(*, capabilities="[truenas, zfs]", extra="") -> str:
+    """HOSTS_YAML with Host truenas's capabilities replaced and `extra` (indented YAML) appended."""
+    return HOSTS_YAML.replace("[truenas, zfs]", capabilities) + extra
+
+
+# A second Host, a plain doco-cd one, for Host selection.
+TWO_HOSTS = hosts_yaml(extra="""
+      nas-2:
+        stack_root: hosts/nas-2
+        deployer: doco-cd
+        capabilities: []
+""")
+NAS_2 = {
+    "hosts.yaml": TWO_HOSTS,
+    "hosts/nas-2/web/compose.yaml": """
+        services:
+          web:
+            image: nginx:1
+            container_name: web
+            labels: {tier: warning}
+    """,
+}
+
+
 # A small tn/ with includes, a Stack whose name is also one of its Services (nextcloud), a Service
 # name used in two Stacks (exporter), and a Service without container_name (doco-cd).
 STACKS = {
+    "hosts.yaml": HOSTS_YAML,
     "tn/_baseline.yaml": """
         services:
           baseline:
@@ -266,6 +303,7 @@ class FakeSnapshots:
         self.server = FakeTrueNAS({
             "pool.snapshot.query": self.query, "pool.snapshot.create": self.create,
             "pool.snapshot.delete": self.delete, "zfs.resource.query": self.resources,
+            "filesystem.statfs": self.statfs,
         })
         from hops import truenas
 
@@ -286,6 +324,11 @@ class FakeSnapshots:
     def delete(self, name):
         del self.snapshots[name]
         return True
+
+    def statfs(self, path):
+        if path == "/mnt/.ix-apps/docker":
+            return {"fstype": "zfs", "source": "luna/ix-apps/docker"}
+        return {"fstype": "ext4", "source": "/dev/sda1"}
 
     def resources(self, query):
         missing = [p for p in query["paths"] if p not in self.datasets]

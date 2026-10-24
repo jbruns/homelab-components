@@ -1,32 +1,30 @@
-"""Where hops finds the repo and how it reaches the Host.
+"""Where hops finds the repo, which Host it targets, and how it reaches that Host.
 
-Every site-specific value comes from here, so a second Host only needs different config:
+Every site-specific value comes from the consuming repo, read through homelab_hosts:
 
-- repo root: `git rev-parse --show-toplevel` of the working directory when that checkout has a
-  Stack root; otherwise the checkout hops is installed from (`uv tool install -e`).
+- repo root: the nearest directory at or above the working directory holding hosts.yaml.
+- Host: `--host <name>`; else the Host whose stack root holds the working directory; else the only Host.
 - `.env`: the repo root's, else the main worktree's (agent worktrees under `.worktrees/` have none).
+  Keys are per Host: `HOPS_<NAME>_SSH_HOST` and so on (homelab_hosts.env_prefix).
 - environment variables override `.env`.
 """
+
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from hops.errors import ConfigError
+import homelab_hosts
+from homelab_hosts import Host, Hosts, HostSettings, HostsError
 
-INSTALL_ROOT = Path(__file__).resolve().parents[3]
-DEFAULTS = {
-    "HOPS_SSH_USER": "homeops-agent",
-    "HOPS_SSH_KEY": "~/.ssh/homeops_agent_ed25519",
-    "HOPS_STACK_ROOT": "tn",
-}
+from hops.errors import ConfigError
 
 
 @dataclass(frozen=True)
 class HostConfig:
     host: str
     user: str
-    key: Path
+    key: Path | None  # None: let ssh pick (its config or default keys)
     control_dir: Path  # ssh ControlPath sockets
 
 
@@ -38,20 +36,27 @@ def _git(cwd: Path, *args: str) -> str | None:
     return out.strip() or None
 
 
-def stack_root_name(env=None) -> str:
-    env = os.environ if env is None else env
-    return env.get("HOPS_STACK_ROOT") or DEFAULTS["HOPS_STACK_ROOT"]
+def find_repo_root(cwd: Path | None = None) -> Path:
+    """The consuming repo to read hosts.yaml and declared state from: hosts.yaml at or above `cwd`."""
+    try:
+        return homelab_hosts.find_repo_root(cwd)
+    except HostsError as exc:
+        raise ConfigError(f"{exc}: run hops inside a repo that declares its Hosts") from None
 
 
-def find_repo_root(cwd: Path | None = None, env=None) -> Path:
-    """The home-ops checkout to read declared state from."""
-    stacks = stack_root_name(env)
-    top = _git(Path(cwd or Path.cwd()), "rev-parse", "--show-toplevel")
-    if top and (Path(top) / stacks).is_dir():
-        return Path(top).resolve()
-    if (INSTALL_ROOT / stacks).is_dir():
-        return INSTALL_ROOT
-    raise ConfigError(f"no home-ops checkout found: run hops inside one (it has {stacks}/)")
+def load_hosts(repo_root: Path) -> Hosts:
+    try:
+        return homelab_hosts.load_hosts(repo_root)
+    except HostsError as exc:
+        raise ConfigError(str(exc)) from None
+
+
+def pick_host(hosts: Hosts, name: str | None, cwd: Path | None = None) -> Host:
+    """`name` (--host) if given, else the Host whose stack root holds `cwd`, else the only Host."""
+    try:
+        return hosts.pick(name, path=Path.cwd() if cwd is None else cwd)
+    except HostsError as exc:
+        raise ConfigError(str(exc)) from None
 
 
 def env_files(repo_root: Path) -> list[Path]:
@@ -79,10 +84,10 @@ def read_env_file(path: Path) -> dict[str, str]:
 
 
 def load_values(repo_root: Path, env=None) -> dict[str, str]:
-    """Settings by name: DEFAULTS, overridden by the first .env found, overridden by the environment."""
+    """Settings by name: the first .env found, overridden by the environment."""
     env = dict(os.environ if env is None else env)
     found = next((f for f in env_files(repo_root) if f.is_file()), None)
-    return {**DEFAULTS, **(read_env_file(found) if found else {}), **env}
+    return {**(read_env_file(found) if found else {}), **env}
 
 
 def where(repo_root: Path) -> str:
@@ -90,16 +95,32 @@ def where(repo_root: Path) -> str:
     return "the environment or " + " or ".join(str(f) for f in env_files(repo_root))
 
 
-def load_host(repo_root: Path, env=None) -> HostConfig:
+def host_setting(repo_root: Path, host: Host, key: str, env=None) -> str | None:
+    """One per-Host `.env` value, `HOPS_<NAME>_<key>`; None when unset or empty."""
+    return load_values(repo_root, env).get(homelab_hosts.env_prefix(host) + key) or None
+
+
+def settings(repo_root: Path, host: Host, env=None) -> HostSettings:
+    """The Host's connection settings (homelab_hosts.host_settings); a ConfigError names each missing key."""
+    try:
+        return homelab_hosts.host_settings(load_values(repo_root, env), host)
+    except HostsError as exc:
+        raise ConfigError(f"{'; '.join(exc.problems)}; set it in {where(repo_root)}") from None
+
+
+def load_host(repo_root: Path, host: Host, env=None) -> HostConfig:
+    """How to reach the Host over SSH. The user is required: hops never guesses which account it acts as."""
     values = load_values(repo_root, env)
-    if not values.get("TRUENAS_HOST"):
-        raise ConfigError(f"missing TRUENAS_HOST: set it in {where(repo_root)}")
+    ssh = settings(repo_root, host, env).ssh
+    if not ssh.user:
+        user_key = homelab_hosts.env_prefix(host) + "SSH_USER"
+        raise ConfigError(f"{user_key} is not set (needed for Host {host.name!r}); set it in {where(repo_root)}")
     home = values.get("HOME") or str(Path.home())
     cache = values.get("XDG_CACHE_HOME") or f"{home}/.cache"
     return HostConfig(
-        host=values["TRUENAS_HOST"],
-        user=values["HOPS_SSH_USER"],
-        key=Path(_expand(values["HOPS_SSH_KEY"], home)),
+        host=ssh.host,
+        user=ssh.user,
+        key=Path(_expand(ssh.key, home)) if ssh.key else None,
         control_dir=Path(cache) / "hops",
     )
 

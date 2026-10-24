@@ -3,7 +3,7 @@
 Re-record (needs network). Tokens are redacted, and tag lists keep only version-shaped tags (and
 `latest`) to keep the files small:
 
-    PYTHONPATH=tools/hops:tools/hops/tests python3 -m hops_registry_fixtures [name ...]
+    cd repo-tools/hops && PYTHONPATH=tests .venv/bin/python -m hops_registry_fixtures [name ...]
 """
 import json
 import sys

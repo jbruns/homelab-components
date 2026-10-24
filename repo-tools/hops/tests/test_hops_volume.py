@@ -550,3 +550,101 @@ def test_doco_cd_starting_during_the_move_stops_before_cleanup(hops, host, pool,
     assert f"doco-cd-doco-cd-1 {text} started during the move" in outcome.err
     assert f"Rollback Snapshot {SNAPSHOT}" in outcome.err
     assert not any(c[0] == "rm" or c[:2] == ["volume", "rm"] for c in fake_host.docker_calls)
+
+
+# On a Host without ZFS: a Rollback Volume instead of a Rollback Snapshot
+
+ROLLBACK = f"{OLD}.rollback-638-20261023T154705Z"
+
+
+def rollback_volume_created(fake_host) -> list:
+    return [c for c in fake_host.docker_calls if c[:2] == ["volume", "create"] and c[-1] == ROLLBACK]
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_move_first_copies_old_into_a_labelled_rollback_volume(hops, host, fake_host):
+    data = host.add(OLD, {".hidden": "dot", "nested/file": "x"})
+    data.chmod(0o710)
+    host.containers[OLD] = [mounting("mariadb", OLD, project="home", service="mariadb", status="exited")]
+
+    outcome = move(hops, None, "--json")
+
+    assert outcome.code == 0, outcome.err
+    report = json.loads(outcome.out)
+    assert report["rollback_volume"] == {"name": ROLLBACK, "of": OLD, "issue": "638", "expires": "2026-10-30"}
+    assert (report["dataset"], report["snapshot"], report["moved"]) == (None, None, True)
+    assert rollback_volume_created(fake_host) == [[
+        "volume", "create", "--label", "hops.rollback.issue=638", "--label", f"hops.rollback.of={OLD}",
+        "--label", "hops.rollback.expires=2026-10-30", ROLLBACK]]
+    assert host.runs == ["check", "copy", "move", "check"]
+    kept = host.root / ROLLBACK / "_data"
+    assert (kept / ".hidden").read_text() == "dot" and (kept / "nested" / "file").read_text() == "x"
+    assert kept.stat().st_mode & 0o7777 == 0o710
+    assert (host.root / NEW / "_data" / "nested" / "file").read_text() == "x"
+    assert not (host.root / OLD).exists()
+    assert f"Kept Rollback Volume {ROLLBACK}, a copy of {OLD} (release by 2026-10-30)" in outcome.err
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_the_next_steps_say_when_the_rollback_volume_goes(hops, host):
+    host.add(OLD, {"f": "x"})
+    outcome = move(hops, None)
+    assert outcome.code == 0, outcome.err
+    assert f"Rollback Volume {ROLLBACK} is kept until 2026-10-30" in outcome.out
+    assert "hops strays --apply --volumes removes it" in outcome.out and "snapshot release" not in outcome.out
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_dry_run_names_the_rollback_volume_and_changes_nothing(hops, host, fake_host):
+    host.add(OLD, {"f": "x"})
+    outcome = move(hops, None, "--dry-run")
+    assert outcome.code == 0, outcome.err
+    assert f"Would first copy {OLD} into Rollback Volume {ROLLBACK} (released 2026-10-30)" in outcome.out
+    assert nothing_changed(host, fake_host) and host.runs == ["check"]
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_take_snapshot_is_refused_before_the_host_is_touched(hops, fake_host):
+    outcome = move(hops, None, "--take-snapshot")
+    assert outcome.code == 2
+    assert ("--take-snapshot (a Rollback Snapshot) needs a Host with the truenas and zfs capabilities; "
+            "Host 'truenas' has none") in outcome.err
+    assert fake_host.calls == []
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_refuses_when_the_rollback_volume_exists(hops, host, fake_host):
+    host.add(OLD, {"f": "x"})
+    host.add(ROLLBACK)
+    assert refused(move(hops, None), f"the Rollback Volume {ROLLBACK} already exists")
+    assert nothing_changed(host, fake_host)
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_a_failed_copy_moves_nothing(hops, host, fake_host):
+    host.add(OLD, {"f": "x"})
+    run = host.run
+
+    def copy_fails(call):
+        if call.docker[-1][-4] != "copy":
+            return run(call)
+        report = json.loads(run(call))
+        report["error"] = "RuntimeError: cp -a: No space left on device"
+        return json.dumps(report)
+    fake_host.respond("run", stdout=copy_fails)
+
+    outcome = move(hops, None)
+    assert outcome.code == 1
+    assert (f"copying {OLD} into {ROLLBACK} failed: RuntimeError: cp -a: No space left on device. Nothing was moved "
+            f"and {OLD} is as it was; remove {ROLLBACK}") in outcome.err
+    assert "move" not in host.runs and (host.root / OLD / "_data" / "f").exists()
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_zfs_a_failure_part_way_points_at_the_rollback_volume(hops, host, fake_host):
+    host.add(OLD, {"a": "1", "b": "2"})
+    fake_host.respond("volume", "rm", stderr="volume is in use", returncode=1)
+    outcome = move(hops, None)
+    assert outcome.code == 1
+    assert f"removing {OLD} failed" in outcome.err
+    assert f"Rollback Volume {ROLLBACK} holds the data from before the move: copy it back into {OLD}" in outcome.err

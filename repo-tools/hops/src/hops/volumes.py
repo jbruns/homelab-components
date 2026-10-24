@@ -8,7 +8,9 @@ python one hops already runs for `logs --loki` (hops/loki.py), never pulled.
 
 SCRIPT runs in that container (or, in tests, on this machine against a directory). It prints one
 JSON document: the filesystem mounted at ROOT and, for each volume, its _data's device and number of
-top-level entries. `check` only reads; `move` re-checks, renames, and reports the state either way.
+top-level entries. `check` only reads; `move` re-checks, renames, and reports the state either way;
+`copy` copies <old>/_data into an empty <new>/_data with `cp -a` (owners, modes, timestamps and links
+kept) for a Rollback Volume (hops/rollback_volumes.py), leaving <old> as it was.
 """
 import json
 import re
@@ -58,6 +60,28 @@ def state(**extra):
 
 if mode == "check":
     print(json.dumps(state()))
+    sys.exit(0)
+
+if mode == "copy":
+    try:
+        import subprocess
+
+        before = state()
+        if not before["old"] or not before["new"]:
+            raise RuntimeError("both volumes' _data must be directories under " + root)
+        if before["new"]["entries"]:
+            raise RuntimeError(new + " is not empty")
+        src, dst = os.path.join(root, old, "_data"), os.path.join(root, new, "_data")
+        st = os.lstat(src)
+        os.chown(dst, st.st_uid, st.st_gid)
+        os.chmod(dst, st.st_mode & 0o7777)
+        done = subprocess.run(["cp", "-a", "--", src + "/.", dst + "/"], capture_output=True, text=True)
+        if done.returncode != 0:
+            raise RuntimeError("cp -a: " + (done.stderr.strip() or "exit code " + str(done.returncode))[-500:])
+    except Exception as exc:
+        print(json.dumps(state(error=f"{type(exc).__name__}: {exc}")))
+        sys.exit(1)
+    print(json.dumps(state(error=None)))
     sys.exit(0)
 
 moved = 0
@@ -161,6 +185,16 @@ def run(runner: Runner, image: str, directory: str, mode: str, old: str, new: st
         "--cap-add", "FOWNER",
         "--memory", "256m", "-v", f"{directory}:{ROOT}{':ro' if mode == 'check' else ''}",
         image, "python3", "-c", SCRIPT, mode, ROOT, old, new, check=False, timeout=TIMEOUT)
+
+
+def copy(runner: Runner, image: str, directory: str, old: str, new: str) -> Probe:
+    """Copy <old>/_data into the empty <new>/_data, keeping <old>. The Probe carries `error` when the
+    copy failed; a HopsError means no report came back at all."""
+    result = run(runner, image, directory, "copy", old, new)
+    if not result.stdout.strip():
+        raise HopsError(f"the volume-copy container gave no report: "
+                        f"{result.stderr.strip() or f'exit code {result.returncode}'}")
+    return Probe.parse(result.stdout.strip().splitlines()[-1])
 
 
 def check(runner: Runner, image: str, directory: str, old: str, new: str) -> Probe:

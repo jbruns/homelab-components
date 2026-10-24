@@ -1,11 +1,12 @@
-"""TrueNAS middleware: JSON-RPC 2.0 over a WebSocket (`wss://<TRUENAS_URL host>/api/current`).
+"""TrueNAS middleware: JSON-RPC 2.0 over a WebSocket (`wss://<HOPS_<NAME>_TRUENAS_URL host>/api/current`).
 
 The connection, login, errors and redaction live here; feature modules (e.g. hops/snapshots.py) call
 methods through `Client`. Never use the REST API (`/api/v2.0`): it is deprecated and raises alerts
 on the Host.
 
-- `load_config(repo_root, env)` reads `TRUENAS_URL` and `HOPS_TRUENAS_API_KEY`. Without them the
-  Host has no TrueNAS for hops, and commands that need one fail with a ConfigError.
+- `load_config(repo_root, host, env)` reads the Host's `HOPS_<NAME>_TRUENAS_URL` and
+  `HOPS_<NAME>_TRUENAS_API_KEY`. A Host without the `truenas` capability has no TrueNAS for hops, and
+  commands that need one fail with a ConfigError (Unavailable).
 - `Client(cfg).call(method, *params)` returns the method's result; `Client(cfg).job(...)` calls a
   method that starts a job and waits for the job's result. The client connects and logs in on first
   use; `close()` ends the connection. TrueNAS rate-limits logins (EBUSY), so a refused login is
@@ -23,6 +24,8 @@ from pathlib import Path
 from typing import Callable, Protocol
 from urllib.parse import urlsplit
 
+from homelab_hosts import Host, env_prefix
+
 from hops import config
 from hops.errors import ConfigError, HopsError, HostTimeout
 
@@ -38,26 +41,27 @@ class TrueNASConfig:
     url: str  # the WebSocket endpoint
     api_key: str = field(repr=False)
     verify: bool = True  # TLS certificate and host name
+    key_name: str = "the API key"  # the .env key it came from, for error messages
 
 
 class Unavailable(ConfigError):
-    """This host has no TrueNAS configured for hops."""
+    """The Host has no TrueNAS: hosts.yaml does not give it the truenas capability."""
 
 
-def load_config(repo_root: Path, env=None) -> TrueNASConfig:
-    values = config.load_values(repo_root, env)
-    missing = [k for k in ("TRUENAS_URL", "HOPS_TRUENAS_API_KEY") if not values.get(k)]
-    if missing:
-        raise Unavailable(f"TrueNAS is not available on this host: missing {' and '.join(missing)}; "
-                          f"set it in {config.where(repo_root)}")
-    url = urlsplit(values["TRUENAS_URL"])
+def load_config(repo_root: Path, host: Host, env=None) -> TrueNASConfig:
+    """The Host's TrueNAS endpoint and API key; Unavailable when the Host lacks the `truenas` capability."""
+    if not host.has("truenas"):
+        raise Unavailable(f"Host {host.name!r} has no TrueNAS: hosts.yaml does not give it the truenas capability")
+    settings = config.settings(repo_root, host, env).truenas
+    url_key = env_prefix(host) + "TRUENAS_URL"
+    url = urlsplit(settings.url)
     if url.scheme != "https" or not url.netloc:
-        raise ConfigError("TRUENAS_URL must be an https:// URL, e.g. https://truenas.example")
+        raise ConfigError(f"{url_key} must be an https:// URL, e.g. https://truenas.example")
     if "@" in url.netloc:
-        raise ConfigError("TRUENAS_URL must not contain a user name or password; "
-                          "hops logs in with HOPS_TRUENAS_API_KEY")
-    return TrueNASConfig(url=f"wss://{url.netloc}/api/current", api_key=values["HOPS_TRUENAS_API_KEY"],
-                         verify=values.get("HOPS_TRUENAS_INSECURE", "") not in ("1", "true", "yes"))
+        raise ConfigError(f"{url_key} must not contain a user name or password; "
+                          f"hops logs in with {env_prefix(host)}TRUENAS_API_KEY")
+    return TrueNASConfig(url=f"wss://{url.netloc}/api/current", api_key=settings.api_key, verify=not settings.insecure,
+                         key_name=env_prefix(host) + "TRUENAS_API_KEY")
 
 
 class Transport(Protocol):
@@ -129,7 +133,7 @@ class Client:
                 self._sleep(pause)
         if accepted is not True:
             self.close()
-            raise HopsError(self._scrub(f"TrueNAS at {self.cfg.url} rejected HOPS_TRUENAS_API_KEY"))
+            raise HopsError(self._scrub(f"TrueNAS at {self.cfg.url} rejected {self.cfg.key_name}"))
 
     def _rpc(self, method: str, params: list):
         rid = next(self._ids)
@@ -166,7 +170,7 @@ def websocket_connect(url: str, *, verify: bool, timeout: float) -> Transport:
         import websocket
     except ImportError:
         raise ConfigError("hops needs websocket-client for TrueNAS: reinstall with "
-                          "`uv tool install -e tools/hops`, or `pip install websocket-client`") from None
+                          "`uv tool install` (see hops' README), or `uv pip install websocket-client`") from None
     import ssl
 
     class _WebSocket:

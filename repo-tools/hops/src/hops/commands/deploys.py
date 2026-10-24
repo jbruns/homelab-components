@@ -2,7 +2,7 @@
 import re
 from urllib.parse import quote
 
-from hops import config, doco, output
+from hops import doco, output
 from hops.errors import UsageError
 
 HELP = "doco-cd's recent runs: when, trigger, status, the Stacks each touched, and why one failed or skipped"
@@ -60,13 +60,14 @@ def run(args, ctx) -> int:
     if limit <= 0:
         raise UsageError("--limit must be a positive number")
 
-    via = doco.transport(ctx.runner, ctx.declared, [])
-    key = doco.api_key(ctx.repo_root, config.stack_root_name(ctx.env))
+    cfg = ctx.host.doco_cd
+    via = doco.transport(ctx.runner, ctx.declared, [], cfg)
+    key = doco.api_key(ctx.repo_root, ctx.stack_root, cfg)
     if run_id:
-        return show(ctx, args, via, key, run_id)
+        return show(ctx, args, via, key, run_id, cfg)
 
     query = f"limit={FETCH}" + (f"&status={args.status}" if args.status else "")
-    runs = [summary(r) for r in doco.get(ctx.runner, via, f"/v1/api/runs?{query}", key).get("content") or []]
+    runs = [summary(r) for r in doco.get(ctx.runner, via, f"/v1/api/runs?{query}", key, cfg).get("content") or []]
     if stack:
         runs = [r for r in runs if stack in r["stacks"]]
     runs = runs[:limit]
@@ -84,9 +85,9 @@ def run(args, ctx) -> int:
     return 0
 
 
-def show(ctx, args, via: str, key: str, run_id: str) -> int:
+def show(ctx, args, via: str, key: str, run_id: str, cfg) -> int:
     try:
-        r = summary(doco.get(ctx.runner, via, f"/v1/api/run/{quote(run_id, safe='')}", key).get("content") or {})
+        r = summary(doco.get(ctx.runner, via, f"/v1/api/run/{quote(run_id, safe='')}", key, cfg).get("content") or {})
     except doco.NotFound as exc:
         raise doco.NotFound(f"{exc}. {NOTE}") from None
     if args.json:

@@ -1,5 +1,6 @@
 """hops snapshot take|list|release: Rollback Snapshots (GLOSSARY, ADR 0011) through TrueNAS."""
-from hops import output, snapshots
+from hops import hygiene, output, snapshots, volumes
+from hops.errors import UsageError
 
 HELP = "Rollback Snapshots: take one before a risky change, list them, release one once it is verified"
 
@@ -7,14 +8,15 @@ HELP = "Rollback Snapshots: take one before a risky change, list them, release o
 def register(subparsers) -> None:
     p = subparsers.add_parser("snapshot", help=HELP, description=(
         HELP + ". A Rollback Snapshot is a ZFS snapshot carrying homeops:issue and homeops:expires; one past its "
-        "release date is a Stray (hops strays). Only snapshots carrying those properties are listed or released."))
+        "release date is a Stray (hops strays). Only snapshots carrying those properties are listed or released. "
+        "Needs a Host with the truenas and zfs capabilities."))
     sub = p.add_subparsers(dest="snapshot_command", metavar="<command>", required=True)
 
     take = sub.add_parser("take", help="snapshot a dataset before a risky change", description=(
-        f"Snapshot DATASET (default {snapshots.DOCKER_DATASET}, Docker's data-root with every volume) as "
+        "Snapshot DATASET (default: the dataset holding Docker's data-root, with every volume) as "
         f"{snapshots.PREFIX}<issue>-<UTC time>, with homeops:issue and homeops:expires set at creation."))
     take.add_argument("--issue", required=True, metavar="N", help="the issue or PR number of the change it serves")
-    take.add_argument("--dataset", default=snapshots.DOCKER_DATASET, help="the ZFS dataset to snapshot")
+    take.add_argument("--dataset", help="the ZFS dataset to snapshot (default: the one holding Docker's data-root)")
     when = take.add_mutually_exclusive_group()
     when.add_argument("--expires", metavar="YYYY-MM-DD", help="release date (UTC)")
     when.add_argument("--for", dest="duration", metavar="DURATION",
@@ -42,10 +44,26 @@ def table(records: list[snapshots.RollbackSnapshot], out) -> None:
                  [[r.name, r.issue, r.expires, output.size(r.size), "yes" if r.expired else "no"] for r in records], out)
 
 
+def require(ctx) -> None:
+    ctx.require("truenas", "zfs", what="hops snapshot (Rollback Snapshots)")
+
+
+def docker_dataset(ctx) -> str:
+    """The ZFS dataset holding Docker's data-root, and so every named volume."""
+    root = volumes.volumes_dir(ctx.runner).removesuffix("/volumes")
+    dataset = hygiene.dataset_at(ctx.truenas, root)
+    if not dataset:
+        raise UsageError(f"Docker's data-root {root} is not on a ZFS dataset; name the dataset with --dataset")
+    return dataset
+
+
 def run_take(args, ctx) -> int:
+    require(ctx)
     at = snapshots.now()
     expires = snapshots.expiry(args.expires, args.duration, at.date())
-    plan = snapshots.plan_take(ctx.truenas, args.issue, args.dataset, expires, at)
+    snapshots.check_issue(args.issue)
+    dataset = args.dataset or docker_dataset(ctx)
+    plan = snapshots.plan_take(ctx.truenas, args.issue, dataset, expires, at)
     if args.dry_run:
         pending = snapshots.would_take(plan)
         if args.json:
@@ -63,6 +81,7 @@ def run_take(args, ctx) -> int:
 
 
 def run_list(args, ctx) -> int:
+    require(ctx)
     records = snapshots.rollback_snapshots(ctx.truenas)
     if args.json:
         output.print_json({"snapshots": [r.to_json() for r in records]}, ctx.stdout)
@@ -74,6 +93,7 @@ def run_list(args, ctx) -> int:
 
 
 def run_release(args, ctx) -> int:
+    require(ctx)
     target = snapshots.releasable(ctx.truenas, args.name)
     if not args.dry_run:
         snapshots.release(ctx.truenas, target)

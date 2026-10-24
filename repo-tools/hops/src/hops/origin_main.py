@@ -1,4 +1,6 @@
-"""Declared state as origin/main has it: what doco-cd deploys, whatever this checkout holds."""
+"""Declared state as origin/<default branch> has it: what doco-cd deploys, whatever this checkout holds.
+
+The default branch is hosts.yaml's `default_branch` (main unless the repo says otherwise)."""
 import io
 import shutil
 import subprocess
@@ -8,9 +10,15 @@ from pathlib import Path
 from hops.declared import Declared
 from hops.errors import ConfigError, HopsError
 
-REF = "origin/main"
-# Explicit, so a narrowed remote.origin.fetch cannot leave origin/main stale.
-REFSPEC = "+refs/heads/main:refs/remotes/origin/main"
+
+
+def ref(branch: str) -> str:
+    return f"origin/{branch}"
+
+
+def refspec(branch: str) -> str:
+    # Explicit, so a narrowed remote.origin.fetch cannot leave origin/<branch> stale.
+    return f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
 
 
 def _git(repo_root: Path, *args: str) -> bytes:
@@ -21,15 +29,15 @@ def _git(repo_root: Path, *args: str) -> bytes:
         raise HopsError(f"git {' '.join(args)} failed: {detail.decode(errors='replace').strip() or exc}") from None
 
 
-def load(repo_root: Path, stack_root: str = "tn") -> tuple[Declared, str]:
-    """Fetch main from origin and load the Stack root of that commit; returns it and the commit's SHA.
+def load(repo_root: Path, stack_root: str, branch: str = "main") -> tuple[Declared, str]:
+    """Fetch `branch` from origin and load the Stack root of that commit; returns it and the commit's SHA.
 
     The tree is unpacked under the repository's git directory, so it never mixes with the checkout.
     Refuses an inventory without Services: removal must never run against a partial declared state.
     """
-    _git(repo_root, "fetch", "--quiet", "origin", REFSPEC)
-    # Pinned now: everything below reads this SHA, whatever origin/main points to later.
-    commit = _git(repo_root, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}").decode().strip()
+    _git(repo_root, "fetch", "--quiet", "origin", refspec(branch))
+    # Pinned now: everything below reads this SHA, whatever origin/<branch> points to later.
+    commit = _git(repo_root, "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}").decode().strip()
     common = Path(_git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
     dest = common / "hops" / "origin-main" / commit
     for stale in dest.parent.glob("*"):  # earlier commits' trees, and a half-written one
@@ -43,6 +51,6 @@ def load(repo_root: Path, stack_root: str = "tn") -> tuple[Declared, str]:
             tar.extractall(dest)
     declared = Declared.load(dest, stack_root)
     if not declared.services:
-        raise ConfigError(f"{REF} ({commit[:12]}) declares no Services under {stack_root}/; refusing to remove "
+        raise ConfigError(f"{ref(branch)} ({commit[:12]}) declares no Services under {stack_root}/; refusing to remove "
                           "anything against it")
     return declared, commit

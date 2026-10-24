@@ -1,20 +1,20 @@
 """hops bump: pin a Service's image to a newer tag and its index digest, through a PR.
 
-Repo-changing: it never touches the Host. The edit happens on a new branch from origin/main in a
-new worktree under .worktrees/, so the checkout hops runs from is never modified (whatever branch it
+Repo-changing: it never touches the Host. The edit happens on a new branch from origin/<default branch>
+(hosts.yaml `default_branch`) in a new worktree under .worktrees/, so the checkout hops runs from is never modified (whatever branch it
 is on); nothing is pushed without --pr.
 """
 import argparse
 import io
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
 
-from hops import config
 from hops.declared import Declared
 from hops.errors import HopsError, UsageError
 from hops.registry import Registry
@@ -27,13 +27,12 @@ number of version parts and variant suffix; pre-releases never qualify, nor a ju
 major version), with the tag's index digest as Renovate pins it. Every Service in the same Stack
 that pins the same image moves too.
 
-The Service and its current pin are read from origin/main (fetched first), and the edit is
-committed on branch hops/bump-<service>-<tag> from origin/main, in a new worktree under
-.worktrees/, after tools/validate/validate.py passes there. The checkout hops runs from is never
-modified and must be clean. Nothing is pushed unless --pr is given. Agents pass their co-author
-line with --trailer."""
-VALIDATE = ["secrets", "env", "compose"]
-BASE = "main"
+The Service and its current pin are read from origin/<default branch> (hosts.yaml default_branch,
+fetched first), and the edit is committed on branch hops/bump-<service>-<tag> from it, in a new
+worktree under .worktrees/, after the repo's validate command (hosts.yaml validate) passes there.
+The checkout hops runs from is never modified and must be clean. Nothing is pushed unless --pr is
+given. Agents pass their co-author line with --trailer."""
+PYTHON = {"python", "python3"}  # a validate command run with hops's own interpreter (it has PyYAML)
 RENOVATE = "app/renovate"
 
 
@@ -42,7 +41,7 @@ def register(subparsers) -> None:
                               formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("service", help="stack/service or a unique Service name")
     p.add_argument("tag", nargs="?", help="the tag to pin (default: the newest tag shaped like the current one)")
-    p.add_argument("--pr", action="store_true", help=f"push the branch and open a PR against {BASE}")
+    p.add_argument("--pr", action="store_true", help="push the branch and open a PR against the default branch")
     p.add_argument("--trailer", action="append", default=[], metavar="TEXT",
                    help='a commit trailer, e.g. "Co-authored-by: Name <email>" (repeatable)')
     p.set_defaults(func=run)
@@ -101,14 +100,20 @@ def declared_at(root: Path, ref: str, stack_root: str, into: Path) -> Declared:
     return Declared.load(into, stack_root)
 
 
+def validate_argv(command: tuple[str, ...]) -> list[str]:
+    """The repo's validate command as run: `python`/`python3` becomes this interpreter."""
+    return [sys.executable, *command[1:]] if command[0] in PYTHON else list(command)
+
+
 def run(args, ctx) -> int:
-    root = ctx.repo_root
-    # The bump ignores local changes (it starts from origin/main); refusing them avoids the surprise.
+    root = ctx.hosts.root
+    branch_name = ctx.hosts.default_branch
+    # The bump ignores local changes (it starts from origin/<default branch>); refusing them avoids the surprise.
     if dirty := _git(root, "status", "--porcelain"):
         raise UsageError(f"{root} has uncommitted changes; commit or stash them first:\n{dirty}")
-    _git(root, "fetch", "-q", "origin", BASE)
-    base = f"origin/{BASE}"
-    stack_root = config.stack_root_name(ctx.env)
+    _git(root, "fetch", "-q", "origin", f"+refs/heads/{branch_name}:refs/remotes/origin/{branch_name}")
+    base = f"origin/{branch_name}"
+    stack_root = ctx.stack_root
     with tempfile.TemporaryDirectory(prefix="hops-bump-") as tmp:
         service = declared_at(root, base, stack_root, Path(tmp)).resolve_one(args.service)
         service_file = service.file.relative_to(tmp)
@@ -156,12 +161,18 @@ def run(args, ctx) -> int:
     files = [str(f.relative_to(wt)) for f in changed]
     ctx.stdout.write(f"{service.key}: {image.ref}\n  -> {new_ref}\n  in {', '.join(files)}\n")
 
-    v = subprocess.run([sys.executable, "tools/validate/validate.py", *VALIDATE], cwd=wt,
-                       capture_output=True, text=True)
-    if v.returncode != 0:
-        ctx.stderr.write(v.stdout + v.stderr)
-        raise HopsError(f"validate.py failed; the uncommitted edit is in {wt} (branch {branch}). "
-                        f"Discard: git worktree remove --force {wt}; git branch -D {branch}")
+    command = ctx.hosts.validate
+    if command:
+        try:
+            v = subprocess.run(validate_argv(command), cwd=wt, capture_output=True, text=True)
+        except OSError as exc:
+            v = subprocess.CompletedProcess(command, 127, "", f"{exc}\n")
+        if v.returncode != 0:
+            ctx.stderr.write(v.stdout + v.stderr)
+            raise HopsError(f"validate ({shlex.join(command)}) failed; the uncommitted edit is in {wt} "
+                            f"(branch {branch}). Discard: git worktree remove --force {wt}; git branch -D {branch}")
+    else:
+        ctx.stderr.write("hops: note: hosts.yaml declares no validate command; committing unvalidated\n")
 
     subject = f"chore(deps): bump {image.repository} to {tag}"
     body = f"Pinned with `hops bump {service.key}`:\n\n- from {image.ref}\n- to {new_ref}"
@@ -173,20 +184,22 @@ def run(args, ctx) -> int:
                          f"or discard: git worktree remove {wt} && git branch -D {branch}\n")
         return 0
     _git(wt, "push", "-q", "-u", "origin", branch)
-    url = _gh(wt, "pr", "create", "--base", BASE, "--head", branch, "--title", subject, "--body-file", "-",
-              input=pr_body(service, image.ref, new_ref, files, superseded))
+    url = _gh(wt, "pr", "create", "--base", branch_name, "--head", branch, "--title", subject, "--body-file", "-",
+              input=pr_body(service, image.ref, new_ref, files, superseded, branch_name, command))
     ctx.stdout.write(f"{url}\n")
     return 0
 
 
-def pr_body(service, old: str, new: str, files: list[str], superseded: list[dict]) -> str:
+def pr_body(service, old: str, new: str, files: list[str], superseded: list[dict], base: str,
+            validate: tuple[str, ...]) -> str:
     lines = ["## Summary", "", f"Pins `{service.key}` with `hops bump` ({', '.join(f'`{f}`' for f in files)}):",
              "", "```diff", f"-image: {old}", f"+image: {new}", "```", ""]
     for pr in superseded:
-        lines += [f"Supersedes #{pr['number']} (Renovate closes it once `{BASE}` has this version or newer).", ""]
+        lines += [f"Supersedes #{pr['number']} (Renovate closes it once `{base}` has this version or newer).", ""]
+    checked = f"`{shlex.join(validate)}` passed. " if validate else "Not validated (hosts.yaml declares no validate). "
     lines += ["## Evidence", "",
-              f"`tools/validate/validate.py {' '.join(VALIDATE)}` passed. The digest is the registry's index "
-              "digest for the tag, the one Renovate pins, so Renovate's next run sees no diff.", "",
+              checked + "The digest is the registry's index digest for the tag, the one Renovate pins, so "
+              "Renovate's next run sees no diff.", "",
               "## Merge Danger", "",
               "**Door:** two-way. Revert this PR to go back to the previous pin.", "",
               f"**Blast Radius:** the `{service.stack}` Stack. doco-cd recreates its Services that use this image.",

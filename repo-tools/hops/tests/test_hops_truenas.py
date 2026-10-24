@@ -8,7 +8,7 @@ from hops import cli, truenas
 from hops.errors import ConfigError, HopsError
 
 KEY = FakeTrueNAS.KEY
-CFG = truenas.TrueNASConfig(url="wss://tn.example/api/current", api_key=KEY)
+CFG = truenas.TrueNASConfig(url="wss://tn.example/api/current", api_key=KEY, key_name="HOPS_TRUENAS_TRUENAS_API_KEY")
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def test_call_skips_notifications(client, server):
 
 def test_rejected_key_fails_without_showing_it(server):
     server.methods["auth.login_with_api_key"] = lambda key: False
-    with pytest.raises(HopsError, match="rejected HOPS_TRUENAS_API_KEY") as exc:
+    with pytest.raises(HopsError, match="rejected HOPS_TRUENAS_TRUENAS_API_KEY") as exc:
         truenas.Client(CFG, connect=server.connect).call("system.info")
     assert KEY not in str(exc.value)
     assert server.closed
@@ -139,32 +139,47 @@ def test_failed_job_raises_its_error(client, server):
 
 # Config
 
-def test_config_reads_url_and_key_from_dotenv(tmp_path):
-    write(tmp_path, {".env": f"TRUENAS_URL=https://tn.example:8443/ui/\nHOPS_TRUENAS_API_KEY={KEY}\n"})
-    cfg = truenas.load_config(tmp_path, env={})
+def load(repo, **values):
+    from hops import config
+
+    host = config.load_hosts(repo).hosts["truenas"]
+    env = {"HOPS_TRUENAS_SSH_HOST": "tn.example", **{f"HOPS_TRUENAS_TRUENAS_{k}": v for k, v in values.items()}}
+    return truenas.load_config(repo, host, env=env)
+
+
+def test_config_reads_url_and_key_from_dotenv(repo):
+    write(repo, {".env": f"HOPS_TRUENAS_SSH_HOST=tn.example\nHOPS_TRUENAS_TRUENAS_URL=https://tn.example:8443/ui/\n"
+                         f"HOPS_TRUENAS_TRUENAS_API_KEY={KEY}\n"})
+    from hops import config
+
+    cfg = truenas.load_config(repo, config.load_hosts(repo).hosts["truenas"], env={})
     assert (cfg.url, cfg.api_key, cfg.verify) == ("wss://tn.example:8443/api/current", KEY, True)
+    assert cfg.key_name == "HOPS_TRUENAS_TRUENAS_API_KEY"
     assert KEY not in repr(cfg)
 
 
-def test_insecure_tls_is_an_explicit_opt_in(tmp_path):
-    env = {"TRUENAS_URL": "https://tn.example", "HOPS_TRUENAS_API_KEY": KEY, "HOPS_TRUENAS_INSECURE": "1"}
-    assert truenas.load_config(tmp_path, env=env).verify is False
+def test_insecure_tls_is_an_explicit_opt_in(repo):
+    assert load(repo, URL="https://tn.example", API_KEY=KEY, INSECURE="1").verify is False
 
 
-def test_without_truenas_config_it_is_not_available(tmp_path):
-    with pytest.raises(ConfigError, match="not available on this host: missing HOPS_TRUENAS_API_KEY"):
-        truenas.load_config(tmp_path, env={"TRUENAS_URL": "https://tn.example"})
+def test_without_truenas_keys_it_names_the_missing_key(repo):
+    with pytest.raises(ConfigError, match="HOPS_TRUENAS_TRUENAS_API_KEY is not set"):
+        load(repo, URL="https://tn.example")
 
 
-def test_plain_http_url_is_refused(tmp_path):
-    with pytest.raises(ConfigError, match="https"):
-        truenas.load_config(tmp_path, env={"TRUENAS_URL": "http://tn.example", "HOPS_TRUENAS_API_KEY": KEY})
+def test_a_host_without_the_truenas_capability_has_none(plain_host):
+    with pytest.raises(truenas.Unavailable, match="Host 'truenas' has no TrueNAS"):
+        load(plain_host, URL="https://tn.example", API_KEY=KEY)
 
 
-def test_url_with_userinfo_is_refused_without_echoing_it(tmp_path):
+def test_plain_http_url_is_refused(repo):
+    with pytest.raises(ConfigError, match="HOPS_TRUENAS_TRUENAS_URL must be an https"):
+        load(repo, URL="http://tn.example", API_KEY=KEY)
+
+
+def test_url_with_userinfo_is_refused_without_echoing_it(repo):
     with pytest.raises(ConfigError) as exc:
-        truenas.load_config(tmp_path, env={"TRUENAS_URL": "https://admin:hunter2@tn.example",
-                                           "HOPS_TRUENAS_API_KEY": KEY})
+        load(repo, URL="https://admin:hunter2@tn.example", API_KEY=KEY)
     assert "user" in str(exc.value) and "hunter2" not in str(exc.value) and "admin" not in str(exc.value)
 
 
@@ -252,10 +267,18 @@ def test_call_redacts_credentials(hops_tn, server):
     }]
 
 
-def test_call_without_truenas_config_fails_clearly(repo, capsys):
+def test_call_without_truenas_keys_fails_clearly(repo, capsys):
     ctx = cli.Context(repo_root=repo, env={"HOME": "/h"})
     assert cli.main(["truenas", "call", "system.info"], ctx=ctx) == 2
-    assert "TrueNAS is not available on this host" in capsys.readouterr().err
+    assert "HOPS_TRUENAS_TRUENAS_URL is not set" in capsys.readouterr().err
+
+
+def test_call_on_a_host_without_the_truenas_capability_is_refused(plain_host, capsys):
+    ctx = cli.Context(repo_root=plain_host, env={"HOME": "/h"})
+    assert cli.main(["truenas", "call", "system.info"], ctx=ctx) == 2
+    assert capsys.readouterr().err == (
+        "hops: error: hops truenas call needs a Host with the truenas capability; Host 'truenas' has none "
+        "(hosts.yaml)\n")
 
 
 # redact: defense in depth behind the allowlist
