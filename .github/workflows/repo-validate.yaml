@@ -1,0 +1,79 @@
+name: repo validate
+
+# Reusable: runs the shared validate tool (repo-tools/validate) against the calling repo, whose hosts.yaml names its
+# Hosts and stack roots. validate is installed from this workflow's own commit unless tool-ref names another, so
+# pinning this workflow pins the tool. Pull requests compare against their base (VALIDATE_BASE); other events
+# against the default branch. Image configs that validate fetches by digest are cached, keyed on every digest in the
+# repo.
+on:
+  workflow_call:
+    inputs:
+      checks:
+        description: space-separated validate checks to run; empty runs every check
+        type: string
+        default: ""
+      working-directory:
+        description: the repo root holding hosts.yaml, relative to the checkout
+        type: string
+        default: .
+      tool-ref:
+        description: homelab-components ref (tag or commit) to install validate from; empty means this workflow's commit
+        type: string
+        default: ""
+      timeout-minutes:
+        description: job timeout
+        type: number
+        default: 30
+      uv-version:
+        description: uv version that installs validate
+        type: string
+        # renovate: datasource=github-releases depName=astral-sh/uv
+        default: 0.13.5
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate ${{ inputs.checks }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: false
+      - name: install validate
+        env:
+          TOOL_REF: ${{ inputs.tool-ref }}
+          # job.workflow_* name this reusable workflow, not the caller; read through toJSON because actionlint does
+          # not know these properties yet.
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repo=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          ref=${TOOL_REF:-$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")}
+          if [ -z "$repo" ] || [ -z "$ref" ]; then
+            echo "::error::cannot tell which homelab-components commit to install validate from; set tool-ref"; exit 1
+          fi
+          uv tool install "git+$GITHUB_SERVER_URL/$repo@$ref#subdirectory=repo-tools/validate"
+      - id: digests
+        run: echo "hash=$(git grep -hoE 'sha256:[0-9a-f]{64}' -- . | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/validate-cache
+          key: repo-validate-${{ steps.digests.outputs.hash }}
+          restore-keys: repo-validate-
+      - name: validate
+        env:
+          CHECKS: ${{ inputs.checks }}
+          VALIDATE_BASE: ${{ github.event.pull_request.base.sha }}
+          XDG_CACHE_HOME: ${{ runner.temp }}/validate-cache
+        run: |
+          read -ra checks <<< "$CHECKS"
+          validate "${checks[@]}"

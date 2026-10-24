@@ -13,15 +13,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # renovate: datasource=npm depName=renovate
-  RENOVATE_VERSION: 44.167.5
-  # renovate: datasource=docker depName=rhysd/actionlint
-  ACTIONLINT_VERSION: 1.7.12
-
 jobs:
   tooling:
-    name: lint, Repo Tooling tests
+    name: ruff, Repo Tooling tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,11 +23,16 @@ jobs:
       - run: ruff check --output-format=github .
       - run: ruff format --check .
       - run: python -m pytest tools
-      - run: docker run --rm -v "$PWD:/repo" -w /repo "rhysd/actionlint:${ACTIONLINT_VERSION}" -color
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-      - run: npx --yes --package "renovate@${RENOVATE_VERSION}" -- renovate-config-validator --strict renovate.json
+
+  # This repo runs the reusable workflows it ships (.github/workflows/repo-*.yaml) on itself: actionlint covers every
+  # workflow, including theirs, and the validator covers renovate.json and every preset under renovate/.
+  lint:
+    uses: ./.github/workflows/repo-lint.yaml
+    with:
+      renovate-configs: renovate.json renovate/repo-default.json
+
+  gitleaks:
+    uses: ./.github/workflows/repo-gitleaks.yaml
 
   plan:
     name: changed Components
@@ -85,11 +84,26 @@ jobs:
     with:
       tool: ${{ matrix.tool }}
 
+  # The tool-backed reusable workflows against a consuming repo in miniature, once the tool exists here.
+  repo-validate:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.repo-tools), 'validate')
+    uses: ./.github/workflows/repo-validate.yaml
+    with:
+      working-directory: .github/repo-ci-fixture
+
+  repo-declared-containers:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.repo-tools), 'declared-containers')
+    uses: ./.github/workflows/repo-declared-containers.yaml
+    with:
+      working-directory: .github/repo-ci-fixture
+
   # Single required check for branch protection.
   ci:
     name: ci
     if: always()
-    needs: [tooling, plan, component, repo-tool]
+    needs: [tooling, lint, gitleaks, plan, component, repo-tool, repo-validate, repo-declared-containers]
     runs-on: ubuntu-24.04
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

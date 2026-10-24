@@ -1,0 +1,10 @@
+# gitleaks' default rules, minus the fake API keys that Contract Tests and unit tests hand to upstreams.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake API keys in upstreams.yaml and Component tests"
+regexes = [
+  '''^0123456789abcdef0123456789abcdef$''',
+  '''^contracttest0123456789abcdef0123$''',
+]

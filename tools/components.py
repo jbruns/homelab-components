@@ -30,6 +30,8 @@ SHARED_PATHS = (
     ".github/workflows/test-component.yaml",
     ".github/actions/",
 )
+# The reusable workflows (.github/workflows/repo-*.yaml) and Renovate presets (renovate/) release together.
+REPO_CI = "repo-ci"
 _RELEASE_TAG = re.compile(r"^(?P<name>[a-z0-9][a-z0-9-]*)-v(?P<version>\d+\.\d+\.\d+)$")
 
 
@@ -58,7 +60,7 @@ def parse_release_tag(tag):
     m = _RELEASE_TAG.match(tag)
     if not m:
         raise ValueError(
-            f"{tag!r} is not a release tag (<component or repo-tool>-vX.Y.Z; names starting with _ never release)"
+            f"{tag!r} is not a release tag (<component, repo-tool or repo-ci>-vX.Y.Z; names starting with _ never release)"
         )
     return m["name"], m["version"]
 
@@ -67,11 +69,13 @@ def _check_unique_names(components, repo_tools):
     """A release tag names exactly one thing, so a repo-tools/ folder never shares a Component's name."""
     if clashes := sorted(set(components) & set(repo_tools)):
         raise ValueError(f"both a Component and a folder under repo-tools/: {', '.join(clashes)}; rename one")
+    if REPO_CI in components or REPO_CI in repo_tools:
+        raise ValueError(f"{REPO_CI!r} is reserved for the reusable workflows and Renovate presets; rename the folder")
 
 
 def release_target(tag, components_dir=COMPONENTS_DIR, repo_tools_dir=REPO_TOOLS_DIR):
-    """What a `<name>-vX.Y.Z` tag releases: a Component (an image when it has a Dockerfile, else its src/ files)
-    or a shared Repo Tooling folder (a GitHub Release only)."""
+    """What a `<name>-vX.Y.Z` tag releases: a Component (an image when it has a Dockerfile, else its src/ files),
+    a shared Repo Tooling folder, or (`repo-ci`) the reusable workflows and Renovate presets (a GitHub Release only)."""
     name, version = parse_release_tag(tag)
     components, repo_tools = all_components(components_dir), all_repo_tools(repo_tools_dir)
     _check_unique_names(components, repo_tools)
@@ -80,7 +84,9 @@ def release_target(tag, components_dir=COMPONENTS_DIR, repo_tools_dir=REPO_TOOLS
         return {"kind": "component", "name": name, "version": version, "image": str(image).lower()}
     if name in repo_tools:
         return {"kind": "repo-tool", "name": name, "version": version, "image": "false"}
-    raise ValueError(f"{tag!r} names no Component under components/ and no folder under repo-tools/")
+    if name == REPO_CI:
+        return {"kind": "repo-ci", "name": name, "version": version, "image": "false"}
+    raise ValueError(f"{tag!r} names no Component under components/, no folder under repo-tools/, and not {REPO_CI}")
 
 
 def _registry_reference(repository):

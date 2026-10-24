@@ -1,0 +1,53 @@
+name: repo declared-containers
+
+# Reusable: checks that the calling repo's committed declared-containers output (one .prom per Host in its
+# hosts.yaml) is current, with the shared declared-containers tool (repo-tools/declared-containers) installed from
+# this workflow's own commit unless tool-ref names another, so pinning this workflow pins the tool.
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: the repo root holding hosts.yaml, relative to the checkout
+        type: string
+        default: .
+      tool-ref:
+        description: homelab-components ref (tag or commit) to install declared-containers from; empty means this workflow's commit
+        type: string
+        default: ""
+      uv-version:
+        description: uv version that installs declared-containers
+        type: string
+        # renovate: datasource=github-releases depName=astral-sh/uv
+        default: 0.13.5
+
+permissions:
+  contents: read
+
+jobs:
+  declared-containers:
+    name: declared-containers
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: false
+      - name: install declared-containers
+        env:
+          TOOL_REF: ${{ inputs.tool-ref }}
+          # job.workflow_* name this reusable workflow, not the caller; read through toJSON because actionlint does
+          # not know these properties yet.
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repo=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          ref=${TOOL_REF:-$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")}
+          if [ -z "$repo" ] || [ -z "$ref" ]; then
+            echo "::error::cannot tell which homelab-components commit to install declared-containers from; set tool-ref"
+            exit 1
+          fi
+          uv tool install "git+$GITHUB_SERVER_URL/$repo@$ref#subdirectory=repo-tools/declared-containers"
+      - run: declared-containers --check

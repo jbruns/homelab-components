@@ -28,8 +28,10 @@ repo-tools/
     ├── src/<package>/
     ├── tests/
     └── README.md         install, usage, and every contract consumers rely on
+renovate/                 Renovate presets for consuming repos (repo-default.json)
 tools/                    this repo's own Repo Tooling: README check, upstream pins, Canary planning, Contract Test harness
-.github/workflows/        ci, test-component and test-repo-tool (reusable), release, canary
+.github/workflows/        ci, test-component and test-repo-tool (reusable), release, canary,
+                          and repo-<name>.yaml: reusable CI for consuming repos
 ```
 
 Shared tools, each documented in its README:
@@ -50,7 +52,9 @@ Contract Test against a real `traefik/whoami`, image build reaching healthy), an
 
 | Check | When | Blocks merge |
 |---|---|---|
-| ruff, actionlint, Renovate config, Repo Tooling tests | every PR | yes |
+| ruff, Repo Tooling tests | every PR | yes |
+| actionlint, Renovate config and presets, gitleaks (this repo runs its own `repo-lint` and `repo-gitleaks`) | every PR | yes |
+| `repo-validate` and `repo-declared-containers` against `.github/repo-ci-fixture` | every PR, once `repo-tools/<tool>` exists | yes |
 | each `repo-tools/<tool>`: install, ruff, pytest | every PR | yes |
 | README check, unit tests, Contract Tests, image build reaching healthy | each Component a PR touches (every Component when `tools/` or shared config changes) | yes |
 | Canary | weekly, and on demand | no; opens an issue |
@@ -95,6 +99,84 @@ uv tool install "git+https://github.com/jbruns/homelab-components@hosts-v1.0.0#s
 ```
 
 A Component and a `repo-tools/` folder never share a name, so a tag always names exactly one of them.
+
+A tag `repo-ci-vX.Y.Z` releases the reusable workflows and Renovate presets together (a GitHub Release, no
+assets); `repo-ci` is reserved and names no Component or tool. Bump the major when a consuming repo must change
+its call: a renamed or removed input, a stricter check, or a preset rule that changes what merges by itself.
+
+## Consuming the CI workflows and Renovate preset
+
+A homelab repo with a `hosts.yaml` ([schema](repo-tools/hosts/README.md)) gets the same CI as the others by
+calling the reusable workflows, pinned to a `repo-ci-vX.Y.Z` release by its commit:
+
+| Workflow | Runs | Inputs (defaults) |
+|---|---|---|
+| `repo-gitleaks.yaml` | gitleaks on the PR's commits, a push's commits, or (another event) every commit; the repo's `.gitleaks.toml` and `.gitleaksignore` apply | `full-history` (`false`), `gitleaks-version` |
+| `repo-lint.yaml` | actionlint on the repo's workflows; `renovate-config-validator --strict` | `renovate-configs` (`renovate.json`; empty skips), `actionlint-version`, `renovate-version` |
+| `repo-validate.yaml` | `validate [checks…]` from [`repo-tools/validate`](repo-tools/validate) (needs Docker for `compose` and `monitoring`, including promtool rule tests); pull requests compare against their base | `checks` (every check), `working-directory` (`.`), `tool-ref`, `timeout-minutes` (`30`), `uv-version` |
+| `repo-declared-containers.yaml` | `declared-containers --check` from [`repo-tools/declared-containers`](repo-tools/declared-containers) | `working-directory` (`.`), `tool-ref`, `uv-version` |
+
+`repo-validate` and `repo-declared-containers` install their tool from the workflow's own commit, so the one pin
+on `uses:` pins the tool too. Set `tool-ref` (a `<tool>-vX.Y.Z` tag or a commit) only to run a different tool
+version than the workflow's; Renovate does not bump it. Each workflow is one job; keep the repo's own
+aggregate job as its required check:
+
+```yaml
+# .github/workflows/ci.yaml in the consuming repo
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    uses: jbruns/homelab-components/.github/workflows/repo-gitleaks.yaml@<sha> # repo-ci-v1.0.0
+  lint:
+    uses: jbruns/homelab-components/.github/workflows/repo-lint.yaml@<sha> # repo-ci-v1.0.0
+  validate:
+    uses: jbruns/homelab-components/.github/workflows/repo-validate.yaml@<sha> # repo-ci-v1.0.0
+    with:
+      checks: secrets env compose isolation
+  monitoring:
+    uses: jbruns/homelab-components/.github/workflows/repo-validate.yaml@<sha> # repo-ci-v1.0.0
+    with:
+      checks: monitoring
+      timeout-minutes: 10
+  declared-containers:
+    uses: jbruns/homelab-components/.github/workflows/repo-declared-containers.yaml@<sha> # repo-ci-v1.0.0
+  ci:
+    if: always()
+    needs: [gitleaks, lint, validate, monitoring, declared-containers]
+    runs-on: ubuntu-24.04
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+```
+
+When a repo first adopts `repo-gitleaks`, run it once with `full-history: true` (or by `workflow_dispatch`, which
+always scans every commit) to clear the existing history.
+
+The Renovate preset [`renovate/repo-default.json`](renovate/repo-default.json) carries the shared rules: digest
+pinning for images and actions, a 5-day minimum release age, a morning schedule (America/Los_Angeles) with no
+hourly PR limit, automerge for patch updates and digest pins, never automerge for Host-installed Component release
+assets, the Grafana and Prometheus groups, and one-major-at-a-time Nextcloud. It extends the `docker-compose`
+manager to every `service.yaml` (Renovate cannot read `hosts.yaml`, so this covers each Host's
+`<stack>/<service>/service.yaml` by name) and reads `# renovate:` version comments in workflows. Pin it to the
+same release; anything repo-specific (more automerge, custom datasources, a different schedule) goes after it:
+
+```json
+{
+  "extends": ["github>jbruns/homelab-components//renovate/repo-default#repo-ci-v1.0.0"],
+  "packageRules": []
+}
+```
+
+With both pins on the same tag, the preset makes Renovate propose each new `repo-ci-vX.Y.Z` as one PR that moves
+every `uses:` commit and the `extends` tag together. Patch releases automerge like any patch; review minor and
+major ones against their release notes.
 
 ## Renovate
 

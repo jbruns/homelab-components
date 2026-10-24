@@ -4,7 +4,9 @@ name: release
 # with a Dockerfile is pushed as ghcr.io/<owner>/<component>:X.Y.Z (amd64 and arm64, with provenance and an SBOM);
 # one without (e.g. a Host shell script) attaches the files directly under its src/ to the GitHub Release.
 # A tag <tool>-vX.Y.Z naming a folder under repo-tools/ runs that tool's checks, then creates a GitHub Release with
-# no image and no assets; consumers install or pin the tag itself.
+# no image and no assets; consumers install or pin the tag itself. A tag repo-ci-vX.Y.Z releases the reusable
+# workflows (.github/workflows/repo-*.yaml) and Renovate presets (renovate/) the same way; main's CI already checked
+# them.
 on:
   push:
     tags:
@@ -92,7 +94,8 @@ jobs:
       always() && (
         (needs.tag.outputs.kind == 'component' && needs.test.result == 'success'
           && (needs.image.result == 'success' || needs.image.result == 'skipped'))
-        || (needs.tag.outputs.kind == 'repo-tool' && needs.test-repo-tool.result == 'success'))
+        || (needs.tag.outputs.kind == 'repo-tool' && needs.test-repo-tool.result == 'success')
+        || needs.tag.outputs.kind == 'repo-ci')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -105,6 +108,11 @@ jobs:
           NAME: ${{ needs.tag.outputs.name }}
           IMAGE: ${{ needs.image.outputs.reference }}
         run: |
+          if [ "$KIND" = repo-ci ]; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag \
+              --notes "Reusable CI workflows and Renovate presets for consuming repos. Pin \`$GITHUB_SHA\` (\`# $TAG\`); see README.md#consuming-the-ci-workflows-and-renovate-preset."
+            exit 0
+          fi
           if [ "$KIND" = repo-tool ]; then
             install="uv tool install \"git+$GITHUB_SERVER_URL/$GITHUB_REPOSITORY@$TAG#subdirectory=repo-tools/$NAME\""
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag \

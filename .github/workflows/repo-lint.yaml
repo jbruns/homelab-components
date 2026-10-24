@@ -1,0 +1,47 @@
+name: repo lint
+
+# Reusable: lints the calling repo's GitHub Actions workflows (actionlint, with shellcheck) and validates its Renovate
+# config files (renovate-config-validator --strict), each at a pinned version.
+on:
+  workflow_call:
+    inputs:
+      renovate-configs:
+        description: space-separated Renovate config files to validate; empty skips the validator
+        type: string
+        default: renovate.json
+      renovate-version:
+        description: renovate npm package version that provides renovate-config-validator
+        type: string
+        # renovate: datasource=npm depName=renovate
+        default: 44.167.5
+      actionlint-version:
+        description: rhysd/actionlint image tag
+        type: string
+        # renovate: datasource=docker depName=rhysd/actionlint
+        default: 1.7.12
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: renovate config, actionlint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint
+        env:
+          VERSION: ${{ inputs.actionlint-version }}
+        run: docker run --rm -v "$PWD:/repo" -w /repo "rhysd/actionlint:$VERSION" -color
+      - if: inputs.renovate-configs != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: renovate-config-validator
+        if: inputs.renovate-configs != ''
+        env:
+          VERSION: ${{ inputs.renovate-version }}
+          CONFIGS: ${{ inputs.renovate-configs }}
+        run: |
+          read -ra configs <<< "$CONFIGS"
+          npx --yes --package "renovate@$VERSION" -- renovate-config-validator --strict "${configs[@]}"

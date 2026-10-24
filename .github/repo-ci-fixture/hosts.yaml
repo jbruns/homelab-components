@@ -1,0 +1,8 @@
+# A consuming repo in miniature: ci.yaml runs the reusable repo-validate and repo-declared-containers workflows here
+# once their repo-tools/ folders exist. One Host, no Stacks yet.
+version: 1
+hosts:
+  example:
+    stack_root: example
+    deployer: doco-cd
+    capabilities: []
