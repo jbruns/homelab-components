@@ -113,7 +113,7 @@ def walk(top, rel=""):
             yield from walk(top, os.path.join(rel, name))
 
 
-def blocks(fd, size):
+def blocks(fd, size, path):
     # (offset, bytes) of every run of PAGE-aligned pages within a BLOCK-aligned block that holds anything but
     # zeros. Holes are passed over with SEEK_DATA/SEEK_HOLE where the filesystem has them; zeros written out
     # are read and left out. A sparse and a dense file with the same content give the same runs.
@@ -125,19 +125,34 @@ def blocks(fd, size):
                 start = os.lseek(fd, pos, os.SEEK_DATA)
                 end = os.lseek(fd, start, os.SEEK_HOLE)
             except OSError as exc:
-                if exc.errno == errno.ENXIO:  # nothing but a hole from pos to the end
+                if exc.errno == errno.ENXIO:  # nothing but a hole from pos to the end, unless it shrank
+                    if os.fstat(fd).st_size < size:
+                        raise RuntimeError(ended(path, os.fstat(fd).st_size, size)) from None
                     return
                 if exc.errno != errno.EINVAL:
                     raise
                 start, end = pos, size
-        pos = start - start % BLOCK
+        pos, end = start - start % BLOCK, min(end, size)
         while pos < end:
-            data = os.pread(fd, BLOCK, pos)
-            if not data:
-                return
+            data = read(fd, min(BLOCK, size - pos), pos, path, size)
             if data != ZERO[: len(data)]:
                 yield from runs(pos, memoryview(data))
-            pos += BLOCK
+            pos += len(data)
+
+
+def read(fd, n, pos, path, size):
+    # n bytes at pos, over as many reads as it takes: a read may return fewer bytes than asked for.
+    data = b""
+    while len(data) < n:
+        part = os.pread(fd, n - len(data), pos + len(data))
+        if not part:
+            raise RuntimeError(ended(path, pos + len(data), size))
+        data += part
+    return data
+
+
+def ended(path, at, size):
+    return f"{path}: ended at {at} bytes, before its size of {size}; is something writing to it?"
 
 
 def runs(pos, data):
@@ -154,7 +169,7 @@ def runs(pos, data):
 def content(path, size):
     digest = hashlib.sha256()
     with open(path, "rb") as f:
-        for offset, data in blocks(f.fileno(), size):
+        for offset, data in blocks(f.fileno(), size, path):
             digest.update(offset.to_bytes(8, "little"))
             digest.update(data)
     return digest.hexdigest()
@@ -288,7 +303,7 @@ def copy_one(src, dst, st, links):
             copy(child, os.path.join(dst, name), os.lstat(child), links)
     elif kind == stat.S_IFREG:
         with open(src, "rb") as f, open(dst, "xb") as g:
-            for offset, data in blocks(f.fileno(), st.st_size):
+            for offset, data in blocks(f.fileno(), st.st_size, src):
                 while data:  # a short write leaves the rest to write
                     written = os.pwrite(g.fileno(), data, offset)
                     data, offset = data[written:], offset + written

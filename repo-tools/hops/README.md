@@ -514,6 +514,8 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
    owners, modes, times, hard links, symlinks (never followed) and every xattr, ACLs and `trusted.*` included.
    Holes in sparse files stay holes (`SEEK_DATA`/`SEEK_HOLE`), and 4 KiB pages of written zeros are left out
    too, so a sparse disk image takes no more room in the copy than in `<old>`.
+   Reads that return less than asked for are read on from where they stopped; a file that ends before its
+   size fails the copy.
    Before copying, it refuses unless the volumes filesystem, which every volume on the Host shares, has free
    `<old>`'s allocated size plus a reserve of a tenth of it or 1 GiB, whichever is more.
    It then walks both trees and compares each path's type, mode, owner, size, content (a hash of its non-zero

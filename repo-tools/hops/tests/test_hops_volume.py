@@ -980,13 +980,17 @@ def test_copy_keeps_holes_between_small_writes(tmp_path):
     assert (tmp_path / "new" / "_data" / "db").stat().st_blocks * 512 <= 2 * source
 
 
-def corrupting(mode, root: Path) -> tuple[int, dict]:
-    """SCRIPT with every write it makes turning b"end" into b"END": a copy that goes wrong unseen."""
-    code = (
-        "import os\nwrite = os.pwrite\n"
-        "os.pwrite = lambda fd, data, offset: write(fd, bytes(data).replace(b'end', b'END'), offset)\n"
-        f"exec({volumes.SCRIPT!r})"
-    )
+CORRUPT = (
+    "real_pwrite = os.pwrite\n"
+    "os.pwrite = lambda fd, data, off: real_pwrite(fd, bytes(data).replace(b'end', b'END'), off)\n"
+)
+SHORT_READS = "real_pread = os.pread\nos.pread = lambda fd, n, off: real_pread(fd, min(n, 4096), off)\n"
+SHORT_WRITES = "real_pwrite = os.pwrite\nos.pwrite = lambda fd, data, off: real_pwrite(fd, bytes(data)[:4096], off)\n"
+
+
+def patched(prelude: str, mode, root: Path) -> tuple[int, dict]:
+    """SCRIPT run after `prelude`, which replaces os calls to make them fail in ways the kernel may."""
+    code = f"import os\n{prelude}exec({volumes.SCRIPT!r})"
     done = subprocess.run(
         [sys.executable, "-c", code, mode, str(root), "old", "new", str(volumes.RESERVE)], capture_output=True
     )
@@ -997,7 +1001,7 @@ def test_the_copy_compares_the_content_of_sparse_files(tmp_path):
     (tmp_path / "old" / "_data").mkdir(parents=True)
     (tmp_path / "new" / "_data").mkdir(parents=True)
     sparse(tmp_path / "old" / "_data" / "disk.img", 1 << 24)
-    code, report = corrupting("copy", tmp_path)
+    code, report = patched(CORRUPT, "copy", tmp_path)
     assert code == 1 and report["error"] == "RuntimeError: new differs from old at 1 path: 'disk.img' (content)"
 
 
@@ -1052,3 +1056,41 @@ def test_the_modes_that_keep_metadata_can_keep_setgid_and_trusted_xattrs(mode, r
     argv = fake_host.docker_calls[-1]
     caps = {argv[i + 1] for i, arg in enumerate(argv) if arg == "--cap-add"}
     assert {"FSETID", "SYS_ADMIN"} <= caps
+
+
+def dense(root: Path, size=300_000) -> bytes:
+    """old/_data/f, with no zeros to leave out, and an empty new/_data."""
+    data = bytes(range(1, 256)) * (size // 255 + 1)
+    (root / "old" / "_data").mkdir(parents=True)
+    (root / "new" / "_data").mkdir(parents=True)
+    (root / "old" / "_data" / "f").write_bytes(data[:size])
+    return data[:size]
+
+
+@pytest.mark.parametrize("prelude", [SHORT_READS, SHORT_WRITES])
+def test_the_copy_reads_and_writes_on_after_a_short_read_or_write(tmp_path, prelude):
+    data = dense(tmp_path)
+    code, report = patched(prelude, "copy", tmp_path)
+    assert (code, report["error"]) == (0, None)
+    assert (tmp_path / "new" / "_data" / "f").read_bytes() == data
+
+
+def test_the_copys_check_reads_on_after_a_short_read(tmp_path):
+    # Past the first 4 KiB of a block: a check that skipped what a short read left would miss it.
+    dense(tmp_path)
+    with open(tmp_path / "old" / "_data" / "f", "r+b") as f:
+        f.seek(10_000)
+        f.write(b"end")
+    code, report = patched(SHORT_READS + CORRUPT, "copy", tmp_path)
+    assert code == 1 and report["error"] == "RuntimeError: new differs from old at 1 path: 'f' (content)"
+
+
+def test_the_copy_fails_on_a_file_that_ends_before_its_size(tmp_path):
+    dense(tmp_path)
+    prelude = (
+        "real_pread = os.pread\n"
+        "os.pread = lambda fd, n, off: b'' if off >= 8192 else real_pread(fd, min(n, 8192 - off), off)\n"
+    )
+    code, report = patched(prelude, "copy", tmp_path)
+    assert code == 1
+    assert report["error"].endswith("f: ended at 8192 bytes, before its size of 300000; is something writing to it?")
