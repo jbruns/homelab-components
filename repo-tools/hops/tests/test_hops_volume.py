@@ -797,6 +797,105 @@ def test_without_zfs_a_failure_part_way_points_at_the_rollback_volume(hops, host
     assert f"Rollback Volume {ROLLBACK} holds the data from before the move: copy it back into {OLD}" in outcome.err
 
 
+# The copier's image: monitoring's transport image, or --image on a Host whose monitoring is not declared yet
+
+IMAGE = "python:3.13.9-alpine3.22@sha256:" + "a" * 64
+
+
+def images_run(fake_host) -> list[str]:
+    """The image of each `docker run` of the move container, after checking it is never pulled."""
+    found = []
+    for call in fake_host.docker_calls:
+        if call[0] == "run":
+            assert call[call.index("--pull") + 1] == "never"
+            found.append(call[call.index("python3") - 1])
+    return found
+
+
+def undeclare_monitoring(repo):
+    """Mid-cutover: monitoring is still a legacy docker-compose.yaml group, not a declared Stack."""
+    (repo / "tn" / "monitoring" / "compose.yaml").rename(repo / "tn" / "monitoring" / "docker-compose.yaml")
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_declared_monitoring_image_runs_the_copier_in_that_image(hops, host, fake_host, repo):
+    undeclare_monitoring(repo)
+    host.add(OLD, {"f": "x"})
+    outcome = move(hops, None, "--image", IMAGE, "--json")
+    assert outcome.code == 0, outcome.err
+    assert json.loads(outcome.out)["image"] == IMAGE
+    assert images_run(fake_host) == [IMAGE] * 5  # check, copy, move, verify, check
+
+
+@pytest.mark.usefixtures("plain_host")
+def test_without_declared_monitoring_or_image_move_is_refused_naming_image(hops, fake_host, repo):
+    undeclare_monitoring(repo)
+    outcome = move(hops, None)
+    assert outcome.code == 2 and "--image" in outcome.err and "dependencies-render" in outcome.err
+    assert fake_host.calls == []
+
+
+def test_without_image_the_copier_runs_in_the_monitoring_transport_image(hops, host, pool, fake_host):
+    host.add(OLD, {"f": "x"})
+    outcome = move(hops, pool, "--json")
+    assert outcome.code == 0, outcome.err
+    assert json.loads(outcome.out)["image"] == PYTHON
+    assert set(images_run(fake_host)) == {PYTHON}
+
+
+def test_image_overrides_the_monitoring_transport_image(hops, host, pool, fake_host):
+    host.add(OLD, {"f": "x"})
+    assert move(hops, pool, "--image", IMAGE).code == 0
+    assert set(images_run(fake_host)) == {IMAGE}
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "python:3.13",
+        "python",
+        "python@sha256:abc",
+        "python:3.13@sha512:" + "a" * 128,
+        "python:3.13@sha256:" + "A" * 64,
+        "-python@sha256:" + "a" * 64,
+        "python:3.13 @sha256:" + "a" * 64,
+    ],
+)
+def test_an_image_not_pinned_by_digest_is_refused_before_the_host_is_touched(hops, fake_host, ref):
+    outcome = move(hops, None, f"--image={ref}")
+    assert outcome.code == 2 and "--image" in outcome.err and "digest" in outcome.err
+    assert fake_host.calls == []
+
+
+def test_an_image_pinned_by_digest_alone_is_accepted(hops, host, pool, fake_host):
+    host.add(OLD, {"f": "x"})
+    ref = "ghcr.io/example/python@sha256:" + "b" * 64
+    assert move(hops, pool, "--image", ref).code == 0
+    assert set(images_run(fake_host)) == {ref}
+
+
+def test_an_image_missing_on_the_host_is_never_pulled_and_names_docker_pull(hops, host, pool, fake_host):
+    host.add(OLD, {"f": "x"})
+    fake_host.respond("run", returncode=125, stderr=f"docker: Error response from daemon: No such image: {IMAGE}")
+    outcome = move(hops, pool, "--image", IMAGE)
+    assert outcome.code == 1
+    assert f"{IMAGE} is not on the Host" in outcome.err and f"docker pull {IMAGE}" in outcome.err
+    assert nothing_changed(host, fake_host)
+
+
+def test_an_image_without_python3_names_what_the_copier_needs(hops, host, pool, fake_host):
+    host.add(OLD, {"f": "x"})
+    fake_host.respond(
+        "run",
+        returncode=127,
+        stderr='docker: Error response from daemon: failed to create task for container: exec: "python3": '
+        "executable file not found in $PATH: unknown.",
+    )
+    outcome = move(hops, pool, "--image", IMAGE)
+    assert outcome.code == 1 and f"{IMAGE} has no python3" in outcome.err
+    assert nothing_changed(host, fake_host)
+
+
 # The Rollback Volume copier and its verification, run here against directories
 
 XATTRS = hasattr(os, "setxattr")  # Linux; elsewhere there are none to keep

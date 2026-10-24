@@ -63,6 +63,15 @@ def test_lifecycle_rejects_an_unknown_name_before_touching_the_host(hops, fake_h
     assert fake_host.calls == []
 
 
+@pytest.mark.parametrize("verb", ["restart", "start"])
+def test_restart_and_start_need_no_declared_monitoring_stack(hops, fake_host, repo, verb):
+    (repo / "tn" / "monitoring" / "compose.yaml").rename(repo / "tn" / "monitoring" / "docker-compose.yaml")
+    fake_host.respond(verb)
+    outcome = hops(verb, "sonarr/sonarr")
+    assert outcome.code == 0, outcome.err
+    assert fake_host.docker_calls == [[verb, "sonarr"]]
+
+
 def test_restart_reports_a_docker_failure(hops, fake_host):
     fake_host.respond("restart", returncode=1, stderr="Error response from daemon: boom")
     outcome = hops("restart", "sonarr/sonarr")
@@ -135,6 +144,26 @@ def test_stop_does_not_stop_when_the_silence_fails(hops, fake_host):
     fake_host.respond("exec", "-i", "alertmanager", returncode=1, stderr="amtool: unauthorized")
     outcome = hops("stop", "sonarr/sonarr", "--for", "1h")
     assert outcome.code == 1 and "unauthorized" in outcome.err
+    assert [c for c in fake_host.docker_calls if c[0] == "stop"] == []
+
+
+def test_stop_without_a_declared_monitoring_stack_stops_and_warns_that_nothing_is_silenced(hops, fake_host, repo):
+    # Mid-cutover: monitoring is still a legacy docker-compose.yaml group, so its config files exist
+    # but no compose.yaml declares prometheus or alertmanager.
+    (repo / "tn" / "monitoring" / "compose.yaml").rename(repo / "tn" / "monitoring" / "docker-compose.yaml")
+    fake_host.respond("stop")
+    outcome = hops("stop", "sonarr/sonarr", "--for", "1h")
+    assert outcome.code == 0, outcome.err
+    assert fake_host.docker_calls == [["stop", "sonarr"]]
+    assert "no silences were created" in outcome.err and "alerts may fire" in outcome.err
+    assert "Stopped 1 container" in outcome.out
+
+
+def test_stop_with_only_one_of_prometheus_and_alertmanager_declared_still_fails(hops, fake_host, repo):
+    compose = repo / "tn" / "monitoring" / "compose.yaml"
+    compose.write_text(compose.read_text().split("  alertmanager:")[0])
+    outcome = hops("stop", "sonarr/sonarr", "--for", "1h")
+    assert outcome.code != 0 and "declares no alertmanager" in outcome.err
     assert [c for c in fake_host.docker_calls if c[0] == "stop"] == []
 
 
@@ -237,6 +266,15 @@ def test_recreate_stops_when_sops_fails(hops, metrics, monkeypatch):
     outcome = hops("recreate", "sonarr/sonarr")
     assert outcome.code == 1 and "sops" in outcome.err
     assert requests(metrics) == []
+
+
+def test_recreate_needs_no_declared_monitoring_stack(hops, metrics, api_key, repo):
+    """Mid-cutover the legacy prometheus container still carries the request: any running one on the network can."""
+    (repo / "tn" / "monitoring" / "compose.yaml").rename(repo / "tn" / "monitoring" / "docker-compose.yaml")
+    metrics.respond("exec", "-i", "prometheus", stdout=http_response("200 OK", {"content": "ok"}))
+    outcome = hops("recreate", "sonarr/sonarr")
+    assert outcome.code == 0, outcome.err
+    assert "Recreated sonarr/sonarr" in outcome.out
 
 
 def test_recreate_of_prometheus_sends_through_another_container(hops, metrics, api_key):

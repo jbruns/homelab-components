@@ -7,6 +7,7 @@ amtool's stdin. The password is never in a process argument or on this machine.
 """
 
 from hops import docker
+from hops.declared import MONITORING
 from hops.runner import Result, Runner
 
 USERNAME = "prometheus"
@@ -21,9 +22,18 @@ SCRIPT = (
 )
 
 
+SERVICES = ("prometheus", "alertmanager")  # the monitoring Stack's Services amtool runs through
+
+
+def declared_on(declared) -> bool:
+    """Whether the monitoring Stack declares prometheus or alertmanager. False on a Host mid-cutover, whose
+    monitoring is not a declared Stack yet; with only one declared, amtool fails naming the other."""
+    return any(declared.get(MONITORING, name) for name in SERVICES)
+
+
 def amtool(runner: Runner, declared, host: str, *args: str, check: bool = True) -> Result:
     """Run `amtool <args>` against Alertmanager on Host `host`; returns its captured output."""
-    prometheus, alertmanager = (declared.monitoring(host, name) for name in ("prometheus", "alertmanager"))
+    prometheus, alertmanager = (declared.monitoring(host, name) for name in SERVICES)
     prometheus = docker.container_ref(runner, prometheus)
     alertmanager = docker.container_ref(runner, alertmanager)
     return runner.pipeline(

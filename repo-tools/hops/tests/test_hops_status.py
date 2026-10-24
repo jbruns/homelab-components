@@ -172,3 +172,11 @@ def test_status_fails_when_inspect_reports_an_object_it_was_not_asked_for(hops, 
     fake_host.respond("ps", stdout=CONTAINERS[0]["Id"] + "\n")
     fake_host.respond("inspect", stdout="[]", returncode=1, stderr="Error: No such object: something-else")
     assert hops("status", "--json").code == 1
+
+
+def test_status_needs_no_declared_monitoring_stack(hops, fake_host, repo):
+    (repo / "tn" / "monitoring" / "compose.yaml").rename(repo / "tn" / "monitoring" / "docker-compose.yaml")
+    respond_with(fake_host, CONTAINERS)
+    outcome = hops("status", "--json")
+    assert outcome.code == 0, outcome.err
+    assert "monitoring" not in {r["stack"] for r in json.loads(outcome.out)["services"]}

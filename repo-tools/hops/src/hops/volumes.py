@@ -4,7 +4,8 @@ One throwaway container bind-mounts Docker's volumes directory once, so each top
 <old>/_data moves to <new>/_data with rename(2) within one filesystem: instant, and ownership,
 permissions and timestamps stay as they are. The new _data directory itself then takes all of the old one's
 metadata (owner, mode, xattrs and ACLs, times), and the move checks it did. Symlinks are renamed, never
-followed. The image is the python one hops already runs for `logs --loki` (hops/loki.py), never pulled.
+followed. The image is the python one hops already runs for `logs --loki` (hops/loki.py), or --image on a Host
+whose monitoring Stack is not declared yet; either way digest-pinned, never pulled, and it must have python3.
 
 SCRIPT runs in that container (or, in tests, on this machine against a directory). It prints one
 JSON document: the filesystem mounted at ROOT and, for each volume, its _data's device and number of
@@ -25,15 +26,19 @@ import re
 from dataclasses import dataclass
 
 from hops import docker, loki, strays
-from hops.declared import Declared
+from hops.declared import MONITORING, Declared
 from hops.docker import Container
-from hops.errors import HopsError, UsageError
+from hops.errors import ConfigError, HopsError, UsageError
 from hops.runner import Runner
 
 # Docker's rule for volume names (daemon/names.RestrictedNamePattern). Checked before any Host call,
 # so a name is never more than a plain argument.
 NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]+")
 ROOT = "/volumes"  # where the container sees Docker's volumes directory
+# An image reference pinned by digest, in Docker's grammar (distribution/reference): [domain/]path[:tag]@sha256:<hex>.
+_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+_DOMAIN = r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*(?::[0-9]+)?/)?"
+PINNED = re.compile(rf"{_DOMAIN}{_COMPONENT}(?:/{_COMPONENT})*(?::\w[\w.-]{{0,127}})?@sha256:[0-9a-f]{{64}}")
 TIMEOUT = 600
 RESERVE = 1 << 30  # the least a Rollback Volume copy leaves free on the volumes filesystem, in bytes
 LABEL = "hops.volume-move"
@@ -499,6 +504,9 @@ def verify(runner: Runner, image: str, directory: str, old: str, new: str) -> Pr
 def reported(runner: Runner, image: str, directory: str, mode: str, old: str, new: str) -> Probe:
     result = run(runner, image, directory, mode, old, new)
     if not result.stdout.strip():
+        problem = image_problem(result, image)
+        if problem:
+            raise HopsError(problem)
         raise HopsError(
             f"the volume-{mode} container gave no report: {result.stderr.strip() or f'exit code {result.returncode}'}"
         )
@@ -508,6 +516,9 @@ def reported(runner: Runner, image: str, directory: str, mode: str, old: str, ne
 def check(runner: Runner, image: str, directory: str, old: str, new: str) -> Probe:
     result = run(runner, image, directory, "check", old, new)
     if result.returncode != 0:
+        problem = image_problem(result, image)
+        if problem:
+            raise HopsError(problem)
         raise HopsError(
             f"the volume-move container could not read {directory}: "
             f"{result.stderr.strip() or f'exit code {result.returncode}'}"
@@ -521,8 +532,35 @@ def move(runner: Runner, image: str, directory: str, old: str, new: str) -> Prob
     return reported(runner, image, directory, "move", old, new)
 
 
-def image(declared: Declared, host: str) -> str:
+def image(declared: Declared, host: str, override: str | None = None) -> str:
+    """The copier's image: `override` (--image) once checked to be digest-pinned, else the python image the
+    monitoring Stack pins for its transport Service."""
+    if override is not None:
+        if not PINNED.fullmatch(override):
+            raise UsageError(
+                f"--image {override!r} is not pinned by digest; give name:tag@sha256:<64 hex> or name@sha256:<64 hex>"
+            )
+        return override
+    if not declared.get(MONITORING, loki.TRANSPORT):
+        raise ConfigError(
+            f"Host {host!r} declares no {loki.TRANSPORT} in its {MONITORING} Stack, whose python image volume move "
+            "runs by default; pass --image <name:tag@sha256:...>, a digest-pinned image with python3 that is "
+            "already on the Host"
+        )
     return loki.transport_image(declared, host, "volume move runs its image")
+
+
+def image_problem(result, image: str) -> str | None:
+    """Why `docker run` of `image` could not start the copier, when the image is the reason; else None."""
+    stderr = result.stderr.strip()
+    if "no such image" in stderr.lower() or "unable to find image" in stderr.lower():
+        return (
+            f"{image} is not on the Host, and hops never pulls it (docker run --pull never); "
+            f"pull it on the Host first: docker pull {image}"
+        )
+    if result.returncode in (126, 127) and "python3" in stderr:
+        return f"{image} has no python3 for the copier to run: {stderr}"
+    return None
 
 
 def users(runner: Runner, name: str) -> list[Container]:
