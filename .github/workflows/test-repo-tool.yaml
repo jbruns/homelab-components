@@ -1,8 +1,9 @@
 name: test repo tool
 
 # One shared Repo Tooling package's checks: ruff with its own config, then its tests against the package installed
-# into a clean venv with only its declared dependencies and pytest, as a consumer would get it. Called by ci.yaml
-# for every folder under repo-tools/ and by release.yaml before a <tool>-vX.Y.Z release.
+# into a clean venv with only its declared dependencies and pytest, as a consumer would get it. uv installs it, as
+# consumers do, since a tool's [tool.uv.sources] can point at a sibling under repo-tools/ (hops uses ../hosts).
+# Called by ci.yaml for every folder under repo-tools/ and by release.yaml before a <tool>-vX.Y.Z release.
 on:
   workflow_call:
     inputs:
@@ -31,8 +32,9 @@ jobs:
       - run: ruff format --check .
       - name: install into a clean venv
         run: |
-          python -m venv "$RUNNER_TEMP/tool"
-          "$RUNNER_TEMP/tool/bin/python" -m pip install --quiet . "$(grep -E '^pytest==' "$GITHUB_WORKSPACE/requirements-dev.txt")"
+          uv venv --quiet --python "$(command -v python)" "$RUNNER_TEMP/tool"
+          uv pip install --quiet --python "$RUNNER_TEMP/tool/bin/python" . \
+            "$(grep -E '^pytest==' "$GITHUB_WORKSPACE/requirements-dev.txt")"
       # pytest exits 5 when it collects no tests.
       - name: tests
         run: |
