@@ -32,6 +32,8 @@ does not declare is out of their reach.
 ```yaml
 version: 1                      # required; only 1 is supported
 default_branch: main            # optional, default main
+validate: [python3, tools/validate/validate.py]   # optional: the repo's check, run from the repo root before
+                                # a tool (e.g. hops bump) commits a change
 hosts:                          # required; at least one Host
   nc8kg1101:                    # Host name: [a-z0-9][a-z0-9-]*; used for --host and .env keys
     stack_root: nc8kg1101       # required; dir relative to repo root holding <stack>/compose.yaml
@@ -52,6 +54,7 @@ Loading fails, listing every problem with its file and key path, when:
 - a key is unknown, at any level;
 - `version` is missing or not `1`;
 - `hosts` is missing or empty;
+- `validate` is not a non-empty list of non-empty strings;
 - a Host name does not match `[a-z0-9][a-z0-9-]*` (YAML reads an unquoted `no` or `1101` as a boolean or
   number, so quote such a name);
 - `stack_root` is missing, is absolute or uses `..`, resolves (following symlinks, including in intermediate
@@ -110,7 +113,8 @@ Everything below is exported from `homelab_hosts`; nothing else is public.
 - `load_hosts(root=None) -> Hosts`: loads and validates `<root>/hosts.yaml`; `root` defaults to
   `find_repo_root()`.
 - `Hosts`: a read-only mapping of Host name to `Host`, in file order, with `root` (the repo root),
-  `default_branch`, and `pick(name=None, path=None) -> Host`, which returns:
+  `default_branch`, `validate` (the validation command's argv as a tuple, empty when not declared), and
+  `pick(name=None, path=None) -> Host`, which returns:
   1. the Host called `name` (e.g. from `--host`), or an error listing the Hosts when there is none;
   2. else the Host whose stack root contains `path` (relative paths resolve against the working directory;
      `path` need not exist);
@@ -120,10 +124,15 @@ Everything below is exported from `homelab_hosts`; nothing else is public.
   (a frozenset), `doco_cd` (a `DocoCd` with `stack`, `api_secret`, `address`, `network`, defaults filled in), and
   `has(capability) -> bool`, which raises `HostsError` for a capability name it does not know, so a typo cannot
   read as "no".
-- `host_settings(env, host) -> HostSettings`: the Host's settings from the `.env` keys above, read from the
-  mapping `env`; it never reads a file. `HostSettings.ssh` is an `SshSettings(host, user, key)`;
-  `HostSettings.truenas` is a `TrueNasSettings(url, api_key, insecure)` for a `truenas` Host and `None`
-  otherwise. Missing required keys raise `HostsError` naming the keys, never their values.
+- `ssh_settings(env, host) -> SshSettings`: the Host's `SshSettings(host, user, key)` from the `.env` keys above,
+  read from the mapping `env` (it never reads a file). Needs only `SSH_HOST`, whatever the Host's capabilities.
+- `truenas_settings(env, host) -> TrueNasSettings`: the Host's `TrueNasSettings(url, api_key, insecure)`. Needs
+  only the TrueNAS keys; a Host without `truenas` raises `HostsError`.
+- `host_settings(env, host) -> HostSettings`: both at once: `HostSettings.ssh`, and `HostSettings.truenas` for a
+  `truenas` Host (`None` otherwise). It requires every key the Host could need, so a tool that uses only SSH or
+  only TrueNAS should call the narrower function.
+
+  Each raises `HostsError` naming every missing or invalid key, never a value.
 - `env_prefix(host) -> str`: `HOPS_<NAME>_`, the `.env` key prefix for a `Host`.
 - `HostsError`: every failure above; `problems` lists each problem, and `str()` joins them with newlines.
 - `CAPABILITIES`, `DEPLOYERS`, `HOSTS_FILE`: the known capabilities, the supported deployers, and `"hosts.yaml"`.

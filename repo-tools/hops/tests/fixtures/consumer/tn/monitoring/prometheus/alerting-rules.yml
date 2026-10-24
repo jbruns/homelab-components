@@ -1,0 +1,24 @@
+groups:
+  - name: fixture
+    rules:
+      - alert: Watchdog
+        expr: vector(1)
+        labels: {stack: monitoring, tier: heartbeat}
+      - alert: TargetDown
+        expr: up{job!~"probe|probe-tcp|probe-idp|internet|dependency"} == 0
+      - alert: ProbeFailed
+        expr: probe_success{job=~"probe|probe-tcp|probe-idp"} == 0
+      - alert: ContainerDown
+        expr: max by (stack, service, name, tier) (homeops_container_declared{tier=~"critical|warning"})
+      - alert: IdpForwardAuthFailing
+        expr: count(probe_success{job="probe-idp", auth="forward"} == 0) == count(probe_success{job="probe-idp", auth="forward"})
+        labels: {container: idp-outpost, stack: edge, tier: critical}
+      - alert: DatastoreDown
+        expr: label_replace(mysql_up == 0, "name", "$1", "datastore", "(.+)")
+        labels: {tier: critical}
+      - alert: BackupStale
+        expr: time() - max by (kind) (restic_backup_timestamp) > 26 * 3600
+        labels: {stack: ops, tier: critical}
+      - alert: BackupMetricsMissing
+        expr: absent(restic_backup_timestamp)
+        labels: {stack: ops, tier: critical}

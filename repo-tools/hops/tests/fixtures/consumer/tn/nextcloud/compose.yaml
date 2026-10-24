@@ -1,0 +1,20 @@
+services:
+  mariadb:
+    image: mariadb:11.8.3
+    container_name: nextcloud-mariadb
+    labels: {tier: critical}
+  mariadb-exporter:
+    image: prom/mysqld-exporter:v0.17.2
+    container_name: nextcloud-mariadb-exporter
+    depends_on: {mariadb: {condition: service_healthy}}
+    labels: {tier: info}
+  nextcloud:
+    image: nextcloud:32.0.0
+    container_name: nextcloud
+    depends_on: {mariadb: {condition: service_healthy}}
+    labels: {tier: critical}
+  nextcloud-cron:
+    image: nextcloud:32.0.0
+    container_name: nextcloud-cron
+    depends_on: {mariadb: {condition: service_healthy}}
+    labels: {tier: warning}

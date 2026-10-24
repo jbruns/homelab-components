@@ -25,6 +25,8 @@ __all__ = [
     "find_repo_root",
     "host_settings",
     "load_hosts",
+    "ssh_settings",
+    "truenas_settings",
 ]
 
 HOSTS_FILE = "hosts.yaml"
@@ -34,7 +36,7 @@ DEPLOYERS = frozenset({"doco-cd"})
 _HOST_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 _STACK_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 _DOCKER_NETWORK = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
-_TOP_KEYS = {"version", "default_branch", "hosts"}
+_TOP_KEYS = {"version", "default_branch", "validate", "hosts"}
 _HOST_KEYS = {"stack_root", "deployer", "capabilities", "doco_cd"}
 _DOCO_CD_DEFAULTS = {
     "stack": "doco-cd",
@@ -90,6 +92,9 @@ class Hosts(Mapping[str, Host]):
     """The repo root (the directory holding hosts.yaml)."""
     default_branch: str
     hosts: Mapping[str, Host]
+    validate: tuple[str, ...] = ()
+    """The repo's validation command (argv, run from the repo root) that tools run before committing a change;
+    empty when hosts.yaml declares none."""
 
     def __getitem__(self, name: str) -> Host:
         return self.hosts[name]
@@ -164,7 +169,7 @@ def load_hosts(root: str | Path | None = None) -> Hosts:
 
     problems: list[str] = []
     if not isinstance(data, dict):
-        raise HostsError(f"{file}: must be a mapping with version, hosts and optionally default_branch")
+        raise HostsError(f"{file}: must be a mapping with version, hosts and optionally default_branch and validate")
     _unknown_keys(data, _TOP_KEYS, "", problems)
     if "version" not in data:
         problems.append("version: missing; this library reads version 1")
@@ -173,6 +178,12 @@ def load_hosts(root: str | Path | None = None) -> Hosts:
     default_branch = data.get("default_branch", "main")
     if not isinstance(default_branch, str) or not default_branch:
         problems.append(f"default_branch: must be a non-empty string, not {default_branch!r}")
+    validate = data.get("validate", [])
+    if not isinstance(validate, list) or "validate" in data and not validate:
+        problems.append(f"validate: must be a non-empty list of strings (a command's argv), not {validate!r}")
+        validate = []
+    elif not all(isinstance(arg, str) and arg for arg in validate):
+        problems.append(f"validate: every argument must be a non-empty string, not {validate!r}")
 
     hosts: dict[str, Host] = {}
     raw_hosts = data.get("hosts")
@@ -197,7 +208,7 @@ def load_hosts(root: str | Path | None = None) -> Hosts:
 
     if problems:
         raise HostsError([f"{file}: {p}" for p in problems])
-    return Hosts(root=root, default_branch=default_branch, hosts=hosts)
+    return Hosts(root=root, default_branch=default_branch, hosts=hosts, validate=tuple(validate))
 
 
 def _unknown_keys(data: dict, known: set[str], where: str, problems: list[str]) -> None:
@@ -328,32 +339,59 @@ def env_prefix(host: Host) -> str:
     return f"HOPS_{host.name.upper().replace('-', '_')}_"
 
 
-def host_settings(env: Mapping[str, str], host: Host) -> HostSettings:
-    """A Host's connection settings from `env` (the caller's parsed .env and/or os.environ; this never reads a
-    file). Raises HostsError naming every required key that is missing or empty; never includes values."""
-    prefix = env_prefix(host)
-
-    def get(key: str) -> str | None:
-        value = env.get(prefix + key)
-        return value if value else None
-
-    missing = [prefix + key for key in ("SSH_HOST",) if get(key) is None]
-    if host.has("truenas"):
-        missing += [prefix + key for key in ("TRUENAS_URL", "TRUENAS_API_KEY") if get(key) is None]
-    problems = [f"{key} is not set (needed for Host {host.name!r})" for key in missing]
-
-    insecure = False
-    if host.has("truenas"):
-        raw = (env.get(prefix + "TRUENAS_INSECURE") or "").strip().lower()
-        if raw in _TRUTHY:
-            insecure = True
-        elif raw not in _FALSY:
-            problems.append(f"{prefix}TRUENAS_INSECURE must be 1/0, true/false, yes/no or on/off")
+def ssh_settings(env: Mapping[str, str], host: Host) -> SshSettings:
+    """How to reach the Host over SSH, from `env`. Needs only the SSH keys, whatever the Host's capabilities.
+    Raises HostsError naming a missing key; never includes values."""
+    problems: list[str] = []
+    settings = _ssh(env, host, problems)
     if problems:
         raise HostsError(problems)
+    return settings
 
-    ssh = SshSettings(host=get("SSH_HOST"), user=get("SSH_USER"), key=get("SSH_KEY"))
-    truenas = None
-    if host.has("truenas"):
-        truenas = TrueNasSettings(url=get("TRUENAS_URL"), api_key=get("TRUENAS_API_KEY"), insecure=insecure)
+
+def truenas_settings(env: Mapping[str, str], host: Host) -> TrueNasSettings:
+    """The Host's TrueNAS API settings, from `env`. Needs only the TrueNAS keys. Raises HostsError for a Host
+    without the truenas capability, or naming each missing or invalid key; never includes values."""
+    if not host.has("truenas"):
+        raise HostsError(f"Host {host.name!r} does not have the truenas capability")
+    problems: list[str] = []
+    settings = _truenas(env, host, problems)
+    if problems:
+        raise HostsError(problems)
+    return settings
+
+
+def host_settings(env: Mapping[str, str], host: Host) -> HostSettings:
+    """All of a Host's settings from `env` (the caller's parsed .env and/or os.environ; this never reads a
+    file): ssh_settings, plus truenas_settings for a truenas Host. Raises HostsError naming every required key
+    that is missing or empty; never includes values. A tool that needs only one part should call that part."""
+    problems: list[str] = []
+    ssh = _ssh(env, host, problems)
+    truenas = _truenas(env, host, problems) if host.has("truenas") else None
+    if problems:
+        raise HostsError(problems)
     return HostSettings(ssh=ssh, truenas=truenas)
+
+
+def _getter(env: Mapping[str, str], host: Host):
+    prefix = env_prefix(host)
+    return prefix, lambda key: env.get(prefix + key) or None
+
+
+def _missing(prefix: str, host: Host, keys: list[str]) -> list[str]:
+    return [f"{prefix}{key} is not set (needed for Host {host.name!r})" for key in keys]
+
+
+def _ssh(env: Mapping[str, str], host: Host, problems: list[str]) -> SshSettings:
+    prefix, get = _getter(env, host)
+    problems += _missing(prefix, host, [k for k in ("SSH_HOST",) if get(k) is None])
+    return SshSettings(host=get("SSH_HOST"), user=get("SSH_USER"), key=get("SSH_KEY"))
+
+
+def _truenas(env: Mapping[str, str], host: Host, problems: list[str]) -> TrueNasSettings:
+    prefix, get = _getter(env, host)
+    problems += _missing(prefix, host, [k for k in ("TRUENAS_URL", "TRUENAS_API_KEY") if get(k) is None])
+    raw = (env.get(prefix + "TRUENAS_INSECURE") or "").strip().lower()
+    if raw not in _TRUTHY | _FALSY:
+        problems.append(f"{prefix}TRUENAS_INSECURE must be 1/0, true/false, yes/no or on/off")
+    return TrueNasSettings(url=get("TRUENAS_URL"), api_key=get("TRUENAS_API_KEY"), insecure=raw in _TRUTHY)

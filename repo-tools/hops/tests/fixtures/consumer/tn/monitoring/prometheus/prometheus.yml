@@ -1,0 +1,19 @@
+scrape_configs:
+  - job_name: traefik
+    static_configs:
+      - targets: [traefik:8082]
+        labels: {container: traefik, stack: edge, tier: critical}
+  - job_name: crowdsec
+    static_configs:
+      - targets: [crowdsec:6060]
+        labels: {container: crowdsec, stack: edge, tier: critical}
+  - job_name: mysqld
+    static_configs:
+      - targets: [nextcloud-mariadb-exporter:9104]
+        labels: {container: nextcloud-mariadb-exporter, datastore: nextcloud-mariadb, stack: nextcloud, tier: info}
+      - targets: [vaultwarden-mariadb-exporter:9104]
+        labels: {container: vaultwarden-mariadb-exporter, datastore: vaultwarden-mariadb, stack: vaultwarden, tier: info}
+  - job_name: doco-cd
+    static_configs:
+      - targets: [doco-cd:9120]
+        labels: {container: doco-cd, stack: doco-cd, tier: warning}

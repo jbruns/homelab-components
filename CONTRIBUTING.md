@@ -10,7 +10,7 @@ python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest -m "not contract"     # unit tests, everything
 .venv/bin/pytest -m contract           # Contract Tests; needs a running Docker
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
-.venv/bin/pip install -e repo-tools/<tool> && .venv/bin/pytest repo-tools/<tool>   # a shared tool's tests
+.venv/bin/uv pip install --python .venv/bin/python -e repo-tools/<tool> && .venv/bin/pytest repo-tools/<tool>   # a shared tool's tests
 ```
 
 Python 3.13 matches the distroless base image. Test dependencies live in `requirements-dev.txt`, pinned.
@@ -77,14 +77,16 @@ jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shar
   (Python >=3.11, few dependencies, its own ruff and pytest config), `src/<package>/`, `tests/`, and a `README.md`
   documenting install, usage and every contract a consuming repo relies on. It must install with
   `uv tool install "git+https://github.com/jbruns/homelab-components@<ref>#subdirectory=repo-tools/<tool>"`.
-  Reusable workflows for consuming repos are `.github/workflows/repo-<name>.yaml` (`on: workflow_call`), and
+  A tool that uses another one here (hops uses `homelab-hosts`) lists it by its package name and points
+  `[tool.uv.sources]` at its folder (`homelab-hosts = { path = "../hosts" }`), so it installs with uv, not pip,
+  and gets the sibling from the same ref. Reusable workflows for consuming repos are `.github/workflows/repo-<name>.yaml` (`on: workflow_call`), and
   Renovate presets are `renovate/<preset>.json`.
 - **hosts.yaml.** A consuming repo declares its Hosts in a committed `hosts.yaml` at its root
   ([schema](repo-tools/hosts/README.md)). `repo-tools/hosts` (`homelab_hosts`) is the only code that parses it:
   every tool that needs Hosts depends on that package, takes the Host from `--host`, the stack path, or the only
   Host (`Hosts.pick`) (a repo-wide check or generator may instead default to every Host, with `--host` to pick
-  one), reads connection details from `.env` through `host_settings`, and gates Host-specific
-  features on `Host.has(...)`. Never assume a Host, a stack root or a capability.
+  one), reads connection details from `.env` through `ssh_settings`/`truenas_settings` (only what the command
+  uses), and gates Host-specific features on `Host.has(...)`. Never assume a Host, a stack root or a capability.
 - **Test first**, as for a Component: CI installs every `repo-tools/<tool>` and runs ruff and its pytest suite on
   every PR (`.github/workflows/test-repo-tool.yaml`).
 - **Release and pin.** Merge to `main`, then tag `<tool>-vX.Y.Z` on `main` and push it; the release workflow

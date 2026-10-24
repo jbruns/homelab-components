@@ -1,0 +1,13 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    container_name: prometheus
+    labels: {tier: critical}
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: alertmanager
+    labels: {tier: critical}
+  grafana:
+    image: grafana/grafana:12.2.1
+    container_name: grafana
+    labels: {tier: warning}

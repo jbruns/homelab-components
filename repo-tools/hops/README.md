@@ -1,0 +1,1039 @@
+# hops
+
+Ops and diagnostics for a consuming repo's Hosts, for people and agents. `hops` is Repo Tooling: it runs on a
+contributor's machine and reaches a Host over SSH. Nothing is installed on the Host. Everything about the Hosts
+comes from the repo it runs in: its `hosts.yaml` (read through [`homelab_hosts`](../hosts/README.md)), its Compose
+files under each Host's stack root, and its `.env`.
+
+## The core rule
+
+**`hops` changes runtime state only** (for example restarting or stopping a container). It never
+changes **declared state** on a Host. Image tags and digests change only through a PR that
+doco-cd deploys after merge. `hops` never runs `docker compose`.
+
+## Install
+
+```sh
+uv tool install "git+https://github.com/jbruns/homelab-components@hops-v1.0.0#subdirectory=repo-tools/hops"
+hops --help
+```
+
+Python 3.11 or later. It brings PyYAML, websocket-client (for TrueNAS) and `homelab-hosts` from the same ref
+(`[tool.uv.sources]` points at `../hosts`), so install it with uv, not pip. To work on hops itself:
+`uv tool install -e repo-tools/hops` from a homelab-components checkout.
+
+## Configuration
+
+### hosts.yaml
+
+`hops` needs a `hosts.yaml` at the consuming repo's root ([schema](../hosts/README.md)). From it, per Host:
+
+- `stack_root`: the directory holding `<stack>/compose.yaml`. Names resolve against it.
+- `capabilities`: `truenas` and `zfs` switch on the commands that need them ([Capabilities](#capabilities)).
+- `doco_cd`: where doco-cd is: its Stack (default `doco-cd`), its API key file (default
+  `doco-cd/api_secret.sops.txt` under the stack root), its address (default `doco-cd:80`) and the network a
+  transport reaches it on (default `metrics`). `recreate` and `deploys` use them; `stop`, `strays` and
+  `volume move` use the Stack name.
+
+And repo-wide: `default_branch` (default `main`), which `strays --apply` and `bump` read declared state from,
+and `validate`, the command `bump` runs before it commits.
+
+### Which Host
+
+- `--host <name>`, before or after the command (`hops --host nas status` or `hops status --host nas`).
+- Else the Host whose stack root holds the working directory (`cd nas/` then `hops status`).
+- Else the only Host, when `hosts.yaml` declares one.
+
+With several Hosts and none of these, `hops` fails before touching anything (exit 2) and lists them.
+
+- **Repo root:** the nearest directory at or above the working directory holding `hosts.yaml`. Names and pins
+  come from that checkout's working tree. To compare a Host with its default branch, run from a checkout of it.
+
+### .env
+
+Connection settings are per Host, keyed by `HOPS_<NAME>_` (the Host name uppercased, `-` as `_`; Host `nas-2`
+reads `HOPS_NAS_2_SSH_HOST`). `hops` reads the repo root's `.env`, or else the main worktree's: agent worktrees
+under `.worktrees/` have no `.env` of their own, so they use the main one. Environment variables override `.env`.
+
+| Key | Required | What it is |
+|---|---|---|
+| `HOPS_<NAME>_SSH_HOST` | yes | The Host's SSH address |
+| `HOPS_<NAME>_SSH_USER` | yes | The SSH user; it needs passwordless `sudo -n docker` |
+| `HOPS_<NAME>_SSH_KEY` | no | Private key for `ssh -i`; unset, ssh picks one (its config or default keys) |
+| `HOPS_<NAME>_TRUENAS_URL` | for TrueNAS reads on a `truenas` Host | The TrueNAS address, e.g. `https://nas.example.lan`; no user name or password |
+| `HOPS_<NAME>_TRUENAS_API_KEY` | for TrueNAS reads on a `truenas` Host | A TrueNAS API key |
+| `HOPS_<NAME>_TRUENAS_INSECURE` | no | `1`/`true`/`yes`/`on` skips TLS verification for a self-signed certificate |
+| `HOPS_<NAME>_HOST_DATASETS` | no | Dataset names, comma- or space-separated, that `hops host` also reports |
+
+A missing required key fails the command that needs it (exit 2), naming the key and the files searched; values are
+never printed. Commands that only use SSH need only the SSH keys, even on a `truenas` Host. The TrueNAS keys are
+read only when a command talks to TrueNAS: `truenas call` and `snapshot` fail without them, while `host` and
+`strays` show what they can and name the missing keys.
+
+- **SSH:** `ssh [-i $HOPS_<NAME>_SSH_KEY] $HOPS_<NAME>_SSH_USER@$HOPS_<NAME>_SSH_HOST sudo -n docker …` with
+  `BatchMode=yes`, so `hops` never prompts. Calls share one connection
+  (`ControlMaster=auto`, `ControlPersist=10m`). The socket is under
+  `${XDG_CACHE_HOME:-~/.cache}/hops/`.
+- **TrueNAS:** JSON-RPC 2.0 over a WebSocket at `wss://<TRUENAS_URL host>/api/current`, logged in
+  with `auth.login_with_api_key`. TrueNAS rate-limits logins: a login refused with `EBUSY` is
+  retried on a new connection after 2, 4, 8, 16 and 30 s (60 s in all), then fails. Never the
+  REST API (`/api/v2.0`): it is deprecated and raises alerts on the Host. Give the key to a TrueNAS user
+  whose privilege roles are only `READONLY_ADMIN`, `SNAPSHOT_WRITE` and `SNAPSHOT_DELETE`. The key goes only
+  into the login message; errors print it as `[REDACTED]`. TLS is verified against the default CA
+  bundle unless `TRUENAS_INSECURE` says otherwise.
+
+### Capabilities
+
+Everything that goes through Docker over SSH or doco-cd works on any doco-cd Host. The rest needs a capability
+in `hosts.yaml`, and refuses (exit 2) before touching the Host without it, naming the capability:
+
+| Needs | Commands and options |
+|---|---|
+| `truenas` | `hops truenas call`; `hops host`'s pools, datasets and task sections (without it, `hops host` shows only Docker, with a note) |
+| `truenas` and `zfs` | `hops snapshot take/list/release`; `volume move --take-snapshot`; `volume move` with a Rollback Snapshot; Rollback Snapshots in `hops host` and `hops strays` |
+| neither | everything else. `volume move` keeps a [Rollback Volume](#rollback-volumes) instead of a Rollback Snapshot, and `strays` treats `ix-` names as ordinary (only a `truenas` Host has TrueNAS Apps) |
+
+## Targets
+
+Names resolve from the Host's Compose files (`<stack_root>/<stack>/compose.yaml` and its `include:`s), not
+from running containers. An unknown or ambiguous name fails before anything touches the Host.
+
+- `stack/service` always works.
+- A bare Service name works when only one Stack declares it.
+- A bare Stack name: commands that take several targets (`status`) act on every Service in the
+  Stack. Commands that take one Service (`inspect`, `logs`) accept it only if the Stack has
+  exactly one Service. `logs --loki` takes a Stack as every Service in it.
+- A name that is both a Stack and a Service, such as `nextcloud`, means the Stack for multi-target
+  commands and the Service for single-Service commands. Write `nextcloud/nextcloud` to be explicit.
+
+## Conventions
+
+Some commands rely on how a consuming repo lays out its Stacks. They are the same for every Host; a Host
+without them simply cannot use that command:
+
+- **monitoring Stack** (`<stack_root>/monitoring`): `alerts` and `stop` use its `prometheus` and
+  `alertmanager` Services (Prometheus's Alertmanager password at `/run/secrets/prometheus_password`), and
+  `stop` reads `prometheus/prometheus.yml`, `alerting-rules.yml` and `alertmanager/config.yml` there.
+  `logs --loki` and `volume move` run the python image pinned for its `dependencies-render` Service, and
+  `logs --loki` reaches Loki on the `monitoring_default` network. A Host that does not declare one of these
+  Services fails such a command before it touches the Host (exit 2): `Host 'X' declares no alertmanager in its
+  monitoring Stack`.
+- **Critical Tier:** a Service's `tier: critical` label, which `stop` refuses without `--force`.
+- **`homeops.db.users`:** the label `db --users` compares MariaDB users with.
+- **`startup-order=skip`:** the label on deliberate `docker run`s; `hops` puts it on its own.
+- **stack-back:** `host` finds the restic repository through the `/backups` mount of the container running
+  `lawndoc/stack-back`'s image.
+- **ZFS properties** `homeops:issue` and `homeops:expires` mark a Rollback Snapshot.
+
+## Commands
+
+Every command in this table is **read-only**. Each takes `--json`.
+
+| Command | What it shows |
+|---|---|
+| `hops status [target…]` | For each declared Service: running or not, health, restart count, and **digest drift** (the container runs a different digest from the one this checkout pins: run from `main`, this means a Deploy did not apply). With no targets, it also lists running containers that no Stack declares. |
+| `hops inspect <service>` | Image, state, start time, last exit code, OOM-killed flag, memory usage against the limit, and the health-check log |
+| `hops logs <service> [--since D] [--tail N] [-f]` | `docker logs` with the options passed through. `-f` streams through `ssh -t`, until Ctrl-C. |
+| `hops logs <target> --loki [--since D] [--until D] [--grep RE] [--limit N]` | History from Loki, oldest first, which survives container recreation (see [Loki history](#loki-history)). `--query '<LogQL>'` replaces the target. |
+| `hops alerts` | Firing alerts (including silenced and inhibited ones) and active silences, from `amtool` in the alertmanager container |
+| `hops deploys [<stack>] [--status S] [--limit N]` | doco-cd's recent runs, newest first: when, trigger, status, the Stacks each run touched, and doco-cd's message (the error, or why it skipped: retry budget, pause). See [deploys](#deploys). |
+| `hops deploys <run-id>` | One run in detail |
+| `hops host` | `docker system df`; on a `truenas` Host also pools, key datasets, Rollback Snapshots (`zfs`), and the last run of each periodic snapshot and Cloud Sync task (see [host](#host)) |
+| `hops truenas call <method> [json-param…]` | `truenas` Host only. The result of one allowlisted TrueNAS read method (see [truenas call](#truenas-call)), as JSON with credentials redacted. For what other commands lack. |
+
+`alerts` authenticates without sending the password to this machine. The Host pipes the monitoring Stack's Prometheus's
+Alertmanager password file (`/run/secrets/prometheus_password`) from the prometheus container
+into the alertmanager container. There, `sh` hands it to `amtool` on stdin, so it never appears
+in a process argument.
+
+### Loki history
+
+`hops logs --loki` reads the logs Alloy ships to Loki (14 days' retention), so it shows lines from
+containers that have since been recreated or removed.
+
+- **Target:** `stack/service`, a bare Service name, or a bare Stack name for every Service in it
+  (a name that is both means the Stack: `doco-cd` includes apprise, `doco-cd/doco-cd` does not).
+  The selector uses Alloy's `container` label and Docker's two streams, e.g.
+  `{container="sonarr", logstream=~"stdout|stderr"}`. A `container_name` stays the same across recreations and
+  across a Stack's Compose project being renamed (the `stack` label still holds old project names). A Service
+  without one
+  matches every container Compose has given it: `doco-cd-doco-cd-[0-9]+`.
+- **`--query '<LogQL>'`** sends a log query instead, e.g. Traefik's access log:
+  `--query '{logstream="access"} | json | DownstreamStatus >= 500'`. Metric queries are refused.
+- **Range:** `--since` (default `1h`) and `--until` (default now) take a duration back from now
+  (`90s`, `2h`, `1h30m`, `7d`) or an ISO 8601 time (UTC unless it has an offset), to the
+  nanosecond, so a time copied from the output works as a boundary. `--until` is exclusive.
+- **`--grep RE`** adds a LogQL line filter (`|~`, RE2 syntax).
+- **`--limit N`** (default 1000): the oldest N lines in the range. `hops` pages through
+  `query_range` 4000 lines at a time. Lines can share a timestamp; when a whole page does, one
+  request fetches every line at it, up to Loki's per-request cap of 5000. More than that at one
+  nanosecond fails (exit 1): narrow with `--grep` or `--query`. When `hops` stops at the limit,
+  it says so on stderr.
+- **Output:** unlike plain `hops logs`, each line starts with its time, as with
+  `docker logs --timestamps`: `<time> <text>`, or `<time> <service> | <text>` when the target has
+  several Services. `--json` is described [below](#logs---loki---json).
+- **Transport:** Loki has no auth and listens only on the `monitoring_default` network. Each page
+  is one `docker run --rm --label startup-order=skip --network monitoring_default --log-driver none
+  --pull never` of the image pinned for `monitoring/dependencies-render` (python), which fetches
+  the URL, and is removed when it exits. `--log-driver none` keeps the response from being shipped
+  back into Loki. It only reads, so `logs --loki` stays read-only.
+
+### deploys
+
+`deploys` reads doco-cd's `GET /v1/api/runs` and `GET /v1/api/run/{jobID}` through the transport
+`recreate` uses (below): same container choice, same key handling.
+
+- **History is in doco-cd's memory only**: 7 days, at most 50 runs per trigger, and lost when
+  doco-cd restarts. An empty list says so. For older history, use `hops logs --loki doco-cd/doco-cd`.
+- `<stack>` keeps the runs whose targets include that Stack; the filtering happens here, over the
+  200 runs doco-cd returns at most. The name is not checked against this checkout, since doco-cd
+  may remember a Stack the repo has since removed. `--status` (`failed`, `succeeded`, `running`,
+  `skipped`, `accepted`) is the run's status, filtered by doco-cd. `--limit` (default 20) applies
+  after both.
+- doco-cd records one message per run, not per Stack. A failure or skip names the Stacks it
+  concerns, e.g. `deployment failed: failed to deploy stack ownfoil: …`,
+  `deployment retry suppressed for ownfoil (default): budget_exhausted`, or
+  ``deployment paused: `plex` ``. Runs whose targets were all paused or retry-suppressed are
+  `skipped`, not `succeeded`.
+- An argument shaped like a run ID (a UUID) shows that run; an unknown one exits 1.
+
+### host
+
+`hops host` is the Host's hygiene at a glance, one section each. Pools, Datasets and Tasks need the `truenas`
+capability, and Rollback Snapshots `truenas` and `zfs`:
+
+- **Pools:** name, status, health, size, allocated, free and percent used (`pool.query`).
+- **Datasets:** used, available, used by snapshots and quota of: the dataset holding Docker's
+  data-root (`docker info`'s `DockerRootDir`), the restic repository's (the bind mount at `/backups`,
+  where `RESTIC_REPOSITORY` points, in the container of the Service running `lawndoc/stack-back`'s
+  image), and each one named in `HOPS_<NAME>_HOST_DATASETS`. A
+  path becomes a dataset through `filesystem.statfs`; usage comes from `zfs.resource.query`, which,
+  unlike `pool.dataset.query`, also finds hidden datasets such as `ix-apps`. A dataset that cannot be
+  found is skipped with a note.
+- **Docker:** `docker system df`: images, containers, volumes and build cache, with what is
+  reclaimable. Docker sizes every volume for this, so `hops host` can take tens of seconds.
+- **Rollback Snapshots:** how many, their total size, and the expired ones, from the same listing
+  as `hops snapshot list` (`hops.snapshots.rollback_snapshots`).
+- **Tasks:** each periodic snapshot task and Cloud Sync task, with what it covers and its last run's
+  state and times. **Status only.** Cloud Sync tasks carry credentials, scripts, rclone arguments
+  and job logs, so `hops host` builds each task from named fields only (`id`, the naming schema or
+  description, the dataset or path, `enabled`, and the last run's state, start and finish). It
+  never prints a job's error or log: a failed run shows only as `FAILED` (Cloud Sync) or `ERROR`
+  (snapshot); read the details in the TrueNAS UI.
+
+SMART and disk health stay in Prometheus, which alerts on them. On a Host without the `truenas` capability,
+only the Docker section is shown, with a note. A TrueNAS read that fails leaves its section out with a
+note and the others still show; if TrueNAS is unreachable, every TrueNAS section is left out. A
+note names the section and the method that failed (e.g. `tasks: TrueNAS read failed
+(cloudsync.query)`), never the error's text, which can echo a task's scripts or credentials. The
+reads are in `hops/hygiene.py`, through the internal TrueNAS client; `truenas call`'s allowlist is
+unchanged.
+
+### truenas call
+
+On a `truenas` Host only. A passthrough for Host-hygiene reads that no other command covers, e.g.
+`hops truenas call pool.query '[["name","=","tank"]]' '{"order_by":["name"]}'`. Each
+`json-param` is one JSON value, passed as one positional parameter of the method. It fails
+closed: anything not listed here is refused (exit 2) before connecting.
+
+- **Read methods only:** `*.query`, `*.get_instance`, `*.config`, plus `system.info`,
+  `system.version`, `pool.dataset.details` and `alert.list`. The scoped key can create and delete
+  its own API keys, so `api_key.*` writes are refused like any other write.
+- **Allowed namespaces only.** The `*.query`/`*.get_instance`/`*.config` reads must be in one of:
+  `pool`, `pool.dataset`, `pool.snapshot`, `pool.snapshottask`, `pool.scrub`, `disk`, `boot`,
+  `boot.environment`, `replication`, `cloudsync` (tasks; `cloudsync.credentials` is refused),
+  `service` and `interface` (TrueNAS's API name for network interfaces). Each was checked against
+  TrueNAS 25.10's API schema for secret-bearing fields. Everything else is refused, for example
+  `alertservice` (webhook URLs), `snmp` (community strings), `tunable`, `user`, `group`,
+  `api_key`, `cronjob`, `ssh`, `app`, `virt` and `vm`. Widen the list here and in
+  `hops/commands/truenas.py` together, after checking the namespace's schema.
+- **Query options:** `order_by`, `count`, `get`, `offset` and `limit` only. `select` is refused: a
+  projection can drop the fields TrueNAS's own masking depends on (e.g. an alert service's `type`)
+  or rename a secret. Filter the output locally instead. `extra` is refused: it switches on
+  per-method data, such as `disk.query`'s SED passwords.
+- **Redaction**, as defense in depth behind the allowlist. A field whose name contains
+  `credential`, `key`, `pass`, `pwd`, `bindpw`, `secret`, `token`, `salt`, `hash` or `community` prints as `"[REDACTED]"` (`null` stays `null`). For
+  `cloudsync.credentials.*`, every field of `attributes`/`provider` except `type` is redacted too,
+  and for `kerberos.keytab.*` the keytab `file`. In every string, a URL's user name and password
+  print as `scheme://[REDACTED]@host…`. Fields holding user-written scripts, commands and
+  auxiliary config are redacted too, at any depth, when they hold a string or list: `command`,
+  `script`, `pre_script`, `post_script`, `args`, `extra`, `shutdowncmd`, `options`, `optionsupsd`,
+  `sudo_commands`, `sudo_commands_nopasswd`, `smb_options`, `auxsmbconf` and `cmdline`.
+- **Embedded jobs.** A task's `job` object (any dict under a `job` key, at any depth, e.g. in
+  `cloudsync.query` or `replication.query`) keeps only `id`, `method`, `state`,
+  `progress.percent`, `time_started` and `time_finished`; its other keys (`logs_excerpt`, `error`,
+  `exception`, `result`, `arguments`, …) are dropped, since they can echo what a script printed.
+- Output is the method's result as JSON, with or without `--json`.
+
+### exec and db
+
+| Command | What it does | Guardrail class |
+|---|---|---|
+| `hops exec <service> [--] cmd…` | `docker exec` the command in the Service's container; stdout and stderr stream to this terminal; returns the command's exit code | none |
+| `hops exec <service>` | An interactive shell (bash if the image has one, else sh) via `ssh -t` and `docker exec -it` | Disruptive: needs a TTY |
+| `hops db <datastore>` | The Datastore's own client, interactive: `mariadb` as root, `valkey-cli`, or `psql` | Disruptive: needs a TTY |
+| `hops db <datastore> -e "<statement>"` | One statement, non-interactive (for agents); prints the client's output and returns its exit code | Read-only, or `--write` |
+| `hops db [<datastore>] --users [--json]` | Compares a MariaDB Datastore's live users with its `homeops.db.users` label; without a Datastore, every labelled one. Exit 1 on drift | Read-only |
+
+- **Interactive modes refuse without a TTY on stdin** (exit 2), so an agent cannot open a session
+  that waits for input. Agents use `exec` with a command, or `db -e`.
+- **`db` targets only Datastores**: Services whose image is MariaDB, Valkey or Postgres
+  (or MySQL, Redis). Any other Service fails with exit 2 before the Host is touched.
+- **Credentials stay in the container.** `hops` sends `docker exec … sh -c '<script>'`. That shell,
+  in the container, reads the credential and hands it to the client in an environment variable,
+  so it is never in an argument on this machine or in `ps` on the Host:
+
+  | Engine | Credential | Client |
+  |---|---|---|
+  | MariaDB | `MARIADB_ROOT_PASSWORD_FILE` (or `MARIADB_ROOT_PASSWORD`, and the `MYSQL_` forms) | `mariadb --user=root`, password in `MYSQL_PWD` |
+  | Valkey | `requirepass` in the `.conf` file named in the Service's `command` (else `VALKEY_PASSWORD`/`REDIS_PASSWORD`) | `valkey-cli`, password in `REDISCLI_AUTH` |
+  | Postgres | `POSTGRES_PASSWORD_FILE` or `POSTGRES_PASSWORD`; user `POSTGRES_USER` (default `postgres`), database `POSTGRES_DB` | `psql -X`, password in `PGPASSWORD` |
+
+  An SQL `-e` statement goes to the client on stdin. A Valkey `-e` runs each line as its own
+  `valkey-cli -e <args…>` (arguments split as a shell would, so quote with `'…'` or `"…"`), in
+  order, and stops at the first command that fails with its exit code; the REPL would exit 0
+  after an error. What the client prints still comes back: a query that selects a secret
+  (Valkey `CONFIG GET requirepass`, `mysql.user`) shows it.
+- **`-e` needs `--write`** unless every statement starts with `SELECT`, `SHOW`, `EXPLAIN` or
+  `DESCRIBE` (statements split on `;`), or, for Valkey, every line is a read command (`GET`,
+  `INFO`, `SCAN`, `TTL`, `CLIENT LIST`, …; not `CONFIG`). **This is a speed bump against slips,
+  not a security boundary.** It does not parse SQL: `SELECT … INTO OUTFILE`, `SELECT` of a
+  function with side effects, or Postgres `EXPLAIN ANALYZE DELETE …` all pass without `--write`.
+  Leading comments and any backslash (client commands such as `\!`, `\g`, `\copy`) need `--write`.
+- Without `--users`, output is the client's own, not JSON: MariaDB prints tab-separated rows with
+  a header, Valkey prints raw replies, `psql` prints its aligned table.
+- **`--users`** checks a MariaDB Datastore's accounts against its declared ones. The label lists
+  them as comma-separated `user@host` (the host is after the last `@` and, as MariaDB keeps it,
+  compared lowercase; the user keeps its case), e.g.
+  `homeops.db.users: "root@localhost,exporter@%"`; the comment above it says why each exists. It
+  reads `mysql.user` through the same in-container root login and reports **unexpected** users
+  (live, not declared) and **missing** ones (declared, not live). The image's own
+  `mariadb.sys@localhost` and `healthcheck@{localhost,127.0.0.1,::1}` are always ignored. Exit 0
+  when every checked Datastore matches, 1 on drift. Exit 2, before the Host is touched, for a named
+  Datastore without the label, a label that is malformed (an empty entry, no user or host,
+  whitespace, a duplicate), a labelled Service that is not MariaDB (Postgres and Valkey are out of
+  scope), `--users` with `-e` or `--write`, or no Datastore without `--users`.
+
+## Lifecycle commands
+
+These change runtime state only. Each takes one or more targets; a bare Stack name means every
+Service in it. They print the containers they act on, and names are checked before anything
+touches the Host.
+
+| Command | Class | What it does |
+|---|---|---|
+| `hops restart <target…>` | Runtime-reversible | `docker restart` |
+| `hops start <target…>` | Runtime-reversible | `docker start` on the existing containers |
+| `hops stop <target…> --for <dur> [--force]` | Disruptive | Silences the Service's alerts, then `docker stop` |
+| `hops recreate <target…>` | Runtime-reversible | doco-cd force-recreates the Service from the Stack it last deployed |
+
+**`stop`.** A stopped declared Service makes the Host differ from `main`. ContainerDown fires, and
+nothing starts the Service again until a reboot, the next Deploy of its Stack, or `hops start`. So:
+
+- `--for` is required (Prometheus duration syntax: `30m`, `2h`, `1d12h`). Before stopping, `stop`
+  runs `amtool silence add … --duration=<dur>` (as `alerts` does) once for each way an alert can
+  name the Service (`hops/silences.py`):
+  - `stack` and `service`: ContainerDown and Probes.
+  - `container` and `name`: its container name. This covers TargetDown, ProbeFailed, cAdvisor's
+    alerts, and DatastoreDown's `name`.
+  - For each static scrape target in `<stack_root>/monitoring/prometheus/prometheus.yml` that is scraped at
+    the Service's hostname, that target's `container` label (for doco-cd that is `doco-cd`, not
+    `doco-cd-doco-cd-1`).
+  - For a Datastore, the `datastore` label of its exporter's target.
+
+  It also silences alerts the stop sets off elsewhere, all derived from the repo:
+  - Services in the same Stack that `depends_on` it, directly or transitively, get the same sets
+    (stopping `vaultwarden-mariadb` silences Vaultwarden's ProbeFailed).
+  - An inhibit rule in `alertmanager/config.yml` whose source is the stopped container's own
+    ProbeFailed no longer works, because Docker SD drops a stopped container's Probe target. What
+    it inhibited is silenced instead. Stopping traefik adds `alertname="ProbeFailed"`, which
+    covers all Probes, and IdpForwardAuthFailing.
+  - The Stack's notifying rules whose labels name the Stack but no Service get `alertname` and
+    `stack` (stopping `stack-back` silences BackupStale). The Watchdog heartbeat is never
+    silenced.
+
+  `stop` prints each silence with its reason. If a silence fails, nothing is stopped. Other
+  fan-out alerts are left to the inhibit rules, because a silenced source alert still inhibits.
+- A Critical Tier Service is refused unless `--force` is passed. For a Stack, one Critical
+  Service is enough to refuse.
+- `start` does not expire the silences; they run out after `--for`. See `hops alerts`.
+
+**`recreate`** goes through doco-cd's REST API
+(`POST http://<address>/v1/api/project/<stack>/recreate?service=<service>`, with the Host's `doco_cd.address`,
+default `doco-cd:80`). `hops` never runs `docker compose` itself. The API listens only on doco-cd's networks, so
+the request is sent from a transport container on the Host's `doco_cd.network` (default `metrics`):
+
+- The transport is the first running container on that network (`monitoring/prometheus` first, then by name)
+  whose busybox has `nc -e` and `timeout`, and which is not among the Services being recreated.
+  Recreating the transport would cut the request off. If none qualifies, `recreate` refuses
+  before decrypting the key or touching any Service.
+- `sops -d <stack_root>/<doco_cd.api_secret>` (default `doco-cd/api_secret.sops.txt`) decrypts the API key on
+  this machine.
+- The whole HTTP request, key included, goes over ssh's stdin to
+  `docker exec -i <transport> sh -c …`, where busybox `nc -e` copies it to doco-cd and the
+  response back. The key is never in a process argument on either machine and never written to
+  disk on the Host. (`… | nc` would half-close the connection when stdin ends, and doco-cd
+  cancels a recreate whose client has gone away.)
+- `--timeout` (seconds, default 600) bounds each Service: `timeout` inside the transport ends the
+  request, and the ssh process is killed 30 seconds later. Either way `recreate` exits 1 and says
+  the recreate may have been interrupted; check with `hops status`.
+- Any answer other than 2xx is an error (exit 1) with doco-cd's message. doco-cd's own Service
+  (`<doco_cd.stack>/doco-cd`) is refused, because it replaces itself on its own Deploy.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. `status` returns 0 even when Services are down; read the output for problems. |
+| 1 | A Host call failed (SSH unreachable, docker error, no container). `logs` returns `docker logs`' own exit code. |
+| 2 | Usage error before any Host call: bad arguments, unknown or ambiguous name or Host, missing config, a command the Host's capabilities do not allow. Also a refusal after a read: `snapshot release` of a snapshot that is not a Rollback Snapshot, or `volume move` with a precondition that fails. |
+
+`exec` with a command and `db -e` return the remote command's own exit code. `db --users` returns 1 when
+a Datastore's users differ from its label.
+
+Errors go to stderr as `hops: error: …`, including with `--json`.
+
+## Rollback Snapshots
+
+A **Rollback Snapshot** is a ZFS snapshot taken before a risky change, through TrueNAS, on a Host with the
+`truenas` and `zfs` capabilities (elsewhere `hops snapshot` refuses, exit 2). It
+carries two ZFS user properties: `homeops:issue`, the issue or PR it serves, and `homeops:expires`,
+its release date. Each command takes `--json`; `take` and `release` take `--dry-run`, which checks
+everything and changes nothing.
+
+| Command | Class | What it does |
+|---|---|---|
+| `hops snapshot take --issue <n> [--dataset <ds>] [--expires YYYY-MM-DD \| --for <N>d\|<N>w]` | Runtime-reversible | Snapshots the dataset as `hops-<issue>-<UTC time>` (e.g. `hops-637-20261023T154705Z`) and prints its full name |
+| `hops snapshot list` | Read-only | Every Rollback Snapshot: issue, release date, size, and whether it has expired |
+| `hops snapshot release <name>` | Destructive | Destroys a Rollback Snapshot; refuses any other snapshot |
+
+- **Default dataset:** the one holding Docker's data-root (`docker info`'s DockerRootDir, made a dataset
+  through `filesystem.statfs`), where every named volume lives under `volumes/`. On TrueNAS that is
+  e.g. `<pool>/ix-apps/docker` at `/mnt/.ix-apps/docker`. The snapshot is not recursive. Bind mounts
+  elsewhere are not in it: snapshot their dataset with `--dataset`. A data-root that is not on ZFS is
+  refused (exit 2). TrueNAS hides `ix-apps` datasets from `pool.dataset.query`; `take` checks the dataset
+  exists with `zfs.resource.query`.
+- **Release date:** 7 days from today (UTC) by default; `--for 3d` or `--for 2w`, or a date with
+  `--expires`. A date already past is refused. A snapshot has **expired** once its release date is
+  earlier than today (UTC), so it can be released all of its last day. A missing or unreadable date
+  counts as expired.
+- **How the properties are set:** `pool.snapshot.create` with
+  `{"dataset", "name", "properties": {"homeops:issue": …, "homeops:expires": …}}` sets them at
+  creation, so a snapshot never exists without them. `take` then reads it back with
+  `pool.snapshot.query` and fails if they are missing. (`pool.snapshot.update` with
+  `user_properties_update` changes them later.) `take` first checks the name is free.
+- **What counts:** a snapshot whose own (`LOCAL`) `homeops:issue` or `homeops:expires` is set.
+  The name does not count, and a value inherited from a dataset does not either. So periodic-task
+  and TrueNAS system snapshots are never listed, reported or released: `release` refuses them
+  (exit 2) and deletes nothing.
+- **Listing** is one `pool.snapshot.query` over every pool, asking only for `used`,
+  `homeops:issue` and `homeops:expires` (`extra.properties`), which keeps it to about a second for
+  a hundred-odd snapshots.
+- **Size** is the snapshot's `used`: the space only it holds, which releasing it frees. It starts
+  at 0 and grows as the dataset changes.
+- **`release <name>`** takes `<dataset>@<snapshot>` as `take` and `list` print it, or the bare
+  `<snapshot>` when exactly one Rollback Snapshot has it. It calls `pool.snapshot.delete`.
+- `hops strays` reports expired Rollback Snapshots ([Strays](#strays)).
+- In code, `hops.snapshots.rollback_snapshots(client, on=None)` returns the list for any
+  `hops.truenas.Client` as `RollbackSnapshot` records (`name`, `dataset`, `issue`, `expires`,
+  `size`, `expired`; `on` is the date `expired` is judged on, default today in UTC).
+
+### `snapshot … --json`
+
+```json
+{"snapshots": [{"name": "luna/ix-apps/docker@hops-637-20261023T154705Z", "dataset": "luna/ix-apps/docker",
+                "issue": "637", "expires": "2026-10-24", "size": 0, "expired": false}]}
+```
+
+That is `snapshot list --json`. `snapshot take --json` prints `{"snapshot": <one such record>,
+"would_take": null}`; with `--dry-run`, `"snapshot": null` and `"would_take"` holds `name`,
+`dataset`, `issue` and `expires`. `snapshot release --json` prints `{"snapshot": <record>,
+"released": true}` (`false` with `--dry-run`). `size` is bytes, `null` if TrueNAS gives none.
+
+### Risky changes
+
+When the Backup lives elsewhere (for example a restic repository), do not copy data on the Host before a risky
+change (no `.bak` files, dated `pre-*` dumps or copied directories). On a `zfs` Host:
+
+1. Take a Rollback Snapshot: `hops snapshot take --issue <n>` (or `--dataset` for data outside
+   Docker's volumes). Name it in the issue or PR.
+2. Make the change and verify it. To roll back, restore from the snapshot (TrueNAS's snapshot
+   rollback or clone, or the files under the dataset's `.zfs/snapshot/<name>/`).
+3. Release it: `hops snapshot release <name>`. One left past its release date is a Stray.
+
+Where a snapshot cannot serve (data that must leave the Host, or a single file needed outside its
+dataset), record the copy in the issue or PR that made it, with a removal checkbox. The work is not
+done until it is ticked.
+
+## Renaming a volume
+
+Docker cannot rename a volume. `hops volume move` does the runtime half of a rename; the declared half is the PR changing the
+volume's `name:`.
+
+```sh
+hops volume move <old> <new> --issue <n> [--take-snapshot] [--dry-run] [--json]
+```
+
+Class: **Destructive**. It removes `<old>` and the stopped containers that reference it.
+
+**Preconditions.** It refuses (exit 2) before changing anything unless all of these hold:
+
+- Both names match Docker's `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, checked before any Host call.
+- doco-cd's container (the `<doco_cd.stack>/doco-cd` Service) is not running: on each poll, doco-cd
+  Deploys every Stack that differs from declared state, including a Stack stopped for the move.
+  Pause it with `hops stop doco-cd --for <duration> --force`. There is no override.
+- `<old>` exists. Each existing volume uses the `local` driver with no driver options (so no
+  `o=bind`), and its `Mountpoint` is `<DockerRootDir>/volumes/<name>/_data`. The volumes
+  directory comes from `docker info`.
+- Every container that mounts `<old>` is stopped (`created`, `exited` or `dead`). Each is either
+  a declared Service's container or labelled `startup-order=skip`. Any other container is left
+  to you: `hops` does not know who owns it. No container that mounts `<new>` is running.
+- `<new>` does not exist, or it is empty.
+- `<old>/_data` and `<new>/_data` are on the filesystem of the volumes directory, so `rename(2)` can
+  move them.
+- On a `truenas` and `zfs` Host, that filesystem is a ZFS dataset, and an unexpired Rollback Snapshot for
+  `--issue <n>` exists of it. The dataset is read from the move container's `/proc/self/mountinfo`, not assumed.
+  ZFS must have created the snapshot strictly after the last container on `<old>` stopped, so it
+  holds the data at rest. Both times come from the Host's clock: the snapshot's `creation` and
+  Docker's `FinishedAt`, never the time in the snapshot's name. ZFS keeps `creation` to the
+  second, so a snapshot created in the second of the stop is refused too. A snapshot taken while
+  the Stack was still running is refused. `--take-snapshot` takes one instead, released by
+  default in 7 days.
+  There is no override, because a rename moves a Stack's only live copy of its data.
+- On any other Host, the [Rollback Volume](#rollback-volumes) `hops` would create does not exist yet.
+  `--take-snapshot` is refused.
+- `<new>` should be named `<stack>_[<service>_]<purpose>` for a declared Stack. If it isn't,
+  `hops` prints a warning and goes on.
+
+**Mechanism.** `--dry-run` stops after the checks.
+
+1. If `--take-snapshot` is given, take the Rollback Snapshot. On a Host without `zfs`, create the
+   Rollback Volume and copy `<old>/_data` into it, in the move container below with `--cap-add`
+   `FSETID,MKNOD,SETFCAP,SYS_ADMIN` as well. The image's `cp` is BusyBox's, which drops xattrs, POSIX ACLs and
+   setgid bits, so the script copies with Python's own calls: every file type (device nodes and FIFOs too),
+   owners, modes, times, hard links, symlinks (never followed) and every xattr, ACLs and `trusted.*` included.
+   Holes in sparse files stay holes (`SEEK_DATA`/`SEEK_HOLE`), and 4 KiB pages of written zeros are left out
+   too, so a sparse disk image takes no more room in the copy than in `<old>`.
+   Reads that return less than asked for are read on from where they stopped; a file that ends before its
+   size fails the copy.
+   Before copying, it refuses unless the volumes filesystem, which every volume on the Host shares, has free
+   `<old>`'s allocated size plus a reserve of a tenth of it or 1 GiB, whichever is more.
+   It then walks both trees and compares each path's type, mode, owner, size, content (a hash of its non-zero
+   pages, so a hole and written zeros compare equal), mtime, device number, symlink target, xattrs and the hard
+   links between its paths. A file hard-linked only from outside the volume becomes a file with a single link in
+   the copy. Any difference, or anything it could not keep, fails the copy and names the paths. `SYS_ADMIN` is
+   there because the kernel hides `trusted.*` xattrs without it, so a lost one would look the same on both sides.
+   If the copy fails, nothing has moved and `hops` removes the partial Rollback Volume (`<old>` is intact), or
+   says to remove it if it cannot. If the copy timed out, its container may still be writing, so `hops` leaves
+   the Rollback Volume for you to remove once the container has exited.
+2. Run `docker volume create <new>`, unless the volume exists.
+3. Check the containers on both volumes, and doco-cd's, again. It stops here, before anything
+   moves, if any of them has been active since the first checks (a Deploy of the Stack, say): one
+   that is new, is running, or whose `StartedAt` or `FinishedAt` changed (it ran and exited again).
+4. Start one container that bind-mounts Docker's volumes directory once, at `/volumes`. The
+   container is
+   `docker run --rm --label startup-order=skip --log-driver none --network none --pull never
+   --read-only --user 0:0 --cap-drop ALL --cap-add CHOWN,DAC_OVERRIDE,FOWNER,FSETID,SYS_ADMIN` of the python
+   image pinned for `monitoring/dependencies-render`, the same image `logs --loki` uses.
+   Its script calls
+   `os.rename` on every top-level entry of `<old>/_data`, dotfiles included, into `<new>/_data`.
+   Then it gives `<new>/_data` all of `<old>/_data`'s metadata the way the copy does: owner, mode (setgid and
+   sticky included; `FSETID` keeps setgid on another group's directory), xattrs, access and default ACLs, and
+   times. It reads `<new>/_data` back and fails, naming the fields, unless it matches what `<old>/_data` was.
+   Each entry moves instantly within one filesystem and keeps its ownership, permissions and
+   times. A symlink is renamed, never followed. Names are passed as arguments, never through a
+   shell, so spaces and newlines are safe. An entry already in `<new>` stops the move. Before
+   the move, a read-only run of the same container checks the preconditions above.
+5. Check the containers again, the same way. If one was active during the move, it stops there,
+   exits 1 and cleans up nothing. Stop that container first, then look at both volumes.
+6. Check that `<old>/_data` is empty and `<new>/_data` holds as many top-level entries as `<old>`
+   did. With a Rollback Volume, also compare the manifest of `<new>` with the Rollback Volume's, as the copy
+   did with `<old>`'s but without content, which renames do not change, so it reads no file again; a
+   difference stops it here, before `<old>` is removed.
+7. `docker rm` (never forced) the stopped containers that reference `<old>`. Docker will not
+   remove a volume while any container references it, even a stopped one. This is runtime
+   state: the Deploy after merge recreates them with the new name, since their volume changed.
+8. Read `<old>/_data` again. If it is not empty, `hops` keeps `<old>`, exits 1 and reports how
+   many entries each volume holds. Otherwise `docker volume rm <old>`.
+9. Print the next steps.
+
+**If it fails part-way**, it stops and exits 1. The message reports how many top-level entries
+each volume holds and names the Rollback Snapshot or Rollback Volume. It never rolls anything back on its
+own.
+A failure while removing names the containers already removed. If the move container outlives
+its 600-second ssh timeout, it may still be renaming; it carries the label
+`hops.volume-move=<old>`. Look, then either finish the move by hand or restore from the snapshot
+(see [Risky changes](#risky-changes)) or the Rollback Volume.
+
+### Runbook
+
+Run moves and snapshots one at a time, never in parallel: on a `truenas` Host each opens a TrueNAS
+login, and TrueNAS rate-limits them.
+
+1. **PR:** change the volume's `name:` in every Stack that declares it, including any
+   Stack that mounts it as `external`. Keep `external: true`. If the repo's validation has an allowlist of
+   old volume names, remove the old name from it. Do not merge yet.
+2. **Pause doco-cd** for the whole window, until step 7:
+   `hops stop doco-cd --for 2h --force`. On each poll, doco-cd Deploys every Stack that differs
+   from declared state, so it would start a stopped Stack on the volume mid-move. If a Deploy may
+   still be running (a recent merge), check `hops deploys` first and wait for it to finish.
+3. **Stop** the Stack(s) for longer than the change will take:
+   `hops stop <stack> --for 1h` (with `--force` for a Critical Stack).
+4. **Snapshot** after stopping, so the snapshot is consistent (`zfs` Hosts):
+   `hops snapshot take --issue <n> --for 1w`. Or pass `--take-snapshot` in the next step. Other Hosts
+   skip this: the move keeps a Rollback Volume.
+5. **Move:** run `hops volume move <old> <new> --issue <n> --dry-run`, then run it again without
+   `--dry-run`. It refuses while doco-cd runs.
+6. **Merge** the PR.
+7. **Start doco-cd:** `hops start doco-cd`. It polls at once and Deploys the merge, which
+   recreates the Stack's containers on `<new>` (`hops deploys <stack>` shows the run).
+8. **Verify:** `hops status <stack>`, and check that the Stack works as before. Check that every
+   container mounts the new volume names (`docker inspect`'s `Mounts`), and `hops recreate` any
+   Service still on an old one. A volume renamed without a move (a regenerable one) is exposed to
+   this: its Service's config hash does not change, so the Deploy keeps the old container and its
+   mount. A moved volume is safe, because `volume move` removes the containers on `<old>`.
+9. **Release** the snapshot: `hops snapshot release <name>`. A Rollback Volume is released by date: after
+   it, `hops strays --apply --volumes` removes it, or `docker volume rm` it once the change is verified.
+
+### `volume move --json`
+
+```json
+{"old": "home_mariadb_data", "new": "nextcloud_mariadb_data", "issue": "638",
+ "dataset": "luna/ix-apps/docker", "entries": 4,
+ "snapshot": {"name": "luna/ix-apps/docker@hops-638-20261023T160541Z", "…": "…"}, "would_take": null,
+ "rollback_volume": null, "created_new": true,
+ "containers": [{"container": "mariadb", "id": "…", "state": "exited", "service": "nextcloud/mariadb",
+                 "deliberate": false}],
+ "warnings": [], "dry_run": false, "moved": true}
+```
+
+`snapshot` is a record as in [`snapshot … --json`](#snapshot----json). With `--dry-run` and
+`--take-snapshot`, `snapshot` is `null` and `would_take` holds what would be taken. `entries` is
+how many top-level entries `<old>` held. `containers` are the stopped containers that reference
+`<old>`, which the move removes. Their `service` is the declared Service, or `null`. `moved` is
+`false` with `--dry-run`. On a Host without `zfs`, `dataset`, `snapshot` and `would_take` are `null` and
+`rollback_volume` is `{"name", "of", "issue", "expires"}` (also with `--dry-run`, for the one it would
+create).
+
+## Rollback Volumes
+
+A **Rollback Volume** is what `volume move` keeps on a Host without `zfs`, where no Rollback Snapshot can be
+taken: a copy of `<old>` made just before the move, named `<old>.rollback-<issue>-<UTC time>` (e.g.
+`app_data.rollback-638-20261023T160541Z`). It is not a Backup. Its labels say what it is:
+
+| Label | Value |
+|---|---|
+| `hops.rollback.issue` | the `--issue` of the move |
+| `hops.rollback.of` | the volume it copies |
+| `hops.rollback.expires` | its release date, 7 days after the move (UTC) |
+
+Until its release date, `hops strays` does not list it. After that (or with a missing or unreadable date) it is
+a Stray volume that `hops strays --apply --volumes` removes. To roll back, copy its `_data` back into the
+volume the Stack uses, with the Stack stopped.
+
+## JSON output
+
+`--json` prints one JSON document to stdout (`logs --json` cannot be combined with `-f`). The
+fields below are stable. New fields may be added, but existing fields are not renamed or removed
+without a note here. A field is `null` when the value is unknown or does not apply.
+
+### `status --json`
+
+```json
+{
+  "services": [
+    {
+      "stack": "nextcloud",
+      "service": "mariadb",
+      "tier": "critical",
+      "container": "nextcloud-mariadb",
+      "state": "running",
+      "health": "healthy",
+      "restart_count": 0,
+      "declared_image": "mariadb:11.8.9@sha256:…",
+      "running_image": "mariadb:11.8.9@sha256:…",
+      "digest_drift": false
+    }
+  ],
+  "undeclared": [
+    {"container": "adhoc", "image": "alpine:3", "state": "running", "stack": null, "service": null}
+  ]
+}
+```
+
+- `services`: one entry for each declared Service, or each target, in Stack then Service order.
+- `state`: Docker's state (`running`, `exited`, `restarting`, `paused`, `created`, `dead`), or
+  `missing` when no container exists.
+- `health`: `healthy`, `unhealthy`, `starting`, or `null` when there is no healthcheck or no
+  container.
+- `container`: the running container, or else the newest one. When the Service has none, this is
+  the name Compose would give it.
+- `digest_drift`: `true` when the container's digest differs from the repo's pin, `false` when
+  they match, and `null` when either side has no digest.
+- `undeclared`: running containers whose Compose labels match no declared Service (TrueNAS Apps,
+  Compose projects named `ix-…`, are left out). `stack` and
+  `service` hold their Compose project and service labels, if any. This is empty when targets are
+  given. It is a hint only; Stray handling is `hops strays`.
+
+### `inspect --json`
+
+```json
+{
+  "stack": "nextcloud", "service": "mariadb", "container": "nextcloud-mariadb",
+  "image": "mariadb:11.8.9@sha256:…", "state": "running", "health": "healthy",
+  "started_at": "2026-10-21T20:00:00.000000000Z", "exit_code": 0, "oom_killed": false,
+  "restart_count": 0,
+  "memory": {"usage_bytes": 536870912, "limit_bytes": 1610612736, "percent": 33.3},
+  "health_log": [{"start": "…", "end": "…", "exit_code": 0, "output": ""}]
+}
+```
+
+`memory` is `null` when the container is not running. `limit_bytes` and `percent` are `null` when
+there is no memory limit.
+
+### `logs --json`
+
+```json
+{
+  "stack": "edge", "service": "traefik", "container": "traefik",
+  "lines": [{"time": "2026-10-21T21:00:00.000000001Z", "stream": "stdout", "text": "…"}]
+}
+```
+
+`lines` merges stdout and stderr in time order (`docker logs --timestamps`).
+
+### `logs --loki --json`
+
+```json
+{
+  "stack": "doco-cd", "service": "doco-cd", "container": null,
+  "query": "{container=~\"doco-cd-doco-cd-[0-9]+\", logstream=~\"stdout|stderr\"}",
+  "truncated": false,
+  "lines": [
+    {"time": "2026-10-18T00:01:20.526870147Z", "stream": "stderr", "text": "…",
+     "labels": {"container": "doco-cd-doco-cd-6", "logstream": "stderr", "service": "doco-cd",
+                "stack": "doco-cd", "tier": "warning", "…": "…"}}
+  ]
+}
+```
+
+The shape of `logs --json`, plus `query` (the LogQL sent), `truncated` (stopped at `--limit`;
+Loki may hold more) and each line's Loki stream `labels`. `service` is `null` for a Stack with
+several Services, `container` is the `container_name` (else `null`), and all three are `null` with
+`--query`. `stream` is the `logstream` label.
+
+### `alerts --json`
+
+```json
+{
+  "alerts": [
+    {
+      "labels": {"alertname": "ContainerDown", "stack": "nextcloud", "tier": "critical"},
+      "annotations": {"summary": "…"},
+      "state": "active",
+      "starts_at": "…",
+      "silenced_by": [],
+      "inhibited_by": []
+    }
+  ],
+  "silences": [
+    {
+      "id": "…", "state": "active", "matchers": ["stack=~\"plex|emby\""],
+      "starts_at": "…", "ends_at": "…", "created_by": "…", "comment": "…"
+    }
+  ]
+}
+```
+
+`state` is `active` or `suppressed` (silenced or inhibited). `matchers` use amtool's syntax.
+
+### `deploys --json`
+
+```json
+{
+  "runs": [
+    {
+      "job_id": "01a160a4-3901-7c7d-b694-0570e23af5f6", "trigger": "poll", "status": "failed",
+      "repository": "github.com/jbruns/home-ops", "revision": "main",
+      "stacks": ["navidrome", "ownfoil"],
+      "message": "deployment failed: failed to deploy stack ownfoil: …",
+      "created_at": "2026-10-21T15:45:37.666093522-07:00",
+      "started_at": "…", "finished_at": "…"
+    }
+  ]
+}
+```
+
+`deploys <run-id> --json` prints one such run, not wrapped in `runs`. `trigger` is `webhook`,
+`poll`, `scheduled_job` or `mirror_compaction`; `status` is `accepted`, `running`, `succeeded`,
+`failed` or `skipped`. Timestamps are doco-cd's, with its UTC offset. `started_at` and
+`finished_at` are `null` until the run starts or ends.
+
+### `host --json`
+
+```json
+{
+  "pools": [
+    {"name": "luna", "status": "ONLINE", "healthy": true, "size_bytes": 3831110828032,
+     "allocated_bytes": 588037693440, "free_bytes": 3243073134592, "used_percent": 15.3}
+  ],
+  "datasets": [
+    {"name": "luna/ix-apps/docker", "roles": ["docker"], "mountpoint": "/mnt/.ix-apps/docker",
+     "used_bytes": 587504427008, "available_bytes": 3123889569792, "snapshots_bytes": 40587001856,
+     "quota_bytes": null}
+  ],
+  "docker": [
+    {"type": "images", "total": 107, "active": 50, "size": "61.48GB", "size_bytes": 61480000000,
+     "reclaimable": "36.53GB (59%)", "reclaimable_bytes": 36530000000, "reclaimable_percent": 59}
+  ],
+  "rollback_snapshots": {
+    "count": 2, "size_bytes": 4294967296,
+    "expired": [
+      {"name": "luna/ix-apps/docker@hops-637-20261015T120000Z", "dataset": "luna/ix-apps/docker",
+       "issue": "637", "expires": "2026-10-22", "size": 3221225472, "expired": true}
+    ]
+  },
+  "tasks": [
+    {"kind": "cloudsync", "id": 3, "name": "…", "source": "/mnt/andromeda/docker-backups", "enabled": true,
+     "last_run": {"state": "SUCCESS", "started_at": "2026-10-23T11:00:01Z", "finished_at": "2026-10-23T11:00:23Z"}}
+  ],
+  "notes": []
+}
+```
+
+- `pools`, `datasets`, `rollback_snapshots` and `tasks` are `null` without TrueNAS (`rollback_snapshots` also
+  without `zfs`); `notes` then says why. `notes` also
+  explains anything skipped (a configured dataset that does not exist, no stack-back container, a
+  TrueNAS read that failed, which leaves its section `null`).
+- `roles`: `docker`, `restic` and/or `configured`. `quota_bytes` is `null` when there is no quota.
+- `docker`: one entry per `docker system df` type: `images`, `containers`, `volumes`,
+  `build_cache`. `size` and `reclaimable` are Docker's own text (decimal units); `*_bytes` parse
+  it, so they are rounded. `reclaimable_percent` is `null` when Docker prints none.
+- `rollback_snapshots`: `size_bytes` sums each snapshot's `used`; `expired` lists those past their
+  release date, each as in [`snapshot list --json`](#rollback-snapshots).
+- `tasks`: `kind` is `snapshot` (periodic snapshot task: `name` is its naming schema, `source` its
+  dataset) or `cloudsync` (`name` is its description, `source` its path). `last_run` is `null`
+  before the first run. Its `state` is TrueNAS's, e.g. `FINISHED`, `RUNNING`, `PENDING` or `ERROR`
+  for snapshot tasks and `SUCCESS`, `RUNNING`, `FAILED` or `ABORTED` for Cloud Sync. A snapshot task
+  records one time: `started_at` while `RUNNING`, else `finished_at`. Times are UTC.
+
+### `db --users --json`
+
+```json
+{
+  "datastores": [
+    {
+      "stack": "vaultwarden", "service": "mariadb", "container": "vaultwarden-mariadb",
+      "declared": ["root@localhost", "exporter@%", "vaultwardenuser@%"],
+      "live": ["exporter@%", "healthcheck@127.0.0.1", "…", "root@%", "root@localhost", "vaultwardenuser@%"],
+      "unexpected": ["root@%"],
+      "missing": []
+    }
+  ],
+  "drift": true
+}
+```
+
+- `datastores`: one entry for each checked Datastore, in Stack then Service order.
+- `declared`: the label's entries, in its order, hosts lowercased. `live`: every `user@host` in
+  `mysql.user` (read as hex and decoded as UTF-8, else Latin-1, so no client escaping), sorted, the
+  ignored system accounts included.
+- `unexpected`, `missing`: the drift, sorted, without the ignored system accounts.
+- `drift`: `true` when any Datastore has unexpected or missing users (the exit code is then 1).
+
+## Strays
+
+`hops strays` lists the **Strays** on the Host: containers, images, volumes and networks
+that no Stack declares or uses, and Rollback Snapshots and Rollback Volumes past their release date. It is read-only
+unless given `--apply`, and takes `--json`. The rule:
+**when ownership is unknown, a Stray is listed, marked `kept`, and never removed.**
+
+| Command | Effect |
+|---|---|
+| `hops strays` | Lists Strays against **this checkout**, and says so. Changes nothing. |
+| `hops strays --apply` | Fetches `origin/<default_branch>` and classifies against it. Removes Stray containers, then images, then networks. Never volumes. |
+| `hops strays --apply --volumes` | Also removes Stray volumes, the only Strays that can hold data. |
+
+`--apply` reads declared state only from `origin/<default_branch>` (`hosts.yaml`, default `main`), never from
+the working tree, so a missing or partial stack root cannot make a Stack's data deletable. It fetches with an
+explicit refspec (`+refs/heads/<branch>:refs/remotes/origin/<branch>`, whatever `remote.origin.fetch` says), pins the
+fetched commit, prints its SHA, and unpacks that commit's Stack root under the git directory. It
+refuses when that commit declares no Services.
+
+What counts as a Stray:
+
+- **Container:** its `com.docker.compose.project`/`service` labels match no declared Service, and
+  its name is no declared Service's container name. A container deployed under another (legacy) Compose
+  project with a declared `container_name` is kept, with everything it uses. `--apply` removes only `created`, `exited` and `dead` containers, without
+  force; `running`, `paused` and `restarting` ones are kept. Containers labelled `startup-order=skip`
+  (deliberate `docker run`s, such as runbook helpers) are marked `deliberate` and otherwise treated
+  like any other Stray.
+- **Image:** used by no container except Strays that `--apply` removes. An image used by a stopped
+  declared container is in use. These are mostly images earlier Deploys and one-off runs left
+  behind; Docker pulls any of them again when something needs it. `--apply` removes an image only
+  by its ID, never by tag, and without force. An image with several tags is `kept` ("multiple
+  tags, remove manually", with its tags): Docker removes one only by force or tag by tag, and a
+  concurrent pull can move a tag. The same holds when Docker refuses an ID because it gained tags
+  after the list was read; that is not a failure.
+- **Volume:** not owned by a declared Stack or by the Compose project of a kept container, not named
+  by a Stack (a top-level `volumes:` entry, by `name:` or Compose's `<stack>_<key>`), and not
+  mounted by a kept container. A Stack's volume is never a Stray, even while nothing mounts it.
+  Only **anonymous volumes without a Compose project label** that nothing references are removed,
+  such as those Docker keeps after `compose down` (Compose 2.38 does not label them with the project). One that a Stray container mounts, even one this run removes, is `kept` until a
+  later run finds nothing referencing it. A volume labelled with an unmatched Compose project, or a
+  named volume with no labels, is listed with `kept`: its ownership is unknown. `--volumes` refuses
+  to run while a declared volume name uses a variable, since `hops` cannot tell which volume it
+  means. A [Rollback Volume](#rollback-volumes) is no Stray until its release date; after it, it is listed
+  with its `rollback` details and is not `kept`, so `--volumes` removes it.
+- **Network:** not owned or named by a declared Stack in the same way, not used by a kept
+  container, and not one of Docker's defaults (`bridge`, `host`, `none`). Networks hold no data.
+- **Rollback Snapshot:** one that has expired (see [Rollback Snapshots](#rollback-snapshots)).
+  `--apply` never releases it; `hops snapshot release` does, once its change is verified. A
+  snapshot without its own `homeops:` properties is never reported. On a Host without the `truenas` and
+  `zfs` capabilities, `strays` lists the rest and says the snapshots were not checked. If TrueNAS fails, it lists the
+  rest, prints the error, and exits 1.
+- **Never Strays:** on a `truenas` Host, TrueNAS Apps' resources (Compose projects or names starting `ix-`).
+  Build cache is out of scope.
+
+A container under an unmatched Compose project is a Stray, not unknown: doco-cd is the only thing
+that deploys Stacks on a Host, so such a project is a Stack that was renamed or removed. Its volumes stay `kept` all the same.
+
+Removal is per item and never forced: Docker refuses to remove anything that something started
+using since the list was read. A failed or skipped removal is reported on stderr, the rest
+continue, and the exit code is 1.
+
+### `strays --json`
+
+```json
+{
+  "declared_from": "checkout",
+  "containers": [
+    {"container": "helper", "id": "…", "image": "alpine:3", "state": "exited", "stack": null,
+     "service": null, "deliberate": true, "kept": null, "removed": null}
+  ],
+  "images": [
+    {"id": "sha256:…", "repository": "traefik", "refs": ["traefik:v3.6.15"], "size": "188MB",
+     "created": "2026-04-29 16:18:27 -0700 PDT", "kept": null, "removed": null}
+  ],
+  "volumes": [
+    {"volume": "retired_data", "stack": "retired", "anonymous": false,
+     "kept": "Compose project retired is no declared Stack: ownership unknown", "removed": null}
+  ],
+  "networks": [{"network": "retired_default", "id": "…", "stack": "retired", "kept": null, "removed": null}],
+  "snapshots": [
+    {"snapshot": "luna/ix-apps/docker@hops-637-20261023T154705Z", "dataset": "luna/ix-apps/docker",
+     "issue": "637", "expires": "2026-10-22", "size": 2813952,
+     "kept": "released only with hops snapshot release, once its change is verified", "removed": null}
+  ],
+  "snapshots_unchecked": null
+}
+```
+
+- `declared_from`: `checkout`, or `origin/<default_branch>@<full commit SHA>` with `--apply`.
+- `rollback` (volumes only, when it is an expired Rollback Volume): `{"of", "issue", "expires"}`.
+- `stack`, `service`: the Compose project and service labels, if any.
+- `deliberate`: the container carries `startup-order=skip`.
+- `kept`: why `--apply` leaves this Stray (its state, unknown ownership, a Stray mounting it, or an
+  image's several tags), or `null`.
+- `refs`: the image's tags.
+- `removed`: `true` or `false` after an `--apply` that tried it, else `null`.
+- `snapshots`: expired Rollback Snapshots; `size` is bytes (`used`). `null` when they were not
+  checked, and then `snapshots_unchecked` says why (no `truenas`/`zfs` capability, or TrueNAS's error).
+
+## `bump`: pin a newer image through a PR
+
+```sh
+hops bump <service> [<tag>] [--pr] [--trailer "Co-authored-by: …"]
+```
+
+A manual Renovate for one Service, for when Renovate's minimum release age is too long. It is
+Repo-changing: it edits the repo, never the Host, and the change deploys only after its PR
+merges.
+
+- **Tag:** `<tag>` as given, or the newest tag shaped like the current one: same `v` prefix,
+  number of version parts and variant suffix (`-alpine`). Pre-releases (`-rc.1`) never qualify.
+  This is the rule homelab-components' Canary uses. A tag that is not a version (`latest`,
+  `supervised-1.4.27`) has no candidates; name the tag. A candidate more than one major version
+  ahead of the pin is refused before anything is created: registries carry stray tags (one image
+  has a 2021 `20.04.1` beside `5.2.4`). `bump` names the rejected tag and the newest acceptable
+  one; pass the tag you want explicitly. An explicit tag skips this check.
+- **Image digest:** the registry's index (multi-arch) digest, else the manifest digest, exactly what
+  Renovate pins (`docker:pinDigests`), so Renovate's next run sees no diff. Anonymous registry v2
+  calls; Docker Hub, GHCR, lscr.io and other Bearer-token registries work.
+- **Git:** fetches `origin <default_branch>` (`hosts.yaml`, default `main`) and works from
+  `origin/<default_branch>`, whatever branch you are on: the
+  Service and its current pin are read from that tree, and the branch starts there, so the PR
+  holds only the bump. It still refuses a checkout with uncommitted or untracked changes, because
+  those would silently not be in the bump. Creates branch
+  `hops/bump-<service>-<tag>` from `origin/<default_branch>` in a new worktree
+  `.worktrees/bump-<service>-<tag>` of the main checkout, rewrites every `image:` line in the Service's
+  Stack (under the Host's stack root) that pins the same reference (so `nextcloud` and `nextcloud-cron`
+  move together; other Stacks that pin it need their own bump), runs the repo's `hosts.yaml` `validate`
+  command there (a leading `python`/`python3` runs as hops's own interpreter), and commits. If validation
+  fails, the edit stays uncommitted in the worktree. Without `validate`, `bump` says so on stderr, commits,
+  and the PR body says "Not validated". The checkout you run from is not modified. To retry,
+  discard the worktree and branch: `git worktree remove --force <dir>; git branch -D <branch>`.
+- **`--pr`:** pushes the branch and runs `gh pr create --base <default_branch> --body-file -`. Without it
+  nothing is pushed; `hops` prints how to push or discard the worktree.
+- **Renovate:** if Renovate has an open PR for the same image, `bump` warns, continues, and the
+  PR body says "Supersedes #N". Renovate closes its own PR once the default branch has that version or newer.
+- **Agents:** pass the co-author line with `--trailer` (repeatable; it goes to
+  `git commit --trailer`), e.g.
+  `--trailer "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"`.
+
+Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-record them, see
+`tests/hops_registry_fixtures.py`.
+
+## Adding a command
+
+- One module in `hops/commands/` per command. It exposes `register(subparsers)`, which adds a
+  parser and calls `set_defaults(func=run)`, where `run(args, ctx) -> int`. A command with
+  subcommands (`truenas`, `snapshot`) sets a `run` function on each. Modules are found
+  automatically.
+- `ctx.host` is the selected `homelab_hosts.Host` and `ctx.hosts` the whole `hosts.yaml`. Gate a Host-specific
+  feature with `ctx.require("truenas", "zfs", what="hops …")` (a UsageError naming the missing capability,
+  before anything touches the Host) or branch on `ctx.has(...)`. Never assume a Host, stack root or capability.
+- `ctx.declared` (`hops.declared.Declared`) resolves names with `resolve(names)` or
+  `resolve_one(name)`. Each `Service` has `tier`, `image` (repository, tag, digest), `container`
+  and `datastore`.
+- `ctx.runner` (`hops.runner.Runner`) is the only way to reach the Host. `docker(*args)`
+  captures output. `pipeline(*commands)` pipes docker commands into each other on the Host,
+  under `bash -c 'set -o pipefail; …'`, so it fails if any command fails.
+  `attach(*args, tty=)` connects the terminal; interactive modes first call
+  `hops.terminal.require_tty(what)`. `hops.docker` reads containers, and
+  `hops.alertmanager.amtool` runs amtool.
+- `ctx.truenas` (`hops.truenas.Client`) is the only way to reach TrueNAS; the connection, login,
+  errors and redaction stay in `hops/truenas.py`. A feature's TrueNAS calls live in its own module
+  that takes the client (`hops/snapshots.py`), so other commands can reuse them. `call(method, *params)` returns the result;
+  `job(method, *params)` calls a method that starts a job and waits for the job's result (polling
+  `core.get_jobs`). Errors raise `hops.truenas.TrueNASError` with its `errname` (e.g. `EACCES`).
+  `truenas.redact(data, method)` masks credentials before printing. To show part of a TrueNAS
+  object, build the record from named fields, as `hops/hygiene.py` does, rather than filtering it. On a Host
+  without the `truenas` capability, using `ctx.truenas` raises a ConfigError; on one with it, a missing TrueNAS
+  key already fails `ctx.runner` too.
+- Raise `hops.errors.UsageError` for bad input (exit 2) and `HopsError` for failures (exit 1).
+
+## Test
+
+```sh
+cd repo-tools/hops
+uv venv .venv && uv pip install --python .venv/bin/python -e . pytest
+.venv/bin/pytest                              # fake Hosts, plus local Docker if there is one; runs in CI
+HOPS_CONSUMER_REPO=~/src/<repo> .venv/bin/pytest tests/test_hops_consumer_silences.py   # stop's silences, a real repo
+HOPS_CONSUMER_REPO=~/src/<repo> HOPS_CONSUMER_HOST=<host> .venv/bin/pytest -m live       # read-only, a real Host
+```
+
+The `fake_host` fixture (`tests/conftest.py`) replaces the ssh process. It records each argv and
+answers with canned `docker` output. The `hops` fixture runs the CLI against a fixture repo.
+`hops_fakes.FakeTrueNAS` stands in for the TrueNAS WebSocket: pass its `connect` to
+`truenas.Client(..., connect=)` and its `methods` answer each JSON-RPC call.
+`hops_fakes.FakeSnapshots` builds on it with an in-memory set of snapshots; pass its `client` as
+`hops(..., truenas=)`. Tests fix today's date by patching `hops.snapshots.now`. The fixture repo declares
+one Host, `truenas` (stack root `tn`, capabilities `truenas` and `zfs`); `hops_fakes.hosts_yaml()` and the
+`plain_host` fixture give other `hosts.yaml`s, e.g. a Host with no capabilities or two Hosts. `test_hops_consumer_silences.py` derives `stop`'s silences from a
+consuming repo's monitoring config: `tests/fixtures/consumer` by default, or `HOPS_CONSUMER_REPO`. The `live`
+suite is skipped unless selected with `-m live`; it reaches the Host of `HOPS_CONSUMER_REPO` (Host
+`HOPS_CONSUMER_HOST`, else its only one) and must only ever read. `test_hops_volume_copy_docker.py` (marker
+`docker`) runs the Rollback Volume copy, the move and its check against the Rollback Volume in a real python
+Alpine container against Docker volumes holding ACLs (on the root too), xattrs, device nodes, a sparse file and
+setuid/setgid files; it is skipped when no Docker daemon answers.

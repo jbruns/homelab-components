@@ -1,0 +1,9 @@
+services:
+  traefik:
+    image: traefik:v3.6.15
+    container_name: traefik
+    labels: {tier: critical}
+  crowdsec:
+    image: crowdsecurity/crowdsec:v1.7.0
+    container_name: crowdsec
+    labels: {tier: critical}
