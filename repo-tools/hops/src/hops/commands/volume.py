@@ -13,7 +13,8 @@ part-way it stops, reports both volumes' state, and rolls nothing back.
 import re
 from datetime import UTC, datetime
 
-from hops import docker, doco, output, rollback_volumes, snapshots, strays, volumes
+from hops import docker, doco, loki, output, rollback_volumes, snapshots, strays, volumes
+from hops.declared import MONITORING
 from hops.errors import ConfigError, HopsError, HostTimeout, UsageError
 
 # Docker's FinishedAt: RFC 3339 in UTC, to the nanosecond.
@@ -46,6 +47,13 @@ def register(subparsers) -> None:
         action="store_true",
         help="take the Rollback Snapshot now (released by default in "
         f"{snapshots.DEFAULT_DAYS} days) instead of requiring one; needs a truenas and zfs Host",
+    )
+    mv.add_argument(
+        "--image",
+        metavar="REF",
+        help="run the copier in this digest-pinned image (name:tag@sha256:...) with python3, already on the Host "
+        f"(never pulled); default: the image pinned for {MONITORING}/{loki.TRANSPORT}, which a Host whose "
+        f"{MONITORING} Stack is not declared yet lacks",
     )
     mv.add_argument("--dry-run", action="store_true", help="check every precondition and change nothing")
     output.add_json_flag(mv)
@@ -283,7 +291,7 @@ def run_move(args, ctx) -> int:
     zfs = ctx.has("truenas", "zfs")
     if args.take_snapshot:
         ctx.require("truenas", "zfs", what="--take-snapshot (a Rollback Snapshot)")
-    image = volumes.image(ctx.declared, ctx.host.name)
+    image = volumes.image(ctx.declared, ctx.host.name, args.image)
     warnings = [w for w in [volumes.convention(ctx.declared, new)] if w]
     for w in warnings:
         ctx.stderr.write(f"hops: warning: {w}\n")
@@ -328,6 +336,7 @@ def run_move(args, ctx) -> int:
         "new": new,
         "issue": args.issue,
         "dataset": dataset,
+        "image": image,
         "entries": probe.old["entries"],
         "snapshot": None,
         "would_take": None,

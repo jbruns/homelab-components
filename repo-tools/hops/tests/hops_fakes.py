@@ -35,6 +35,12 @@ HOSTS_YAML = """
 """
 
 
+def undeclare_monitoring(repo: Path) -> None:
+    """Mid-cutover: the fixture's monitoring Stack becomes a legacy docker-compose.yaml group that no compose.yaml
+    declares, its prometheus and alertmanager config files still in place."""
+    (repo / "tn" / "monitoring" / "compose.yaml").rename(repo / "tn" / "monitoring" / "docker-compose.yaml")
+
+
 def hosts_yaml(*, capabilities="[truenas, zfs]", extra="") -> str:
     """HOSTS_YAML with Host truenas's capabilities replaced and `extra` (indented YAML) appended."""
     return HOSTS_YAML.replace("[truenas, zfs]", capabilities) + extra

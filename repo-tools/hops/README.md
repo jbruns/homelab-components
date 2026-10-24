@@ -14,7 +14,7 @@ doco-cd deploys after merge. `hops` never runs `docker compose`.
 ## Install
 
 ```sh
-uv tool install "git+https://github.com/jbruns/homelab-components@hops-v1.0.0#subdirectory=repo-tools/hops"
+uv tool install "git+https://github.com/jbruns/homelab-components@hops-v1.1.0#subdirectory=repo-tools/hops"
 hops --help
 ```
 
@@ -117,7 +117,19 @@ without them simply cannot use that command:
   `logs --loki` and `volume move` run the python image pinned for its `dependencies-render` Service, and
   `logs --loki` reaches Loki on the `monitoring_default` network. A Host that does not declare one of these
   Services fails such a command before it touches the Host (exit 2): `Host 'X' declares no alertmanager in its
-  monitoring Stack`.
+  monitoring Stack`. The exceptions are for a Host whose monitoring is not declared yet (below): `stop` and
+  `volume move` still work there.
+- **Hosts mid-cutover.** A Host whose `monitoring` is still a legacy group (a `docker-compose.yaml` that
+  doco-cd does not deploy, with no `compose.yaml`) declares no `monitoring` Stack. If no other Stack declares a
+  Service named `prometheus` or `alertmanager` either, `stop --for` stops the Services without silences and warns
+  on stderr that alerts may fire, and `volume move` needs `--image` (see [Renaming a volume](#renaming-a-volume)).
+  `start`, `restart`, `recreate`, `status`, `strays`, `deploys` and the rest of `volume move` do not use the
+  monitoring Stack. `status` and `strays` list the legacy monitoring containers as undeclared, as they do for any
+  legacy group: `strays --apply` keeps the running ones and removes a stopped one. `alerts` and `logs --loki`
+  need the monitoring Stack and keep failing until the cutover. Any other shape fails closed, and `stop --for`
+  fails as before (exit 2, `declares no … in its monitoring Stack`): a `monitoring/compose.yaml` that parses to
+  no Services (empty, `services: {}`, a misspelt key), one that lacks `prometheus` or `alertmanager` (renamed
+  Services, only one declared), or either one declared in another Stack.
 - **Critical Tier:** a Service's `tier: critical` label, which `stop` refuses without `--force`.
 - **`homeops.db.users`:** the label `db --users` compares MariaDB users with.
 - **`startup-order=skip`:** the label on deliberate `docker run`s; `hops` puts it on its own.
@@ -324,7 +336,7 @@ touches the Host.
 |---|---|---|
 | `hops restart <target…>` | Runtime-reversible | `docker restart` |
 | `hops start <target…>` | Runtime-reversible | `docker start` on the existing containers |
-| `hops stop <target…> --for <dur> [--force]` | Disruptive | Silences the Service's alerts, then `docker stop` |
+| `hops stop <target…> --for <dur> [--force]` | Disruptive | Silences the Service's alerts, then `docker stop` (without silences on a Host whose monitoring is not declared yet) |
 | `hops recreate <target…>` | Runtime-reversible | doco-cd force-recreates the Service from the Stack it last deployed |
 
 **`stop`.** A stopped declared Service makes the Host differ from `main`. ContainerDown fires, and
@@ -354,6 +366,12 @@ nothing starts the Service again until a reboot, the next Deploy of its Stack, o
 
   `stop` prints each silence with its reason. If a silence fails, nothing is stopped. Other
   fan-out alerts are left to the inhibit rules, because a silenced source alert still inhibits.
+- On a Host that declares no `monitoring` Stack and no `prometheus` or `alertmanager` Service in any Stack
+  ([mid-cutover](#conventions)),
+  there is no declared Alertmanager to silence through. `stop` still requires `--for`, creates no silences, runs
+  no `amtool`, and prints `hops: warning: no silences were created: … so alerts may fire …` on stderr before
+  stopping. Silence the legacy Alertmanager by hand if its alerts matter. There is no flag to skip silences on a
+  Host that declares them.
 - A Critical Tier Service is refused unless `--force` is passed. For a Stack, one Critical
   Service is enough to refuse.
 - `start` does not expire the silences; they run out after `--for`. See `hops alerts`.
@@ -471,8 +489,17 @@ Docker cannot rename a volume. `hops volume move` does the runtime half of a ren
 volume's `name:`.
 
 ```sh
-hops volume move <old> <new> --issue <n> [--take-snapshot] [--dry-run] [--json]
+hops volume move <old> <new> --issue <n> [--take-snapshot] [--image REF] [--dry-run] [--json]
 ```
+
+**Image.** The move runs a python script in a throwaway container. By default its image is the one pinned for
+`monitoring/dependencies-render`, the same image `logs --loki` uses. `--image REF` names another, for a Host
+whose monitoring Stack is not declared yet ([mid-cutover](#conventions)), where there is no default and the
+move refuses (exit 2) naming `--image`. `REF` must be pinned by digest (`name:tag@sha256:<64 hex>` or
+`name@sha256:<64 hex>`; anything else is refused before any Host call) and have `python3` on its `PATH`, such
+as `python:3.13-alpine@sha256:…`. Either image is run with `--pull never`, so it must already be on the Host:
+a missing one fails the first (read-only) check, before anything changes, with `pull it on the Host first:
+docker pull <REF>`. An image without `python3` fails there too, saying so.
 
 Class: **Destructive**. It removes `<old>` and the stopped containers that reference it.
 
@@ -533,8 +560,8 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
 4. Start one container that bind-mounts Docker's volumes directory once, at `/volumes`. The
    container is
    `docker run --rm --label startup-order=skip --log-driver none --network none --pull never
-   --read-only --user 0:0 --cap-drop ALL --cap-add CHOWN,DAC_OVERRIDE,FOWNER,FSETID,SYS_ADMIN` of the python
-   image pinned for `monitoring/dependencies-render`, the same image `logs --loki` uses.
+   --read-only --user 0:0 --cap-drop ALL --cap-add CHOWN,DAC_OVERRIDE,FOWNER,FSETID,SYS_ADMIN` of the
+   [image](#renaming-a-volume) (`--image`, else the one pinned for `monitoring/dependencies-render`).
    Its script calls
    `os.rename` on every top-level entry of `<old>/_data`, dotfiles included, into `<new>/_data`.
    Then it gives `<new>/_data` all of `<old>/_data`'s metadata the way the copy does: owner, mode (setgid and
@@ -599,7 +626,7 @@ login, and TrueNAS rate-limits them.
 
 ```json
 {"old": "home_mariadb_data", "new": "nextcloud_mariadb_data", "issue": "638",
- "dataset": "luna/ix-apps/docker", "entries": 4,
+ "dataset": "luna/ix-apps/docker", "image": "python:3.14.8-alpine3.24@sha256:…", "entries": 4,
  "snapshot": {"name": "luna/ix-apps/docker@hops-638-20261023T160541Z", "…": "…"}, "would_take": null,
  "rollback_volume": null, "created_new": true,
  "containers": [{"container": "mariadb", "id": "…", "state": "exited", "service": "nextcloud/mariadb",
@@ -608,7 +635,8 @@ login, and TrueNAS rate-limits them.
 ```
 
 `snapshot` is a record as in [`snapshot … --json`](#snapshot----json). With `--dry-run` and
-`--take-snapshot`, `snapshot` is `null` and `would_take` holds what would be taken. `entries` is
+`--take-snapshot`, `snapshot` is `null` and `would_take` holds what would be taken. `image` is the one the move
+container ran (`--image`, or the default). `entries` is
 how many top-level entries `<old>` held. `containers` are the stopped containers that reference
 `<old>`, which the move removes. Their `service` is the declared Service, or `null`. `moved` is
 `false` with `--dry-run`. On a Host without `zfs`, `dataset`, `snapshot` and `would_take` are `null` and

@@ -9,6 +9,7 @@ import json
 import re
 
 from hops import alertmanager, lifecycle, silences
+from hops.declared import MONITORING
 from hops.errors import UsageError
 
 HELP = "silence Services' alerts for a duration, then stop their containers (docker stop)"
@@ -25,7 +26,9 @@ def register(subparsers) -> None:
             "Stack, or hops start. --for creates Alertmanager silences that expire after the duration, one for "
             "each way an alert names the Service (stack and service, container, scrape target, Datastore), the "
             "same for Services in its Stack that depend on it, every Probe if they route through it, and its "
-            "Stack's alerts that name no Service. Each is printed with its reason."
+            "Stack's alerts that name no Service. Each is printed with its reason. On a Host that declares no "
+            "monitoring Stack and no prometheus or alertmanager Service yet, it stops without silences and warns "
+            "that alerts may fire."
         ),
     )
     lifecycle.add_targets(p)
@@ -59,6 +62,24 @@ def run(args, ctx) -> int:
             f"{', '.join(critical)} {'is' if len(critical) == 1 else 'are'} Critical Tier; pass --force to stop anyway"
         )
     found = lifecycle.containers(ctx, services)
+    if alertmanager.monitoring_undeclared(ctx.declared):
+        ctx.stderr.write(
+            f"hops: warning: no silences were created: Host {ctx.host.name!r} declares no {MONITORING} Stack "
+            f"and no prometheus or alertmanager Service, so alerts may fire while "
+            f"{'it is' if len(found) == 1 else 'they are'} stopped\n"
+        )
+    else:
+        silence_alerts(ctx, args, found)
+    lifecycle.act(ctx, "stop", "Stopped", found)
+    names = " ".join(args.targets)
+    ctx.stdout.write(
+        f"Nothing restarts {'it' if len(found) == 1 else 'them'} automatically until a reboot or "
+        f"the next Deploy of the Stack. Start again with: hops start {names}\n"
+    )
+    return 0
+
+
+def silence_alerts(ctx, args, found) -> None:
     author = f"hops ({ctx.env.get('USER') or 'unknown'})"
     monitoring = silences.Monitoring.load(ctx.repo_root, ctx.stack_root)
     for silence in silences.plan(ctx.declared, found, monitoring):
@@ -78,10 +99,3 @@ def run(args, ctx) -> int:
             f"Silenced {' '.join(matcher_args)} for {args.duration} ({result.stdout.strip()}): {silence.reason}\n"
         )
         ctx.stdout.flush()
-    lifecycle.act(ctx, "stop", "Stopped", found)
-    names = " ".join(args.targets)
-    ctx.stdout.write(
-        f"Nothing restarts {'it' if len(found) == 1 else 'them'} automatically until a reboot or "
-        f"the next Deploy of the Stack. Start again with: hops start {names}\n"
-    )
-    return 0
