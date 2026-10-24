@@ -878,6 +878,27 @@ def test_monitoring_fails_on_a_missing_explicit_generator(validate, repo, runtim
     assert f"--path {name}=typo.py: not a file" in validate.failures
 
 
+def test_monitoring_fails_on_a_missing_explicit_dashboards_json_without_a_generator(validate, repo, runtime):
+    validate.configure(repo, {"dashboards-json": "typo"})
+    validate.check_monitoring()
+    assert "--path dashboards-json=typo: not a directory" in validate.failures
+
+
+def test_monitoring_fails_on_a_missing_explicit_path_for_a_host_without_prometheus(validate, repo, runtime):
+    subprocess.run(["git", "rm", "-rq", "tn/monitoring/prometheus"], cwd=repo, check=True)
+    commit(repo)
+    validate.configure(repo, {"grafana": "typo"})
+    validate.check_monitoring()
+    assert messages(validate) == "--path grafana=typo: not a directory"
+
+
+def test_a_dependencies_template_without_its_service_file_fails(validate, repo):
+    subprocess.run(["git", "rm", "-q", PROM_SERVICE], cwd=repo, check=True)
+    commit(repo)
+    validate.check_env()
+    assert messages(validate) == f"{DEPENDENCIES}: no dependencies-render Service in {PROM_SERVICE} renders it"
+
+
 def test_probe_modules_fails_on_a_missing_explicit_blackbox(validate, repo):
     configure(validate, repo, {"blackbox": "typo.yml"})
     assert validate.probe_modules(validate.HOSTS[0]) == set()
