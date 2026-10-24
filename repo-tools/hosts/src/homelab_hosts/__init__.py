@@ -74,7 +74,7 @@ class Host:
 
     def has(self, capability: str) -> bool:
         """Whether the Host declares `capability`. An unknown capability name raises HostsError (catches typos)."""
-        if capability not in CAPABILITIES:
+        if not isinstance(capability, str) or capability not in CAPABILITIES:
             raise HostsError(f"unknown capability {capability!r}; known: {', '.join(sorted(CAPABILITIES))}")
         return capability in self.capabilities
 
@@ -225,7 +225,7 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
     deployer = raw.get("deployer")
     if deployer is None:
         problems.append(f"{where}deployer: missing; supported: {', '.join(sorted(DEPLOYERS))}")
-    elif deployer not in DEPLOYERS:
+    elif not isinstance(deployer, str) or deployer not in DEPLOYERS:
         problems.append(f"{where}deployer: unknown deployer {deployer!r}; supported: {', '.join(sorted(DEPLOYERS))}")
 
     capabilities = raw.get("capabilities")
@@ -236,7 +236,7 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
         problems.append(f"{where}capabilities: must be a list, not {capabilities!r}")
         capabilities = []
     for capability in capabilities:
-        if capability not in CAPABILITIES:
+        if not isinstance(capability, str) or capability not in CAPABILITIES:
             problems.append(
                 f"{where}capabilities: unknown capability {capability!r}; known: {', '.join(sorted(CAPABILITIES))}"
             )
@@ -266,10 +266,9 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
     )
 
 
-def env_prefix(host: Host | str) -> str:
+def env_prefix(host: Host) -> str:
     """`HOPS_<NAME>_`: the .env key prefix for a Host, NAME uppercased with '-' turned into '_'."""
-    name = host.name if isinstance(host, Host) else host
-    return f"HOPS_{name.upper().replace('-', '_')}_"
+    return f"HOPS_{host.name.upper().replace('-', '_')}_"
 
 
 def host_settings(env: Mapping[str, str], host: Host) -> HostSettings:

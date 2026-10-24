@@ -1,6 +1,13 @@
 import pytest
 
-from tools.components import affected_components, all_components, all_repo_tools, parse_release_tag, release_target
+from tools.components import (
+    affected_components,
+    all_components,
+    all_repo_tools,
+    main,
+    parse_release_tag,
+    release_target,
+)
 
 COMPONENTS = ["_template", "arr-queue-exporter", "sabnzbd-status-exporter"]
 
@@ -90,3 +97,14 @@ def test_a_tag_naming_both_a_component_and_a_repo_tool_is_rejected(release_dirs)
     (release_dirs["repo_tools_dir"] / "startup-order").mkdir()
     with pytest.raises(ValueError, match="both"):
         release_target("startup-order-v1.0.0", **release_dirs)
+
+
+def test_ci_fails_when_a_repo_tool_shares_a_component_name(release_dirs, monkeypatch, capsys):
+    monkeypatch.setattr("tools.components.COMPONENTS_DIR", release_dirs["components_dir"])
+    monkeypatch.setattr("tools.components.REPO_TOOLS_DIR", release_dirs["repo_tools_dir"])
+    assert main(["repo-tools"]) == 0
+    assert capsys.readouterr().out.strip() == '["hosts"]'
+
+    (release_dirs["repo_tools_dir"] / "startup-order").mkdir()
+    assert main(["repo-tools"]) == 1
+    assert "startup-order" in capsys.readouterr().err

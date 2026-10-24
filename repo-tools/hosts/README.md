@@ -115,7 +115,7 @@ Everything below is exported from `homelab_hosts`; nothing else is public.
   mapping `env`; it never reads a file. `HostSettings.ssh` is an `SshSettings(host, user, key)`;
   `HostSettings.truenas` is a `TrueNasSettings(url, api_key, insecure)` for a `truenas` Host and `None`
   otherwise. Missing required keys raise `HostsError` naming the keys, never their values.
-- `env_prefix(host) -> str`: `HOPS_<NAME>_` for a `Host` or Host name.
+- `env_prefix(host) -> str`: `HOPS_<NAME>_`, the `.env` key prefix for a `Host`.
 - `HostsError`: every failure above; `problems` lists each problem, and `str()` joins them with newlines.
 - `CAPABILITIES`, `DEPLOYERS`, `HOSTS_FILE`: the known capabilities, the supported deployers, and `"hosts.yaml"`.
 
@@ -123,7 +123,7 @@ Everything below is exported from `homelab_hosts`; nothing else is public.
 
 ```sh
 cd repo-tools/hosts
-python -m pip install . pytest ruff     # or use the repo's .venv
+python -m pip install -e . pytest ruff  # or install -e . into the repo's .venv
 python -m pytest && ruff check . && ruff format --check .
 ```
 

@@ -63,18 +63,22 @@ def parse_release_tag(tag):
     return m["name"], m["version"]
 
 
+def _check_unique_names(components, repo_tools):
+    """A release tag names exactly one thing, so a repo-tools/ folder never shares a Component's name."""
+    if clashes := sorted(set(components) & set(repo_tools)):
+        raise ValueError(f"both a Component and a folder under repo-tools/: {', '.join(clashes)}; rename one")
+
+
 def release_target(tag, components_dir=COMPONENTS_DIR, repo_tools_dir=REPO_TOOLS_DIR):
     """What a `<name>-vX.Y.Z` tag releases: a Component (an image when it has a Dockerfile, else its src/ files)
     or a shared Repo Tooling folder (a GitHub Release only)."""
     name, version = parse_release_tag(tag)
-    is_component = name in all_components(components_dir)
-    is_repo_tool = name in all_repo_tools(repo_tools_dir)
-    if is_component and is_repo_tool:
-        raise ValueError(f"{tag!r} names both a Component and a folder under repo-tools/; rename one")
-    if is_component:
+    components, repo_tools = all_components(components_dir), all_repo_tools(repo_tools_dir)
+    _check_unique_names(components, repo_tools)
+    if name in components:
         image = (components_dir / name / "Dockerfile").is_file()
         return {"kind": "component", "name": name, "version": version, "image": str(image).lower()}
-    if is_repo_tool:
+    if name in repo_tools:
         return {"kind": "repo-tool", "name": name, "version": version, "image": "false"}
     raise ValueError(f"{tag!r} names no Component under components/ and no folder under repo-tools/")
 
@@ -151,7 +155,9 @@ def _run(args):
         components = all_components()
         print(json.dumps(affected_components(_changed_paths(args.base), components) if args.base else components))
     elif args.command == "repo-tools":
-        print(json.dumps(all_repo_tools()))
+        repo_tools = all_repo_tools(REPO_TOOLS_DIR)
+        _check_unique_names(all_components(COMPONENTS_DIR), repo_tools)
+        print(json.dumps(repo_tools))
     elif args.command == "check-readme":
         problems = [p for c in args.components for p in check_readme(COMPONENTS_DIR / c)]
         for problem in problems:

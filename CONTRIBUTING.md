@@ -10,6 +10,7 @@ python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest -m "not contract"     # unit tests, everything
 .venv/bin/pytest -m contract           # Contract Tests; needs a running Docker
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/pip install -e repo-tools/<tool> && .venv/bin/pytest repo-tools/<tool>   # a shared tool's tests
 ```
 
 Python 3.13 matches the distroless base image. Test dependencies live in `requirements-dev.txt`, pinned.

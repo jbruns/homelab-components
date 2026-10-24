@@ -1,8 +1,8 @@
 name: test repo tool
 
-# One shared Repo Tooling package's checks: install it (proving it builds with its declared dependencies), ruff
-# with its own config, and its tests. Called by ci.yaml for every folder under repo-tools/ and by release.yaml
-# before a <tool>-vX.Y.Z release.
+# One shared Repo Tooling package's checks: ruff with its own config, then its tests against the package installed
+# into a clean venv with only its declared dependencies and pytest, as a consumer would get it. Called by ci.yaml
+# for every folder under repo-tools/ and by release.yaml before a <tool>-vX.Y.Z release.
 on:
   workflow_call:
     inputs:
@@ -14,6 +14,9 @@ on:
 permissions:
   contents: read
 
+env:
+  TOOL: ${{ inputs.tool }}
+
 jobs:
   test:
     name: test
@@ -24,12 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
-      - name: install
-        run: python -m pip install --quiet .
       - run: ruff check --output-format=github .
       - run: ruff format --check .
+      - name: install into a clean venv
+        run: |
+          python -m venv "$RUNNER_TEMP/tool"
+          "$RUNNER_TEMP/tool/bin/python" -m pip install --quiet . "$(grep -E '^pytest==' "$GITHUB_WORKSPACE/requirements-dev.txt")"
       # pytest exits 5 when it collects no tests.
       - name: tests
         run: |
-          python -m pytest || { rc=$?
-            [ "$rc" -eq 5 ] && echo "::error::no tests in repo-tools/${{ inputs.tool }}"; exit "$rc"; }
+          "$RUNNER_TEMP/tool/bin/python" -m pytest -p no:cacheprovider || { rc=$?
+            [ "$rc" -eq 5 ] && echo "::error::no tests in repo-tools/$TOOL"; exit "$rc"; }
