@@ -164,7 +164,9 @@ pinning for images and actions, a 5-day minimum release age, a morning schedule 
 hourly PR limit, automerge for patch updates and digest pins, never automerge for Host-installed Component release
 assets, the Grafana and Prometheus groups, and one-major-at-a-time Nextcloud. It extends the `docker-compose`
 manager to every `service.yaml` (Renovate cannot read `hosts.yaml`, so this covers each Host's
-`<stack>/<service>/service.yaml` by name) and reads `# renovate:` version comments in workflows. Pin it to the
+`<stack>/<service>/service.yaml` by name) and reads `# renovate:` version comments in workflows. It adds no
+Contract-Test gate: those run here, where a Component releases only after its Contract Tests pass against the
+pinned upstreams, so a consumer only ever sees tested releases. Pin it to the
 same release; anything repo-specific (more automerge, custom datasources, a different schedule) goes after it:
 
 ```json

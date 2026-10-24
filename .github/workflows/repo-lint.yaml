@@ -19,6 +19,11 @@ on:
         type: string
         # renovate: datasource=docker depName=rhysd/actionlint
         default: 1.7.12
+      node-version:
+        description: Node.js major version that runs renovate-config-validator
+        type: string
+        # renovate: datasource=node-version depName=node
+        default: "24"
 
 permissions:
   contents: read
@@ -36,7 +41,7 @@ jobs:
       - if: inputs.renovate-configs != ''
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: ${{ inputs.node-version }}
       - name: renovate-config-validator
         if: inputs.renovate-configs != ''
         env:

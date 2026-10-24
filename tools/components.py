@@ -56,7 +56,7 @@ def affected_components(changed_paths, components):
 
 
 def parse_release_tag(tag):
-    """(name, version) for a `<name>-vX.Y.Z` tag of a releasable Component or repo-tools/ folder."""
+    """(name, version) for a `<name>-vX.Y.Z` tag of a releasable Component, repo-tools/ folder or repo-ci."""
     m = _RELEASE_TAG.match(tag)
     if not m:
         raise ValueError(
