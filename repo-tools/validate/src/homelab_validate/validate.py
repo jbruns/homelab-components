@@ -5,7 +5,8 @@ Checks:
   secrets     every sensitive file referenced by Compose is tracked only in SOPS-encrypted form
               (doco-cd Stacks, entry file compose.yaml, reference the *.sops.* files directly),
               and no plaintext twin (x.yml beside x.sops.yml) is tracked; every file a Stack includes is
-              <stack root>/<stack>/<service>/service.yaml and some Stack includes it, and every doco-cd
+              <stack root>/<stack>/<service>/service.yaml and some Stack includes it (docker-compose.yaml
+              files only in a --legacy-stack, which must still be one), and every doco-cd
               deploy config keeps auto_discovery.depth 1
   env         every ${VAR} a Stack uses exists in its env.template and its encrypted .sops.env
   compose     `docker compose config` succeeds for every Stack and templates/* with placeholder values;
@@ -115,8 +116,15 @@ def tracked_files() -> set[Path]:
     return {ROOT / p for p in out.split("\0") if p and (ROOT / p).is_file()}
 
 
+# Folders under a stack root still in a pre-layout form (docker-compose.yaml files, no compose.yaml), each
+# allowed until its cutover; set with --legacy-stack. The list only shrinks: see check_legacy_stacks.
+LEGACY_STACKS: set[str] = set()
 # doco-cd auto-discovers a Stack only by <stack root>/<stack>/compose.yaml (its deploy config's working_dir).
 ENTRY_NAME = "compose.yaml"
+# A Stack folder name, as hosts.yaml requires of doco_cd.stack.
+STACK_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+# A Compose file name from before the layout; allowed only under a --legacy-stack.
+LEGACY_COMPOSE_RE = re.compile(r"docker-compose\.ya?ml")
 # Each file a Stack's entry file includes: <stack root>/<stack>/<service>/service.yaml, one Service plus its sidecars.
 INCLUDED_NAME = "service.yaml"
 # doco-cd's deploy config: .doco-cd.yml, .doco-cd.yaml or .doco-cd.<target>.y(a)ml, anywhere in the repo.
@@ -124,11 +132,15 @@ DOCO_CD_CONFIG_RE = re.compile(r"\.doco-cd(\.[^.]+)?\.ya?ml")
 
 
 def configure(
-    root: Path, paths: dict[str, str] | None = None, host: str | None = None, legacy_volumes: set[str] | None = None
+    root: Path,
+    paths: dict[str, str] | None = None,
+    host: str | None = None,
+    legacy_volumes: set[str] | None = None,
+    legacy_stacks: set[str] | None = None,
 ) -> None:
     """Point every check at a repository root and the Hosts its hosts.yaml declares (only `host`, if given),
-    override entries of PATHS (relative to `root` or absolute) and set the LEGACY_VOLUMES."""
-    global ROOT, HOSTS, EVERY_HOST, DEFAULT_BRANCH, LEGACY_VOLUMES
+    override entries of PATHS (relative to `root` or absolute) and set the LEGACY_VOLUMES and LEGACY_STACKS."""
+    global ROOT, HOSTS, EVERY_HOST, DEFAULT_BRANCH, LEGACY_VOLUMES, LEGACY_STACKS
     if unknown := set(paths or {}) - set(PATHS):
         raise KeyError(f"unknown path {sorted(unknown)[0]!r}; choose from {', '.join(PATHS)}")
     ROOT = root.resolve()
@@ -140,6 +152,7 @@ def configure(
     OVERRIDES.update(paths or {})
     if legacy_volumes is not None:
         LEGACY_VOLUMES = set(legacy_volumes)
+    LEGACY_STACKS = set(legacy_stacks or ())
 
 
 def path(name: str, host: Host) -> Path | None:
@@ -149,10 +162,20 @@ def path(name: str, host: Host) -> Path | None:
     return None if PATHS[name] is None else host_dir(host) / PATHS[name]
 
 
+def legacy_stack_of(p: Path, host: Host) -> str | None:
+    """The --legacy-stack holding `p` under the Host's stack root, if any."""
+    return next((s for s in sorted(LEGACY_STACKS) if p.is_relative_to(host_dir(host) / s)), None)
+
+
 def available(name: str, host: Host, skip: str | None = None) -> bool:
-    """Whether an input of PATHS exists as a file or directory, as FILE_INPUTS says. A missing default means
-    the Host lacks that component, so its check is skipped (printing `skip`); a missing --path is a failure."""
+    """Whether an input of PATHS exists as a file or directory, as FILE_INPUTS says. A missing default, or one
+    in a --legacy-stack, means the Host lacks that component, so its check is skipped (printing `skip`, a
+    "<check>: ..." message); a missing --path is a failure."""
     p, is_file = path(name, host), name in FILE_INPUTS
+    if name not in OVERRIDES and p is not None and (legacy := legacy_stack_of(p, host)):
+        if skip:
+            print(f"{skip.partition(':')[0]}: {_rel(p)} is in --legacy-stack {legacy}; skipped")
+        return False
     if p is not None and (p.is_file() if is_file else p.is_dir()):
         return True
     if name in OVERRIDES:
@@ -254,6 +277,7 @@ def check_secrets() -> None:
         elif f.name == ".env" or f.suffix == ".env":
             fail("plaintext .env file is tracked; encrypt it as *.sops.env", f)
     check_layout(tracked)
+    check_legacy_stacks(tracked)
     for host in HOSTS:
         for stack in stacks(host):
             check_stack_secrets(stack, tracked)
@@ -281,6 +305,29 @@ def check_layout(tracked: set[Path]) -> None:
             )
 
 
+def check_legacy_stacks(tracked: set[Path]) -> None:
+    """Each --legacy-stack is still a pre-layout folder: once its cutover adds compose.yaml, or no Host has it,
+    the exception must go, so the list only shrinks."""
+    for name in sorted(LEGACY_STACKS):
+        found = False
+        for host in HOSTS:
+            folder = host_dir(host) / name
+            if entry(folder).is_file():
+                fail(
+                    f"--legacy-stack {name}: {_rel(folder)} is a Stack now (it has {ENTRY_NAME}); "
+                    "drop its --legacy-stack"
+                )
+                found = True
+            elif any(LEGACY_COMPOSE_RE.fullmatch(f.name) and f.is_relative_to(folder) for f in tracked):
+                found = True
+        # Another Host may have it, so only a run over every Host can tell one is gone.
+        if not found and EVERY_HOST:
+            fail(
+                f"--legacy-stack {name}: no Host has a legacy Stack {name} "
+                f"(docker-compose.yaml files and no {ENTRY_NAME}); drop its --legacy-stack"
+            )
+
+
 def check_host_layout(host: Host, tracked: set[Path]) -> None:
     included: set[Path] = set()
     for stack in stacks(host):
@@ -292,10 +339,13 @@ def check_host_layout(host: Host, tracked: set[Path]) -> None:
                     entry(stack),
                 )
     root = host_dir(host)
+    legacy = [root / name for name in sorted(LEGACY_STACKS)]
     for f in sorted(tracked):
         if not f.is_relative_to(root):
             continue
-        if re.fullmatch(r"docker-compose\.ya?ml", f.name):
+        if LEGACY_COMPOSE_RE.fullmatch(f.name):
+            if any(f.is_relative_to(d) for d in legacy):
+                continue
             fail(f"rename to {INCLUDED_NAME} (one Service per file) or {ENTRY_NAME} (a Stack's entry file)", f)
         elif f.name == INCLUDED_NAME and f.parent.parent == root:
             fail(f"doco-cd never discovers this; a Stack's entry file must be {ENTRY_NAME}", f)
@@ -821,8 +871,19 @@ def anonymous_volume_check(
     return None if read[image] is None else uncovered_volumes(svc, read[image])
 
 
-def deployed_image(compose: Path, service: str) -> str:
-    return yaml.safe_load(compose.read_text())["services"][service]["image"]
+def deployed_image(compose: Path, service: str) -> str | None:
+    """The image `service` runs, from its service file; fails and returns None when the file does not declare it."""
+    if not compose.is_file():
+        fail(f"monitoring: {_rel(compose)}: missing; it must declare the {service} Service", compose.parent)
+        return None
+    doc = yaml.safe_load(compose.read_text())
+    services = doc.get("services") if isinstance(doc, dict) else None
+    svc = services.get(service) if isinstance(services, dict) else None
+    image = svc.get("image") if isinstance(svc, dict) else None
+    if not isinstance(image, str) or not image:
+        fail(f"monitoring: {_rel(compose)}: no {service} Service with an image", compose)
+        return None
+    return image
 
 
 def docker_run(image: str, mounts: dict[Path, str], entrypoint: str, *args: str) -> None:
@@ -1137,6 +1198,8 @@ def boot_grafana(host: Host, provisions: list[dict]) -> None:
     collision fails as it would on the Host, not just clean-install errors."""
     grafana = path("grafana", host)
     image = deployed_image(grafana / INCLUDED_NAME, "grafana")
+    if image is None:
+        return
     expected = {json.loads(f.read_text())["uid"] for f in path("dashboards-json", host).glob("*.json")}
     env = {
         "GF_SECURITY_ADMIN_USER": GRAFANA_ADMIN[0],
@@ -1389,6 +1452,8 @@ def check_monitoring() -> None:
 def check_host_monitoring(host: Host) -> None:
     prom = path("prometheus", host)
     prom_image = deployed_image(prom / INCLUDED_NAME, "prometheus")
+    if prom_image is None:
+        return
     rule_files = sorted(prom.glob("*rules*.yml"))
     prom_mounts = {f: f"/etc/prometheus/{f.name}" for f in [prom / "prometheus.yml", *rule_files]}
     with tempfile.TemporaryDirectory() as tmp:
@@ -1413,14 +1478,14 @@ def check_host_monitoring(host: Host) -> None:
     if available("alertmanager", host, skip=skip_message(am)):
         config = am / "config.yml"
         if config.is_file():
-            am_image = deployed_image(am / INCLUDED_NAME, "alertmanager")
-            docker_run(
-                am_image,
-                {config: "/etc/alertmanager/config.yml"},
-                "amtool",
-                "check-config",
-                "/etc/alertmanager/config.yml",
-            )
+            if am_image := deployed_image(am / INCLUDED_NAME, "alertmanager"):
+                docker_run(
+                    am_image,
+                    {config: "/etc/alertmanager/config.yml"},
+                    "amtool",
+                    "check-config",
+                    "/etc/alertmanager/config.yml",
+                )
         elif any(am.glob("config.sops.*")):
             warn("alertmanager config is encrypted-only; amtool check skipped until it is split from its secrets")
         else:
@@ -1429,25 +1494,25 @@ def check_host_monitoring(host: Host) -> None:
     loki = path("loki", host)
     loki_image = None
     if available("loki", host, skip=skip_message(loki)):
-        loki_image = deployed_image(loki / INCLUDED_NAME, "loki")
-        docker_run(
-            loki_image,
-            {loki / "loki.yaml": "/etc/loki/loki.yaml"},
-            "/usr/bin/loki",
-            "-config.file=/etc/loki/loki.yaml",
-            "-verify-config",
-        )
+        if loki_image := deployed_image(loki / INCLUDED_NAME, "loki"):
+            docker_run(
+                loki_image,
+                {loki / "loki.yaml": "/etc/loki/loki.yaml"},
+                "/usr/bin/loki",
+                "-config.file=/etc/loki/loki.yaml",
+                "-verify-config",
+            )
 
     alloy = path("alloy", host)
     if available("alloy", host, skip=skip_message(alloy)):
-        alloy_image = deployed_image(alloy / INCLUDED_NAME, "alloy")
-        docker_run(
-            alloy_image,
-            {alloy / "config.alloy": "/etc/alloy/config.alloy"},
-            "/bin/alloy",
-            "validate",
-            "/etc/alloy/config.alloy",
-        )
+        if alloy_image := deployed_image(alloy / INCLUDED_NAME, "alloy"):
+            docker_run(
+                alloy_image,
+                {alloy / "config.alloy": "/etc/alloy/config.alloy"},
+                "/bin/alloy",
+                "validate",
+                "/etc/alloy/config.alloy",
+            )
 
     if dashboards := generator_command("dashboards", host):
         check_generator(dashboards, "grafana dashboards", "--out", str(path("dashboards-json", host)))
@@ -1540,15 +1605,24 @@ def main(argv: list[str] | None = None) -> int:
         metavar="NAME",
         help="a volume name from before ADR 0010 that is allowed until renamed",
     )
+    parser.add_argument(
+        "--legacy-stack",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="a folder under each stack root still in a pre-layout form (docker-compose.yaml), allowed until cut over",
+    )
     parser.add_argument("checks", nargs="*", metavar="check", help=f"{', '.join(CHECKS)} (default: all)")
     args = parser.parse_args(argv)
     overrides = dict(p.split("=", 1) for p in args.path if "=" in p)
     if len(overrides) != len(args.path) or set(overrides) - set(PATHS):
         parser.error(f"--path takes NAME=PATH with NAME one of {', '.join(PATHS)}")
+    if bad := [name for name in args.legacy_stack if not STACK_NAME_RE.fullmatch(name)]:
+        parser.error(f"--legacy-stack takes a Stack folder name ([a-z0-9][a-z0-9-]*), not {bad[0]!r}")
     if unknown := [name for name in args.checks if name not in CHECKS]:
         sys.exit(f"unknown check {unknown[0]!r}; choose from {', '.join(CHECKS)}")
     try:
-        configure(args.root or find_repo_root(), overrides, args.host, set(args.legacy_volume))
+        configure(args.root or find_repo_root(), overrides, args.host, set(args.legacy_volume), set(args.legacy_stack))
     except HostsError as exc:
         print(exc, file=sys.stderr)
         return 1

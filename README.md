@@ -120,7 +120,8 @@ calling the reusable workflows, pinned to a `repo-ci-vX.Y.Z` release by its comm
 
 `extra-args` passes the tool's options, split like a shell command line but never run by a shell: for example
 `--path dashboards=tools/dashboards/dashboards.py --legacy-volume media_config` for a repo that keeps an input
-outside its stack roots, or `--host truenas`. `repo-validate` and `repo-declared-containers` install their tools
+outside its stack roots, `--legacy-stack common` for a Stack folder not yet cut over to `compose.yaml`, or
+`--host truenas`. `repo-validate` and `repo-declared-containers` install their tools
 (`repo-validate` both, for the `monitoring` check) from the workflow's own commit, so the one pin on `uses:` pins
 the tools too. Set `tool-ref` (a `<tool>-vX.Y.Z` tag or a commit) only to run a different tool
 version than the workflow's; Renovate does not bump it. Each workflow is one job; keep the repo's own

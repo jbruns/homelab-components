@@ -60,6 +60,14 @@ With no check named, every check runs, including `isolation`. Exit status is 1 i
 - `--legacy-volume NAME`: a volume name from before ADR 0010, allowed until its Stack renames it. Repeat it for
   several. A `compose` run over every Host fails while one is given that no Stack declares, so the list only
   shrinks.
+- `--legacy-stack NAME`: a folder under each selected Host's stack root that is still in a pre-layout form
+  (`docker-compose.yaml` files deployed by another tool, no `compose.yaml`), allowed until its cutover. Repeat it
+  for several. Under it, `secrets` allows `docker-compose.y(a)ml` files, and every [input](#inputs) whose default
+  lies in it counts as missing, so its check is skipped and says so; an explicit `--path` into it is still
+  checked. Every other rule still holds there: plaintext `.env` and unencrypted `*.sops.*` files, and
+  `service.yaml` files no Stack includes, fail. `secrets` fails while one is given whose folder has a
+  `compose.yaml` (it has been cut over), and a `secrets` run over every Host fails while one is given that no
+  Host has, so the list only shrinks.
 - `VALIDATE_BASE`: the comparison ref for `isolation`, rule-test freshness and the Grafana upgrade boot (default
   `origin/<default_branch>`, from `hosts.yaml`). In CI, fetch history and set it to the PR base.
 - `GITHUB_ACTIONS`: when set, failures print as GitHub annotations.
@@ -68,7 +76,7 @@ With no check named, every check runs, including `isolation`. Exit status is 1 i
 ### Inputs
 
 Each input is found by convention under each Host's stack root unless `--path` moves it. When a default is
-missing, the Host lacks that component: the check that reads it is skipped and says so. When a `--path` is missing
+missing, or lies in a `--legacy-stack`, the Host lacks that component: the check that reads it is skipped and says so. When a `--path` is missing
 or the wrong type (a file for a directory input, or the reverse), the check that reads it fails with
 `--path NAME=PATH: not a directory` (or `not a file`), so a typo cannot turn a check off.
 
@@ -88,6 +96,9 @@ or the wrong type (a file for a directory input, or the reverse), the check that
 
 For example, a repo that keeps its dashboard generator and promtool suites outside the stack root runs
 `homelab-validate --path dashboards=tools/dashboards/dashboards.py --path rule-tests=tools/validate/rules`.
+
+Each monitoring component's `service.yaml` must declare its Service (`prometheus`, `alertmanager`, `loki`,
+`alloy`, `grafana`) with an `image`; a missing file or Service fails that component's check by name.
 
 Every check reads an input from the files on disk, inside the repo or outside it. amtool checks the
 `config.yml` in `alertmanager`. When there is only a `config.sops.*`, it warns that the config is encrypted-only.
