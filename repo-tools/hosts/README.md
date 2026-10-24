@@ -51,11 +51,15 @@ Loading fails, listing every problem with its file and key path, when:
 - `hosts` is missing or empty;
 - a Host name does not match `[a-z0-9][a-z0-9-]*` (YAML reads an unquoted `no` or `1101` as a boolean or
   number, so quote such a name);
-- `stack_root` is missing, is absolute or escapes the repo (`..`), is not an existing directory under the repo
-  root, or is the same directory as another Host's;
+- `stack_root` is missing, is absolute or uses `..`, resolves (following symlinks, including in intermediate
+  directories) to the repo root itself or outside it, is not an existing directory, or is the same directory as
+  another Host's or contains or sits inside it;
 - `deployer` is missing or unknown;
 - `capabilities` is missing, is not a list, or names an unknown capability;
-- a `doco_cd` value or `default_branch` is not a non-empty string.
+- a `doco_cd` value or `default_branch` is not a non-empty string;
+- `doco_cd.stack` is not a single Stack directory name (`[a-z0-9][a-z0-9-]*`, no `/`);
+- `doco_cd.api_secret` is absolute, uses `..`, or resolves (following symlinks) outside the Host's stack root;
+- `doco_cd.network` is not a Docker network name (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`). `address` is any non-empty string.
 
 ### Capabilities
 
@@ -107,7 +111,7 @@ Everything below is exported from `homelab_hosts`; nothing else is public.
   2. else the Host whose stack root contains `path` (relative paths resolve against the working directory);
   3. else the only Host;
   4. else an error listing the Hosts.
-- `Host`: `name`, `stack_root` (as written), `path` (absolute stack root), `deployer`, `capabilities`
+- `Host`: `name`, `stack_root` (as written), `path` (the stack root, absolute with symlinks resolved), `deployer`, `capabilities`
   (a frozenset), `doco_cd` (a `DocoCd` with `stack`, `api_secret`, `address`, `network`, defaults filled in), and
   `has(capability) -> bool`, which raises `HostsError` for a capability name it does not know, so a typo cannot
   read as "no".

@@ -31,6 +31,8 @@ CAPABILITIES = frozenset({"truenas", "zfs"})
 DEPLOYERS = frozenset({"doco-cd"})
 
 _HOST_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+_STACK_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+_DOCKER_NETWORK = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
 _TOP_KEYS = {"version", "default_branch", "hosts"}
 _HOST_KEYS = {"stack_root", "deployer", "capabilities", "doco_cd"}
 _DOCO_CD_DEFAULTS = {
@@ -67,7 +69,7 @@ class Host:
     stack_root: str
     """As written in hosts.yaml: a directory relative to the repo root, holding `<stack>/compose.yaml`."""
     path: Path
-    """Absolute path of the stack root."""
+    """The stack root: absolute, with symlinks resolved, always inside the repo root."""
     deployer: str
     capabilities: frozenset[str]
     doco_cd: DocoCd
@@ -177,14 +179,20 @@ def load_hosts(root: str | Path | None = None) -> Hosts:
     if not isinstance(raw_hosts, dict) or not raw_hosts:
         problems.append("hosts: must map at least one Host name to its settings")
         raw_hosts = {}
-    stack_roots: dict[Path, str] = {}
     for name, raw in raw_hosts.items():
         host = _host(root, name, raw, problems)
         if host is None:
             continue
-        other = stack_roots.setdefault(host.path.resolve(), host.name)
-        if other != host.name:
-            problems.append(f"hosts.{name}.stack_root: {host.stack_root!r} is already the stack root of Host {other!r}")
+        for other in hosts.values():
+            if host.path == other.path:
+                problems.append(
+                    f"hosts.{name}.stack_root: {host.stack_root!r} is already the stack root of Host {other.name!r}"
+                )
+            elif host.path.is_relative_to(other.path) or other.path.is_relative_to(host.path):
+                problems.append(
+                    f"hosts.{name}.stack_root: {host.stack_root!r} and Host {other.name!r}'s stack root "
+                    f"{other.stack_root!r} overlap; stack roots must not contain one another"
+                )
         hosts[host.name] = host
 
     if problems:
@@ -218,9 +226,18 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
     elif Path(stack_root).is_absolute() or ".." in Path(stack_root).parts:
         problems.append(f"{where}stack_root: {stack_root!r} must be relative to the repo root and stay inside it")
     else:
-        path = root / Path(stack_root)
-        if not path.is_dir():
+        path = (root / stack_root).resolve()
+        if not path.is_relative_to(root):
+            problems.append(f"{where}stack_root: {stack_root!r} resolves outside the repo root (through a symlink)")
+            path = None
+        elif path == root:
+            problems.append(
+                f"{where}stack_root: {stack_root!r} must be a directory under the repo root, not the root itself"
+            )
+            path = None
+        elif not path.is_dir():
             problems.append(f"{where}stack_root: {stack_root!r} is not a directory under {root}")
+            path = None
 
     deployer = raw.get("deployer")
     if deployer is None:
@@ -253,6 +270,8 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
                     doco_cd[key] = value
                 else:
                     problems.append(f"{where}doco_cd.{key}: must be a non-empty string, not {value!r}")
+                    doco_cd[key] = None
+    _check_doco_cd(path, doco_cd, f"{where}doco_cd.", problems)
 
     if len(problems) > before:
         return None
@@ -264,6 +283,26 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
         capabilities=frozenset(capabilities),
         doco_cd=DocoCd(**doco_cd),
     )
+
+
+def _check_doco_cd(stack_root: Path | None, doco_cd: dict, where: str, problems: list[str]) -> None:
+    """Validate the doco_cd settings, defaults included; `stack_root` is the resolved stack root, if valid."""
+    stack = doco_cd["stack"]
+    if stack is not None and not _STACK_NAME.fullmatch(stack):
+        problems.append(f"{where}stack: {stack!r} must be one Stack directory name: lowercase letters, digits and '-'")
+    api_secret = doco_cd["api_secret"]
+    if api_secret is not None:
+        relative = Path(api_secret)
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            problems.append(f"{where}api_secret: {api_secret!r} must be relative to the stack root and stay inside it")
+        elif stack_root is not None and not (stack_root / relative).resolve().is_relative_to(stack_root):
+            problems.append(f"{where}api_secret: {api_secret!r} resolves outside the stack root (through a symlink)")
+    network = doco_cd["network"]
+    if network is not None and not _DOCKER_NETWORK.fullmatch(network):
+        problems.append(
+            f"{where}network: {network!r} is not a Docker network name: letters, digits, '_', '.' and '-', "
+            "starting alphanumeric"
+        )
 
 
 def env_prefix(host: Host) -> str:

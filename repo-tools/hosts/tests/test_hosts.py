@@ -3,7 +3,7 @@ import textwrap
 
 import pytest
 
-from homelab_hosts import HostsError, SshSettings, TrueNasSettings, find_repo_root, host_settings, load_hosts
+from homelab_hosts import DocoCd, HostsError, SshSettings, TrueNasSettings, find_repo_root, host_settings, load_hosts
 from homelab_hosts.__main__ import main
 
 
@@ -269,3 +269,98 @@ def test_the_cli_fails_on_an_invalid_hosts_file(tmp_path, monkeypatch, capsys):
 
     assert main([]) == 1
     assert "unknown deployer" in capsys.readouterr().err
+
+
+def load_problems(root):
+    with pytest.raises(HostsError) as e:
+        load_hosts(root)
+    return str(e.value)
+
+
+@pytest.fixture
+def repo_and_outside(tmp_path):
+    repo, outside = tmp_path / "repo", tmp_path / "outside"
+    repo.mkdir()
+    (outside / "nc8kg1101").mkdir(parents=True)
+    return repo, outside
+
+
+def test_a_stack_root_that_is_a_symlink_out_of_the_repo_is_rejected(repo_and_outside):
+    repo, outside = repo_and_outside
+    (repo / "nc8kg1101").symlink_to(outside / "nc8kg1101", target_is_directory=True)
+    write_repo(repo, MINIMAL, stack_roots=[])
+
+    assert "hosts.nc8kg1101.stack_root: 'nc8kg1101' resolves outside the repo root" in load_problems(repo)
+
+
+def test_a_stack_root_under_a_symlinked_directory_out_of_the_repo_is_rejected(repo_and_outside):
+    repo, outside = repo_and_outside
+    (repo / "stacks").symlink_to(outside, target_is_directory=True)
+    write_repo(repo, "version: 1\nhosts:\n  nc8kg1101:\n" + host_entry(stack_root="stacks/nc8kg1101"), [])
+
+    assert "'stacks/nc8kg1101' resolves outside the repo root" in load_problems(repo)
+
+
+def test_a_symlinked_stack_root_inside_the_repo_is_allowed(tmp_path):
+    write_repo(tmp_path, "version: 1\nhosts:\n  nc8kg1101:\n" + host_entry(stack_root="current"), ["real"])
+    (tmp_path / "current").symlink_to(tmp_path / "real", target_is_directory=True)
+
+    assert load_hosts(tmp_path)["nc8kg1101"].path == tmp_path / "real"
+
+
+def test_the_repo_root_itself_is_not_a_stack_root(tmp_path):
+    write_repo(tmp_path, "version: 1\nhosts:\n  nc8kg1101:\n" + host_entry(stack_root="."), [])
+
+    assert "'.' must be a directory under the repo root, not the root itself" in load_problems(tmp_path)
+
+
+@pytest.mark.parametrize(("outer", "inner"), [("tn", "tn/apps"), ("tn/apps", "tn")])
+def test_nested_stack_roots_are_rejected(tmp_path, outer, inner):
+    hosts_yaml = (
+        "version: 1\nhosts:\n  outer:\n" + host_entry(stack_root=outer) + "  inner:\n" + host_entry(stack_root=inner)
+    )
+    write_repo(tmp_path, hosts_yaml, ["tn/apps"])
+
+    problems = load_problems(tmp_path)
+    assert "stack roots must not contain one another" in problems
+    assert "'tn'" in problems and "'tn/apps'" in problems
+
+
+@pytest.mark.parametrize(
+    ("doco_cd", "expected"),
+    [
+        ("{stack: deploy/doco-cd}", "doco_cd.stack: 'deploy/doco-cd' must be one Stack directory name"),
+        ("{stack: Doco-CD}", "doco_cd.stack: 'Doco-CD' must be one Stack directory name"),
+        ("{stack: ..}", "doco_cd.stack: '..' must be one Stack directory name"),
+        ("{api_secret: /etc/doco-cd/secret}", "doco_cd.api_secret: '/etc/doco-cd/secret' must be relative"),
+        ("{api_secret: ../other/secret}", "doco_cd.api_secret: '../other/secret' must be relative"),
+        ("{api_secret: doco-cd/../../secret}", "doco_cd.api_secret: 'doco-cd/../../secret' must be relative"),
+        ("{api_secret: .}", "doco_cd.api_secret: '.' must be relative"),
+        ("{network: 'my network'}", "doco_cd.network: 'my network' is not a Docker network name"),
+        ("{network: -metrics}", "doco_cd.network: '-metrics' is not a Docker network name"),
+        ("{address: ''}", "doco_cd.address: must be a non-empty string"),
+    ],
+)
+def test_an_invalid_doco_cd_override_is_rejected(tmp_path, doco_cd, expected):
+    write_repo(tmp_path, "version: 1\nhosts:\n  nc8kg1101:\n" + host_entry(doco_cd=doco_cd))
+
+    assert expected in load_problems(tmp_path)
+
+
+def test_a_doco_cd_api_secret_reached_through_a_symlink_out_of_the_stack_root_is_rejected(repo_and_outside):
+    repo, outside = repo_and_outside
+    write_repo(repo, MINIMAL)
+    (repo / "nc8kg1101" / "doco-cd").symlink_to(outside, target_is_directory=True)
+
+    assert "doco_cd.api_secret: 'doco-cd/api_secret.sops.txt' resolves outside the stack root" in load_problems(repo)
+
+
+def test_valid_doco_cd_overrides_are_kept(tmp_path):
+    doco_cd = (
+        "{stack: deployer, api_secret: deployer/secrets/api.sops.txt, address: 'deployer:8080', network: ops_net.1}"
+    )
+    write_repo(tmp_path, "version: 1\nhosts:\n  nc8kg1101:\n" + host_entry(doco_cd=doco_cd))
+
+    assert load_hosts(tmp_path)["nc8kg1101"].doco_cd == DocoCd(
+        stack="deployer", api_secret="deployer/secrets/api.sops.txt", address="deployer:8080", network="ops_net.1"
+    )
