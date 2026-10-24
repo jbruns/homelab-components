@@ -1,0 +1,44 @@
+[project]
+name = "hops"
+version = "0"
+description = "Client-side ops and diagnostics for a homelab repo's doco-cd Hosts (shared Repo Tooling)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0",
+  # TrueNAS's API is JSON-RPC over a WebSocket (hops/truenas.py); the stdlib has no WebSocket client.
+  "websocket-client>=1.8",
+  "homelab-hosts",
+]
+license = "MIT"
+
+[project.scripts]
+hops = "hops.cli:main"
+
+# homelab-hosts comes from this repo at the same commit as hops, so a hops tag pins the hosts.yaml loader too.
+# uv resolves the path inside the git checkout for `uv tool install "git+…@<ref>#subdirectory=repo-tools/hops"`.
+[tool.uv.sources]
+homelab-hosts = { path = "../hosts" }
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hops"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --import-mode=importlib"
+testpaths = ["tests"]
+markers = [
+  "live: read-only checks against a real Host; run with -m live",
+  "consumer: checks a consuming repo's config; run with HOPS_CONSUMER_REPO set",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
