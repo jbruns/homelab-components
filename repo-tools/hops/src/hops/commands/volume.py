@@ -251,8 +251,8 @@ def keep_rollback(ctx, image: str, directory: str, rollback, entries: int) -> No
         failed(f"copying {rollback.of} into {rollback.name}", str(exc))
     if copied.error:
         failed(f"copying {rollback.of} into {rollback.name}", copied.error)
-    if copied.old is None or copied.new is None or copied.old["entries"] != entries or copied.new["entries"] != entries:
-        failed("checking the copy", f"expected {entries} top-level entries in both {rollback.of} and {rollback.name}")
+    if not copied.verified or copied.old is None or copied.old["entries"] != entries:
+        failed("checking the copy", f"the copy reported no verified manifest of {entries} top-level entries")
 
 
 def run_move(args, ctx) -> int:

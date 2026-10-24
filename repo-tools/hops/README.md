@@ -508,9 +508,15 @@ Class: **Destructive**. It removes `<old>` and the stopped containers that refer
 **Mechanism.** `--dry-run` stops after the checks.
 
 1. If `--take-snapshot` is given, take the Rollback Snapshot. On a Host without `zfs`, create the
-   Rollback Volume and copy `<old>/_data` into it (`cp -a`, in the move container below), then check it
-   holds as many top-level entries as `<old>`. If that fails, nothing has moved; remove the Rollback
-   Volume before running again.
+   Rollback Volume and copy `<old>/_data` into it, in the move container below with `--cap-add`
+   `FSETID,MKNOD,SETFCAP,SYS_ADMIN` as well. The image's `cp` is BusyBox's, which drops xattrs, POSIX ACLs and
+   setgid bits, so the script copies with Python's own calls: every file type (device nodes and FIFOs too),
+   owners, modes, times, hard links, symlinks (never followed) and every xattr, ACLs and `trusted.*` included.
+   It then walks both trees and compares each path's type, mode, owner, size, mtime, device number, symlink
+   target, xattrs and hard-link group. Any difference, or anything it could not keep, fails the copy and names
+   the paths. `SYS_ADMIN` is there because the kernel hides `trusted.*` xattrs without it, so a lost one would
+   look the same on both sides. If the copy fails, nothing has moved; remove the Rollback Volume before running
+   again.
 2. Run `docker volume create <new>`, unless the volume exists.
 3. Check the containers on both volumes, and doco-cd's, again. It stops here, before anything
    moves, if any of them has been active since the first checks (a Deploy of the Stack, say): one
@@ -998,7 +1004,7 @@ Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-
 ```sh
 cd repo-tools/hops
 uv venv .venv && uv pip install --python .venv/bin/python -e . pytest
-.venv/bin/pytest                              # fake Hosts; runs in CI (test-repo-tool workflow)
+.venv/bin/pytest                              # fake Hosts, plus local Docker if there is one; runs in CI
 HOPS_CONSUMER_REPO=~/src/<repo> .venv/bin/pytest tests/test_hops_consumer_silences.py   # stop's silences, a real repo
 HOPS_CONSUMER_REPO=~/src/<repo> HOPS_CONSUMER_HOST=<host> .venv/bin/pytest -m live       # read-only, a real Host
 ```
@@ -1013,4 +1019,6 @@ one Host, `truenas` (stack root `tn`, capabilities `truenas` and `zfs`); `hops_f
 `plain_host` fixture give other `hosts.yaml`s, e.g. a Host with no capabilities or two Hosts. `test_hops_consumer_silences.py` derives `stop`'s silences from a
 consuming repo's monitoring config: `tests/fixtures/consumer` by default, or `HOPS_CONSUMER_REPO`. The `live`
 suite is skipped unless selected with `-m live`; it reaches the Host of `HOPS_CONSUMER_REPO` (Host
-`HOPS_CONSUMER_HOST`, else its only one) and must only ever read.
+`HOPS_CONSUMER_HOST`, else its only one) and must only ever read. `test_hops_volume_copy_docker.py` (marker
+`docker`) runs the Rollback Volume copy in a real python Alpine container against Docker volumes holding ACLs,
+xattrs, device nodes and setuid/setgid files; it is skipped when no Docker daemon answers.

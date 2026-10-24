@@ -701,6 +701,25 @@ def test_without_zfs_a_failed_copy_moves_nothing(hops, host, fake_host):
 
 
 @pytest.mark.usefixtures("plain_host")
+def test_without_zfs_a_copy_without_a_verified_manifest_moves_nothing(hops, host, fake_host):
+    host.add(OLD, {"f": "x"})
+    run = host.run
+
+    def unverified(call):
+        report = json.loads(run(call))
+        if call.docker[-1][-4] == "copy":
+            report.pop("verified")
+        return json.dumps(report)
+
+    fake_host.respond("run", stdout=unverified)
+
+    outcome = move(hops, None)
+    assert outcome.code == 1
+    assert "checking the copy failed: the copy reported no verified manifest of 1 top-level entries" in outcome.err
+    assert "move" not in host.runs and (host.root / OLD / "_data" / "f").exists()
+
+
+@pytest.mark.usefixtures("plain_host")
 def test_without_zfs_a_failure_part_way_points_at_the_rollback_volume(hops, host, fake_host):
     host.add(OLD, {"a": "1", "b": "2"})
     fake_host.respond("volume", "rm", stderr="volume is in use", returncode=1)
@@ -708,3 +727,117 @@ def test_without_zfs_a_failure_part_way_points_at_the_rollback_volume(hops, host
     assert outcome.code == 1
     assert f"removing {OLD} failed" in outcome.err
     assert f"Rollback Volume {ROLLBACK} holds the data from before the move: copy it back into {OLD}" in outcome.err
+
+
+# The Rollback Volume copier and its verification, run here against directories
+
+XATTRS = hasattr(os, "setxattr")  # Linux; elsewhere there are none to keep
+
+
+def script(mode, root: Path, old="old", new="new") -> tuple[int, dict]:
+    done = subprocess.run([sys.executable, "-c", volumes.SCRIPT, mode, str(root), old, new], capture_output=True)
+    return done.returncode, json.loads(done.stdout.decode().splitlines()[-1])
+
+
+@pytest.fixture
+def copied(tmp_path) -> Path:
+    """old/_data with links, modes and times, already copied into the empty new/_data by the copy mode."""
+    data = tmp_path / "old" / "_data"
+    (data / "dir" / "sub").mkdir(parents=True)
+    (data / "dir" / "file").write_text("data")
+    (data / "dir" / "file").chmod(0o640)
+    os.utime(data / "dir" / "file", ns=(1, 1_700_000_000_123_456_789))
+    os.link(data / "dir" / "file", data / "hardlink")
+    (data / "symlink").symlink_to("dir/file")
+    os.mkfifo(data / "fifo")
+    (data / "dir" / "sub").chmod(0o2750)
+    if XATTRS:
+        os.setxattr(data / "dir" / "file", "user.note", b"kept")
+    data.chmod(0o710)
+    (tmp_path / "new" / "_data").mkdir(parents=True)
+    code, report = script("copy", tmp_path)
+    assert (code, report["error"]) == (0, None)
+    return tmp_path
+
+
+def test_copy_keeps_types_modes_times_and_links_and_reports_what_it_verified(copied):
+    new = copied / "new" / "_data"
+    assert (new / "dir" / "file").read_text() == "data"
+    assert (new / "dir" / "file").stat().st_mtime_ns == 1_700_000_000_123_456_789
+    assert os.path.samefile(new / "dir" / "file", new / "hardlink")
+    assert os.readlink(new / "symlink") == "dir/file"
+    assert (new / "fifo").is_fifo()
+    assert (new / "dir" / "sub").stat().st_mode & 0o7777 == 0o2750 and new.stat().st_mode & 0o7777 == 0o710
+    if XATTRS:
+        assert os.getxattr(new / "dir" / "file", "user.note") == b"kept"
+    code, report = script("verify", copied)
+    assert (code, report["error"], report["verified"]) == (0, None, 7)
+
+
+def _set_mode(new):
+    (new / "dir" / "file").chmod(0o600)
+
+
+def _grow(new):
+    with open(new / "dir" / "file", "a") as f:
+        f.write("more")
+
+
+def _retime(new):
+    os.utime(new / "dir" / "sub", ns=(1, 1))
+
+
+def _extra(new):
+    (new / "extra").write_text("")
+
+
+def _missing(new):
+    (new / "fifo").unlink()
+
+
+def _retarget(new):
+    (new / "symlink").unlink()
+    (new / "symlink").symlink_to("dir")
+
+
+def _unlink(new):
+    (new / "hardlink").unlink()
+    (new / "hardlink").write_text("data")
+
+
+def _xattr(new):
+    if not XATTRS:
+        pytest.skip("no xattrs on this platform")
+    os.setxattr(new / "dir" / "file", "user.note", b"changed")
+
+
+@pytest.mark.parametrize(
+    ("change", "path"),
+    [
+        (_set_mode, "dir/file"),
+        (_grow, "dir/file"),
+        (_retime, "dir/sub"),
+        (_extra, "extra"),
+        (_missing, "fifo"),
+        (_retarget, "symlink"),
+        (_unlink, "hardlink"),
+        (_xattr, "dir/file"),
+    ],
+)
+def test_verify_names_any_difference_between_the_volumes(copied, change, path):
+    new = copied / "new" / "_data"
+    mtime = new.stat().st_mtime_ns
+    change(new)
+    os.utime(new, ns=(1, mtime))  # adding or removing an entry changes _data's own time; only `path` should differ
+    code, report = script("verify", copied)
+    assert code == 1
+    assert report["error"].startswith("RuntimeError: new differs from old at ")
+    assert repr(path) in report["error"]  # a hard-linked pair differs at both its names
+
+
+def test_copy_refuses_a_destination_that_is_not_empty(tmp_path):
+    (tmp_path / "old" / "_data").mkdir(parents=True)
+    (tmp_path / "new" / "_data").mkdir(parents=True)
+    (tmp_path / "new" / "_data" / "f").write_text("")
+    code, report = script("copy", tmp_path)
+    assert code == 1 and report["error"] == "RuntimeError: new is not empty"

@@ -32,6 +32,7 @@ addopts = "--strict-markers --import-mode=importlib"
 testpaths = ["tests"]
 markers = [
   "live: read-only checks against a real Host; run with -m live",
+  "docker: needs a local Docker daemon (skipped without one)",
 ]
 
 [tool.ruff]
