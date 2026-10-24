@@ -123,3 +123,13 @@ def test_nested_targets_are_rejected(project, run):
     code, _, err = run("check")
     assert code == 1
     assert "target '.agents/skills' is inside target '.agents'" in err
+
+
+def test_recovery_hints_name_the_command_the_repo_runs(project, source, run, monkeypatch):
+    source.add_skill("tdd")
+    project.write_lock(source.publish("tdd"))
+    monkeypatch.setenv("AGENT_SKILLS_COMMAND", "tools/agent-skills/setup-agent-skills")
+
+    code, _, err = run("check")
+    assert code == 1
+    assert err.endswith("; run tools/agent-skills/setup-agent-skills\n")

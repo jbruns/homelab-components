@@ -1,6 +1,7 @@
 """The consuming repo's `.agent-skills.lock`: where the skills come from, which ones, and where they install."""
 
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -124,4 +125,7 @@ def write_pin(lock, ref, revision):
         if fields and fields[0] in replaced:
             line = replaced[fields[0]] + "\n"
         lines.append(line)
-    lock.path.write_text("".join(lines))
+    partial = lock.path.with_name(lock.path.name + ".new")
+    partial.write_text("".join(lines))
+    shutil.copymode(lock.path, partial)
+    partial.replace(lock.path)

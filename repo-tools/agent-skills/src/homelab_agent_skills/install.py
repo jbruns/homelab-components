@@ -17,8 +17,12 @@ from .lock import skill_name, validate_skill_path, write_pin
 from .source import Checkout, git, resolve_skills, unmatched_excludes
 
 STATE_FILE = ".agent-skills-managed"
-FIX = "run setup-agent-skills"
 _TREE_HASH = re.compile(r"[0-9a-f]{40}")
+
+
+def _rerun():
+    """The recovery hint; a wrapper sets AGENT_SKILLS_COMMAND to the path the repo runs it by."""
+    return f"run {os.environ.get('AGENT_SKILLS_COMMAND') or 'setup-agent-skills'}"
 
 
 def _remove(path):
@@ -37,19 +41,32 @@ class Target:
         self.dir = root / relative
         self.state_file = self.dir / STATE_FILE
 
-    def managed(self):
-        """(skill path, tree hash) for each skill the state file records; empty when there is no state."""
+    def read_state(self):
+        """The lock settings recorded at install time, and (skill path, tree hash or None) for each managed skill.
+
+        Both are empty when there is no state."""
+        settings, skills = [], []
         if not self.state_file.is_file():
-            return []
-        entries = []
+            return settings, skills
         for line in self.state_file.read_text().splitlines():
             fields = line.split()
-            if not fields or fields[0] != "skill":
+            if not fields:
+                continue
+            if fields[0] != "skill":
+                settings.append(line)
                 continue
             if len(fields) not in (2, 3):
                 raise AgentSkillsError(f"invalid managed state: {self.state_file}")
-            entries.append((validate_skill_path(fields[1]), fields[2] if len(fields) == 3 else None))
-        return entries
+            skills.append((validate_skill_path(fields[1]), fields[2] if len(fields) == 3 else None))
+        return settings, skills
+
+    def managed(self):
+        return self.read_state()[1]
+
+    def _write_state(self, lines):
+        partial = self.dir / f"{STATE_FILE}.new"
+        partial.write_text("\n".join(lines) + "\n")
+        partial.replace(self.state_file)
 
     def refuse_unmanaged(self, skills):
         managed = {skill_name(skill) for skill, _ in self.managed()}
@@ -62,14 +79,14 @@ class Target:
         for skill, _ in self.managed():
             _remove(self.dir / skill_name(skill))
         self.dir.mkdir(parents=True, exist_ok=True)
+        # Claim the new skills before copying, without hashes, so an interrupted install stays managed (setup
+        # can redo it, clean can remove it) and fails check.
+        self._write_state(lock.state() + [f"skill {skill}" for skill in skills])
         for skill in skills:
             path = self.dir / skill_name(skill)
             _remove(path)
             shutil.copytree(checkout.skill_dir(skill), path, symlinks=True)
-        lines = lock.state() + [f"skill {skill} {self.tree_hash(skill_name(skill))}" for skill in skills]
-        partial = self.dir / f"{STATE_FILE}.new"
-        partial.write_text("\n".join(lines) + "\n")
-        partial.replace(self.state_file)
+        self._write_state(lock.state() + [f"skill {skill} {self.tree_hash(skill_name(skill))}" for skill in skills])
 
     def tree_hash(self, name):
         """The git tree hash of an installed skill and every supporting file, via a throwaway index."""
@@ -81,21 +98,20 @@ class Target:
 
     def check(self, lock):
         if not self.state_file.is_file():
-            raise AgentSkillsError(f"agent skills are not installed in {self.relative}; {FIX}")
-        recorded = [line for line in self.state_file.read_text().splitlines() if line.split()[:1] != ["skill"]]
+            raise AgentSkillsError(f"agent skills are not installed in {self.relative}; {_rerun()}")
+        recorded, managed = self.read_state()
         if recorded != lock.state():
-            raise AgentSkillsError(f"agent skills in {self.relative} are stale; {FIX}")
-        managed = self.managed()
+            raise AgentSkillsError(f"agent skills in {self.relative} are stale; {_rerun()}")
         for skill, expected in managed:
             name = skill_name(skill)
             if expected is None or not _TREE_HASH.fullmatch(expected):
-                raise AgentSkillsError(f"invalid installed state for '{skill}' in {self.relative}; {FIX}")
+                raise AgentSkillsError(f"invalid installed state for '{skill}' in {self.relative}; {_rerun()}")
             if not (self.dir / name / "SKILL.md").is_file():
-                raise AgentSkillsError(f"missing installed skill '{name}' in {self.relative}; {FIX}")
+                raise AgentSkillsError(f"missing installed skill '{name}' in {self.relative}; {_rerun()}")
             if self.tree_hash(name) != expected:
-                raise AgentSkillsError(f"installed skill '{name}' in {self.relative} has local changes; {FIX}")
+                raise AgentSkillsError(f"installed skill '{name}' in {self.relative} has local changes; {_rerun()}")
         if not managed:
-            raise AgentSkillsError(f"no skills are installed in {self.relative}; {FIX}")
+            raise AgentSkillsError(f"no skills are installed in {self.relative}; {_rerun()}")
 
     def clean(self):
         """Removes the managed skills and the state; returns whether there was anything to remove."""

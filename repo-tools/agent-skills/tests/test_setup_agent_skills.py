@@ -234,6 +234,13 @@ def test_clean_removes_only_managed_skills(project, installed, run):
     assert run("clean")[1] == "No managed agent skills are installed.\n"
 
 
+def test_clean_works_from_the_state_even_when_the_lock_is_invalid(project, installed, run):
+    project.lock.write_text(project.lock.read_text() + "skill example\n")
+
+    assert run("clean")[0] == 0
+    assert project.installed() == []
+
+
 def test_setup_never_overwrites_an_unmanaged_skill(project, revision, run):
     skills = project.path / ".agents/skills"
     (skills / "example").mkdir(parents=True)

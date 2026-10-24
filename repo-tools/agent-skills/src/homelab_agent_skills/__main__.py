@@ -36,6 +36,14 @@ def _lock_path(root):
     return Path(os.environ.get("AGENT_SKILLS_LOCK") or root / LOCK_FILE)
 
 
+def _clean_targets(lock_path):
+    """The lock's targets; clean still works, from the default target, when the lock is missing or invalid."""
+    try:
+        return load_lock(lock_path).targets
+    except AgentSkillsError:
+        return (DEFAULT_TARGET,)
+
+
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
     command = args[0] if args else "setup"
@@ -50,9 +58,7 @@ def main(argv=None):
         root = _repo_root()
         lock_path = _lock_path(root)
         if command == "clean":
-            # Clean works without a lock, from the default target.
-            targets = load_lock(lock_path).targets if lock_path.exists() else (DEFAULT_TARGET,)
-            install.clean(root, targets)
+            install.clean(root, _clean_targets(lock_path))
             return 0
         lock = load_lock(lock_path)
         if command == "setup":

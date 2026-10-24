@@ -21,6 +21,7 @@ uv caches, so `check` keeps working offline after the first run; the tag beside 
 set -euo pipefail
 tag=agent-skills-v1.0.0
 commit=0000000000000000000000000000000000000000
+export AGENT_SKILLS_COMMAND="$0"
 cd "$(dirname "${BASH_SOURCE[0]}")"
 exec uvx --quiet --from "git+https://github.com/jbruns/homelab-components@${commit}#subdirectory=repo-tools/agent-skills" \
   setup-agent-skills "$@"
@@ -35,7 +36,8 @@ refs/tags/agent-skills-v1.0.0`). Then:
   `tools/agent-skills/setup-agent-skills` when it fails, then start a fresh session to discover the skills.
 
 The wrapper needs [uv](https://docs.astral.sh/uv/). It changes into its own directory first, so it always manages
-the repo it lives in, wherever it is run from.
+the repo it lives in, wherever it is run from, and names itself in recovery hints ("run
+tools/agent-skills/setup-agent-skills").
 
 Renovate keeps `tag` and `commit` current with a custom manager (the shared Renovate preset should carry it):
 
@@ -72,7 +74,8 @@ setup-agent-skills clean    # remove only the skills this tool installed
 
 It finds the repo root with `git rev-parse --show-toplevel` from the working directory, and reads
 `<root>/.agent-skills.lock`, or the absolute path in `AGENT_SKILLS_LOCK`, which still installs into this repo.
-Errors print `error: ...` and exit 1; bad usage exits 2. Start a fresh agent session after installing or changing
+Errors print `error: ...` and exit 1; bad usage exits 2. Recovery hints say "run setup-agent-skills", or the
+command in `AGENT_SKILLS_COMMAND`. Start a fresh agent session after installing or changing
 skills so the agent discovers them.
 
 ## .agent-skills.lock
@@ -134,9 +137,10 @@ setup to repair missing or changed files.
 
 Setup replaces local edits to managed skills and removes previously managed skills no longer selected. It never
 touches a directory it did not install: an unmanaged directory, file or symlink with a selected skill's name in any
-target fails setup before anything changes. Keep custom skills under other names. `clean` removes only the skills
-listed in each target's state, and works without a lock (from `.agents/skills`). If a state file is lost, move the
-conflicting skill directories aside before reinstalling.
+target fails setup before anything changes. Keep custom skills under other names. Setup records the skills it is
+about to copy before copying them, so an interrupted install stays managed: `check` fails, and setup or `clean`
+finishes the job. `clean` removes only the skills listed in each target's state; with a missing or invalid lock it
+cleans `.agents/skills`. If a state file is lost, move the conflicting skill directories aside before reinstalling.
 
 The state format is unchanged from jbruns/home-ops' original `tools/agent-skills`, so an install made by either
 passes the other's `check`.
