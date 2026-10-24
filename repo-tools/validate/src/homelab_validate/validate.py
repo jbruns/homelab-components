@@ -1411,17 +1411,20 @@ def check_host_monitoring(host: Host) -> None:
 
     am = path("alertmanager", host)
     if available("alertmanager", host, skip=skip_message(am)):
-        if (am / "config.yml") in tracked_files():
+        config = am / "config.yml"
+        if config.is_file():
             am_image = deployed_image(am / INCLUDED_NAME, "alertmanager")
             docker_run(
                 am_image,
-                {am / "config.yml": "/etc/alertmanager/config.yml"},
+                {config: "/etc/alertmanager/config.yml"},
                 "amtool",
                 "check-config",
                 "/etc/alertmanager/config.yml",
             )
-        else:
+        elif any(am.glob("config.sops.*")):
             warn("alertmanager config is encrypted-only; amtool check skipped until it is split from its secrets")
+        else:
+            fail(f"{_rel(am)}: no config.yml or config.sops.*")
 
     loki = path("loki", host)
     loki_image = None

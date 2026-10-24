@@ -528,13 +528,42 @@ def test_monitoring_runs_each_tool_with_the_deployed_image(validate, runtime):
     ]
 
 
-def test_monitoring_skips_untracked_alertmanager_config_and_reports_stale_dashboards(validate, repo, capsys, runtime):
-    subprocess.run(["git", "rm", "-q", "--cached", "tn/monitoring/alertmanager/config.yml"], cwd=repo, check=True)
+def test_monitoring_skips_an_encrypted_only_alertmanager_config_and_reports_stale_dashboards(
+    validate, repo, capsys, runtime
+):
+    subprocess.run(["git", "rm", "-q", "tn/monitoring/alertmanager/config.yml"], cwd=repo, check=True)
+    write(repo, {"tn/monitoring/alertmanager/config.sops.yml": "sops: {}\n"})
     write(repo, {"tools/dashboards/dashboards.py": "print('overview.json: stale'); raise SystemExit(1)\n"})
     validate.check_monitoring()
     assert "amtool" not in [r.args[0] for r in runtime.runs]
     assert "alertmanager config is encrypted-only" in capsys.readouterr().out
     assert messages(validate) == "overview.json: stale"
+
+
+def test_monitoring_checks_an_alertmanager_config_outside_the_repo(validate, repo, runtime):
+    external = repo.parent / "alertmanager"
+    write(external, {"service.yaml": "services:\n  alertmanager:\n    image: prom/alertmanager:v3\n"})
+    write(external, {"config.yml": "route: invalid\n"})
+    configure(validate, repo, {"alertmanager": str(external)})
+    validate.check_monitoring()
+    [amtool] = [r for r in runtime.runs if r.args[0] == "amtool"]
+    assert (amtool.image, amtool.mounts) == (
+        "prom/alertmanager:v3",
+        {"/etc/alertmanager/config.yml": "route: invalid\n"},
+    )
+
+
+def test_monitoring_checks_an_untracked_alertmanager_config(validate, repo, runtime):
+    subprocess.run(["git", "rm", "-q", "--cached", "tn/monitoring/alertmanager/config.yml"], cwd=repo, check=True)
+    validate.check_monitoring()
+    assert "amtool" in [r.args[0] for r in runtime.runs]
+
+
+def test_monitoring_fails_on_an_alertmanager_without_a_config(validate, repo, runtime):
+    subprocess.run(["git", "rm", "-q", "tn/monitoring/alertmanager/config.yml"], cwd=repo, check=True)
+    commit(repo)
+    validate.check_monitoring()
+    assert messages(validate) == "tn/monitoring/alertmanager: no config.yml or config.sops.*"
 
 
 # --- docker-backed checks ---------------------------------------------------------------------

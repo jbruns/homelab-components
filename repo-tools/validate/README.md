@@ -76,7 +76,7 @@ or the wrong type (a file for a directory input, or the reverse), the check that
 |---|---|---|
 | `prometheus` | `monitoring/prometheus` (`service.yaml`, `prometheus.yml`, `*rules*.yml`, `dependencies.yml` when [used](#dependency-rendering)) | `monitoring` skips the Host |
 | `rule-tests` | `monitoring/prometheus/tests` (`*.test.yml` promtool suites) | every rule fails for want of a case |
-| `alertmanager` | `monitoring/alertmanager` (`service.yaml`, `config.yml`) | amtool skipped |
+| `alertmanager` | `monitoring/alertmanager` (`service.yaml`, `config.yml`, or an encrypted-only `config.sops.*`) | amtool skipped |
 | `loki` | `monitoring/loki` (`service.yaml`, `loki.yaml`) | Loki check skipped; the Grafana check fails |
 | `alloy` | `monitoring/alloy` (`service.yaml`, `config.alloy`) | Alloy check skipped |
 | `grafana` | `monitoring/grafana` (`service.yaml`, `provisioning/`, `datasources.sops.env`) | Grafana checks skipped |
@@ -88,6 +88,11 @@ or the wrong type (a file for a directory input, or the reverse), the check that
 
 For example, a repo that keeps its dashboard generator and promtool suites outside the stack root runs
 `homelab-validate --path dashboards=tools/dashboards/dashboards.py --path rule-tests=tools/validate/rules`.
+
+Every check reads an input from the files on disk, inside the repo or outside it. amtool checks the
+`config.yml` in `alertmanager`. When there is only a `config.sops.*`, it warns that the config is encrypted-only.
+With neither, it fails. A `--path` outside the repo has no Git history, so rule-test freshness and the Grafana
+upgrade boot warn and skip only their comparison with the base ref; the rest of each check runs.
 
 ### Dependency rendering
 
