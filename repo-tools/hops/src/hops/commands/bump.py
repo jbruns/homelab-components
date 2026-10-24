@@ -1,9 +1,10 @@
 """hops bump: pin a Service's image to a newer tag and its index digest, through a PR.
 
 Repo-changing: it never touches the Host. The edit happens on a new branch from origin/<default branch>
-(hosts.yaml `default_branch`) in a new worktree under .worktrees/, so the checkout hops runs from is never modified (whatever branch it
-is on); nothing is pushed without --pr.
+(hosts.yaml `default_branch`) in a new worktree under .worktrees/, so the checkout hops runs from is never
+modified (whatever branch it is on); nothing is pushed without --pr.
 """
+
 import argparse
 import io
 import json
@@ -37,13 +38,19 @@ RENOVATE = "app/renovate"
 
 
 def register(subparsers) -> None:
-    p = subparsers.add_parser("bump", help=HELP, description=DESCRIPTION,
-                              formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = subparsers.add_parser(
+        "bump", help=HELP, description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("service", help="stack/service or a unique Service name")
     p.add_argument("tag", nargs="?", help="the tag to pin (default: the newest tag shaped like the current one)")
     p.add_argument("--pr", action="store_true", help="push the branch and open a PR against the default branch")
-    p.add_argument("--trailer", action="append", default=[], metavar="TEXT",
-                   help='a commit trailer, e.g. "Co-authored-by: Name <email>" (repeatable)')
+    p.add_argument(
+        "--trailer",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help='a commit trailer, e.g. "Co-authored-by: Name <email>" (repeatable)',
+    )
     p.set_defaults(func=run)
 
 
@@ -69,8 +76,22 @@ def _gh(cwd: Path, *args: str, input: str | None = None) -> str:
 
 def renovate_prs(cwd: Path, repository: str) -> list[dict]:
     """Renovate's open PRs that update `repository` (as written in Compose)."""
-    prs = json.loads(_gh(cwd, "pr", "list", "--state", "open", "--author", RENOVATE,
-                         "--json", "number,title,url,body", "--limit", "100") or "[]")
+    prs = json.loads(
+        _gh(
+            cwd,
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--author",
+            RENOVATE,
+            "--json",
+            "number,title,url,body",
+            "--limit",
+            "100",
+        )
+        or "[]"
+    )
     # Renovate's PR body has a table whose first column is the package: `| [name](link) | ...`.
     package = re.compile(r"^\|\s*\[?([^\]\s|]+)", re.M)
     return [pr for pr in prs if repository in package.findall(pr.get("body") or "")]
@@ -126,12 +147,15 @@ def run(args, ctx) -> int:
     if not tag:
         tag, rejected = propose(image.tag, registry.tags(image.repository))
         if tag is None:
-            raise UsageError(f"{image.tag!r} is not a version tag hops can compare; name a tag: "
-                             f"hops bump {service.key} <tag>")
+            raise UsageError(
+                f"{image.tag!r} is not a version tag hops can compare; name a tag: hops bump {service.key} <tag>"
+            )
         if rejected:
             other = f"the newest acceptable is {tag}" if tag != image.tag else f"no newer tag than {tag} qualifies"
-            raise UsageError(f"the newest {image.tag}-shaped tag, {rejected}, is more than one major version "
-                             f"ahead (a stray tag?); {other}. Name the tag: hops bump {service.key} {tag}")
+            raise UsageError(
+                f"the newest {image.tag}-shaped tag, {rejected}, is more than one major version "
+                f"ahead (a stray tag?); {other}. Name the tag: hops bump {service.key} {tag}"
+            )
     new_ref = f"{image.repository}:{tag}@{registry.digest(image.repository, tag)}"
     if new_ref == image.ref:
         ctx.stdout.write(f"{service.key} already pins {new_ref}\n")
@@ -143,16 +167,20 @@ def run(args, ctx) -> int:
         superseded = []
         ctx.stderr.write(f"hops: warning: could not check Renovate's open PRs: {exc}\n")
     for pr in superseded:
-        ctx.stderr.write(f"hops: warning: Renovate already has #{pr['number']} for {image.repository}: "
-                         f"{pr['title']} ({pr['url']}); continuing\n")
+        ctx.stderr.write(
+            f"hops: warning: Renovate already has #{pr['number']} for {image.repository}: "
+            f"{pr['title']} ({pr['url']}); continuing\n"
+        )
 
     branch = f"hops/bump-{service.name}-{tag}"
     _git(root, "check-ref-format", "--branch", branch)
     main_root = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
     wt = main_root / ".worktrees" / f"bump-{service.name}-{tag}"
     if wt.exists() or _git(root, "branch", "--list", branch):
-        raise UsageError(f"{wt} or branch {branch} already exists; discard them first: "
-                         f"git worktree remove --force {wt}; git branch -D {branch}")
+        raise UsageError(
+            f"{wt} or branch {branch} already exists; discard them first: "
+            f"git worktree remove --force {wt}; git branch -D {branch}"
+        )
     _git(root, "worktree", "add", "-q", "--no-track", "-b", branch, str(wt), base)
 
     changed = rewrite(wt / stack_root / service.stack, image.ref, new_ref)
@@ -169,8 +197,10 @@ def run(args, ctx) -> int:
             v = subprocess.CompletedProcess(command, 127, "", f"{exc}\n")
         if v.returncode != 0:
             ctx.stderr.write(v.stdout + v.stderr)
-            raise HopsError(f"validate ({shlex.join(command)}) failed; the uncommitted edit is in {wt} "
-                            f"(branch {branch}). Discard: git worktree remove --force {wt}; git branch -D {branch}")
+            raise HopsError(
+                f"validate ({shlex.join(command)}) failed; the uncommitted edit is in {wt} "
+                f"(branch {branch}). Discard: git worktree remove --force {wt}; git branch -D {branch}"
+            )
     else:
         ctx.stderr.write("hops: note: hosts.yaml declares no validate command; committing unvalidated\n")
 
@@ -180,28 +210,58 @@ def run(args, ctx) -> int:
     ctx.stdout.write(f"committed {_git(wt, 'rev-parse', '--short', 'HEAD')} on {branch} in {wt}\n")
 
     if not args.pr:
-        ctx.stdout.write(f"not pushed. Open a PR: git -C {wt} push -u origin {branch} && gh pr create ...\n"
-                         f"or discard: git worktree remove {wt} && git branch -D {branch}\n")
+        ctx.stdout.write(
+            f"not pushed. Open a PR: git -C {wt} push -u origin {branch} && gh pr create ...\n"
+            f"or discard: git worktree remove {wt} && git branch -D {branch}\n"
+        )
         return 0
     _git(wt, "push", "-q", "-u", "origin", branch)
-    url = _gh(wt, "pr", "create", "--base", branch_name, "--head", branch, "--title", subject, "--body-file", "-",
-              input=pr_body(service, image.ref, new_ref, files, superseded, branch_name, command))
+    url = _gh(
+        wt,
+        "pr",
+        "create",
+        "--base",
+        branch_name,
+        "--head",
+        branch,
+        "--title",
+        subject,
+        "--body-file",
+        "-",
+        input=pr_body(service, image.ref, new_ref, files, superseded, branch_name, command),
+    )
     ctx.stdout.write(f"{url}\n")
     return 0
 
 
-def pr_body(service, old: str, new: str, files: list[str], superseded: list[dict], base: str,
-            validate: tuple[str, ...]) -> str:
-    lines = ["## Summary", "", f"Pins `{service.key}` with `hops bump` ({', '.join(f'`{f}`' for f in files)}):",
-             "", "```diff", f"-image: {old}", f"+image: {new}", "```", ""]
+def pr_body(
+    service, old: str, new: str, files: list[str], superseded: list[dict], base: str, validate: tuple[str, ...]
+) -> str:
+    lines = [
+        "## Summary",
+        "",
+        f"Pins `{service.key}` with `hops bump` ({', '.join(f'`{f}`' for f in files)}):",
+        "",
+        "```diff",
+        f"-image: {old}",
+        f"+image: {new}",
+        "```",
+        "",
+    ]
     for pr in superseded:
         lines += [f"Supersedes #{pr['number']} (Renovate closes it once `{base}` has this version or newer).", ""]
     checked = f"`{shlex.join(validate)}` passed. " if validate else "Not validated (hosts.yaml declares no validate). "
-    lines += ["## Evidence", "",
-              checked + "The digest is the registry's index digest for the tag, the one Renovate pins, so "
-              "Renovate's next run sees no diff.", "",
-              "## Merge Danger", "",
-              "**Door:** two-way. Revert this PR to go back to the previous pin.", "",
-              f"**Blast Radius:** the `{service.stack}` Stack. doco-cd recreates its Services that use this image.",
-              ""]
+    lines += [
+        "## Evidence",
+        "",
+        checked + "The digest is the registry's index digest for the tag, the one Renovate pins, so "
+        "Renovate's next run sees no diff.",
+        "",
+        "## Merge Danger",
+        "",
+        "**Door:** two-way. Revert this PR to go back to the previous pin.",
+        "",
+        f"**Blast Radius:** the `{service.stack}` Stack. doco-cd recreates its Services that use this image.",
+        "",
+    ]
     return "\n".join(lines)

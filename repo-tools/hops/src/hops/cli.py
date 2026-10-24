@@ -1,4 +1,5 @@
 """The hops command line: parsing, the shared Context, and error reporting."""
+
 import argparse
 import os
 import sys
@@ -26,8 +27,18 @@ Targets: stack/service; a bare Service name when unique; a bare Stack name for a
 class Context:
     """What a command needs, each built on first use: a name error never reads .env or opens SSH."""
 
-    def __init__(self, *, repo_root: Path | None = None, host: str | None = None, runner: Runner | None = None,
-                 truenas: TrueNASClient | None = None, env=None, cwd: Path | None = None, stdout=None, stderr=None):
+    def __init__(
+        self,
+        *,
+        repo_root: Path | None = None,
+        host: str | None = None,
+        runner: Runner | None = None,
+        truenas: TrueNASClient | None = None,
+        env=None,
+        cwd: Path | None = None,
+        stdout=None,
+        stderr=None,
+    ):
         self.env = os.environ if env is None else env
         self.host_name = host
         self.cwd = cwd
@@ -64,9 +75,11 @@ class Context:
         """A UsageError, before anything touches the Host, when the Host lacks a capability `what` needs."""
         missing = [c for c in capabilities if not self.host.has(c)]
         if missing:
-            raise UsageError(f"{what} needs a Host with the {' and '.join(missing)} capabilit"
-                             f"{'ies' if len(missing) > 1 else 'y'}; Host {self.host.name!r} has "
-                             f"{', '.join(sorted(self.host.capabilities)) or 'none'} (hosts.yaml)")
+            raise UsageError(
+                f"{what} needs a Host with the {' and '.join(missing)} capabilit"
+                f"{'ies' if len(missing) > 1 else 'y'}; Host {self.host.name!r} has "
+                f"{', '.join(sorted(self.host.capabilities)) or 'none'} (hosts.yaml)"
+            )
 
     @cached_property
     def declared(self) -> Declared:
@@ -87,8 +100,10 @@ class Context:
             self.truenas.close()
 
 
-HOST_HELP = "the Host to act on (a name in hosts.yaml); default: the Host whose stack root holds the working " \
-            "directory, else the only Host"
+HOST_HELP = (
+    "the Host to act on (a name in hosts.yaml); default: the Host whose stack root holds the working "
+    "directory, else the only Host"
+)
 
 
 def _add_host_option(parser: argparse.ArgumentParser) -> None:
@@ -102,8 +117,9 @@ def _add_host_option(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="hops", description=DESCRIPTION,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        prog="hops", description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--host", default=None, help=HOST_HELP)
     sub = parser.add_subparsers(dest="command", metavar="<command>", required=True)
     for module in commands.modules():

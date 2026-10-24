@@ -8,6 +8,7 @@ prometheus.yml), so they run only against one:
 The Host is HOPS_CONSUMER_HOST, else the consuming repo's only Host. The Stacks and Services named
 below are home-ops's.
 """
+
 import os
 import re
 from pathlib import Path
@@ -20,8 +21,10 @@ from hops import silences as silences_module
 from hops.declared import Declared
 
 CONSUMER = os.environ.get("HOPS_CONSUMER_REPO")
-pytestmark = [pytest.mark.consumer,
-              pytest.mark.skipif(not CONSUMER, reason="reads a consuming repo; set HOPS_CONSUMER_REPO")]
+pytestmark = [
+    pytest.mark.consumer,
+    pytest.mark.skipif(not CONSUMER, reason="reads a consuming repo; set HOPS_CONSUMER_REPO"),
+]
 
 if CONSUMER:
     REPO = Path(CONSUMER).expanduser().resolve()
@@ -73,8 +76,18 @@ def stop_silences(key: str, container: str) -> list[dict]:
 def probe_failed(stack: str, service: str, container: str, job: str = "probe", **labels) -> dict:
     """ProbeFailed as the probe jobs relabel it from the probed container's Compose labels."""
     service_ = Declared.load(REPO, STACK_ROOT).get(stack, service)
-    return alert("ProbeFailed", {"job": job, "instance": "https://example", "container": container,
-                                 "service": service, "stack": stack, "tier": service_.tier, **labels})
+    return alert(
+        "ProbeFailed",
+        {
+            "job": job,
+            "instance": "https://example",
+            "container": container,
+            "service": service,
+            "stack": stack,
+            "tier": service_.tier,
+            **labels,
+        },
+    )
 
 
 def test_stopping_traefik_silences_its_target_down_page():
@@ -96,8 +109,9 @@ def test_stopping_a_service_without_container_name_silences_its_target_by_servic
 
 def test_stopping_a_service_silences_container_down():
     found = stop_silences("sonarr/sonarr", "sonarr")
-    assert silenced(found, alert("ContainerDown", {"stack": "sonarr", "service": "sonarr", "name": "sonarr",
-                                                   "tier": "warning"}))
+    assert silenced(
+        found, alert("ContainerDown", {"stack": "sonarr", "service": "sonarr", "name": "sonarr", "tier": "warning"})
+    )
 
 
 def test_stopping_traefik_silences_every_probe_its_own_missing_probe_no_longer_inhibits():
@@ -106,16 +120,23 @@ def test_stopping_traefik_silences_every_probe_its_own_missing_probe_no_longer_i
     found = [s.matchers for s in plan]
     assert silenced(found, probe_failed("vaultwarden", "vaultwarden", "vaultwarden"))
     assert silenced(found, probe_failed("nextcloud", "nextcloud", "nextcloud"))
-    assert silenced(found, probe_failed("calibre-web-automated", "calibre-web-automated", "calibre-web-automated",
-                                        job="probe-idp", auth="forward"))
+    assert silenced(
+        found,
+        probe_failed(
+            "calibre-web-automated", "calibre-web-automated", "calibre-web-automated", job="probe-idp", auth="forward"
+        ),
+    )
     assert silenced(found, alert("IdpForwardAuthFailing", {}))
     (every_probe,) = [s for s in plan if s.matchers == {"alertname": "ProbeFailed"}]
     assert "all Probes" in every_probe.reason
 
 
 def test_stopping_other_services_leaves_other_probes_paging():
-    for key, container in [("sonarr/sonarr", "sonarr"), ("edge/crowdsec", "crowdsec"),
-                           ("nextcloud/mariadb", "nextcloud-mariadb")]:
+    for key, container in [
+        ("sonarr/sonarr", "sonarr"),
+        ("edge/crowdsec", "crowdsec"),
+        ("nextcloud/mariadb", "nextcloud-mariadb"),
+    ]:
         found = stop_silences(key, container)
         assert not silenced(found, probe_failed("vaultwarden", "vaultwarden", "vaultwarden")), key
 
@@ -127,8 +148,13 @@ def test_stopping_a_datastore_silences_the_services_in_its_stack_that_depend_on_
     assert not silenced(found, alert("DatastoreDown", scrape_target("mysqld", datastore="nextcloud-mariadb")))
     nextcloud = stop_silences("nextcloud/mariadb", "nextcloud-mariadb")
     assert silenced(nextcloud, probe_failed("nextcloud", "nextcloud", "nextcloud"))
-    assert silenced(nextcloud, alert("ContainerDown", {"stack": "nextcloud", "service": "nextcloud-cron",
-                                                       "name": "nextcloud-cron", "tier": "warning"}))
+    assert silenced(
+        nextcloud,
+        alert(
+            "ContainerDown",
+            {"stack": "nextcloud", "service": "nextcloud-cron", "name": "nextcloud-cron", "tier": "warning"},
+        ),
+    )
     assert not silenced(found, probe_failed("nextcloud", "nextcloud", "nextcloud"))
 
 
@@ -144,9 +170,15 @@ def test_stopping_a_monitoring_service_never_silences_the_heartbeat():
     assert not silenced(found, alert("Watchdog", {}))
 
 
-@pytest.mark.parametrize("key, container", [("edge/traefik", "traefik"), ("ops/stack-back", "stack-back"),
-                                            ("vaultwarden/mariadb", "vaultwarden-mariadb"),
-                                            ("monitoring/prometheus", "prometheus")])
+@pytest.mark.parametrize(
+    "key, container",
+    [
+        ("edge/traefik", "traefik"),
+        ("ops/stack-back", "stack-back"),
+        ("vaultwarden/mariadb", "vaultwarden-mariadb"),
+        ("monitoring/prometheus", "prometheus"),
+    ],
+)
 def test_every_silence_is_narrow_and_explained(key, container):
     for s in stop_plan((key, container)):
         assert s.matchers and set(s.matchers) != {"stack"} and s.reason, s

@@ -12,6 +12,7 @@ top-level entries. `check` only reads; `move` re-checks, renames, and reports th
 `copy` copies <old>/_data into an empty <new>/_data with `cp -a` (owners, modes, timestamps and links
 kept) for a Rollback Volume (hops/rollback_volumes.py), leaving <old> as it was.
 """
+
 import json
 import re
 from dataclasses import dataclass
@@ -113,6 +114,7 @@ print(json.dumps(state(moved=moved, error=None)))
 @dataclass(frozen=True)
 class Probe:
     """What SCRIPT saw: the filesystem under the volumes directory, and each volume's _data."""
+
     fstype: str | None
     source: str | None  # the ZFS dataset holding the volumes directory
     dev: int
@@ -128,8 +130,9 @@ class Probe:
             fstype, source = data["mount"] or (None, None)
             return cls(fstype, source, data["dev"], data["old"], data["new"], data.get("moved"), data.get("error"))
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            raise HopsError(f"the volume-move container printed something other than its report: {text[:200]!r}") \
-                from None
+            raise HopsError(
+                f"the volume-move container printed something other than its report: {text[:200]!r}"
+            ) from None
 
 
 def check_name(name: str) -> None:
@@ -179,12 +182,44 @@ def local_problem(volume: dict, directory: str) -> str | None:
 def run(runner: Runner, image: str, directory: str, mode: str, old: str, new: str):
     """SCRIPT in a throwaway container that mounts `directory` at ROOT (read-only for `check`)."""
     return runner.docker(
-        "run", "--rm", "--label", f"{strays.DELIBERATE_LABEL}={strays.DELIBERATE_VALUE}", "--label", f"{LABEL}={old}",
-        "--log-driver", "none", "--network", "none", "--pull", "never", "--read-only",
-        "--user", "0:0", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
-        "--cap-add", "FOWNER",
-        "--memory", "256m", "-v", f"{directory}:{ROOT}{':ro' if mode == 'check' else ''}",
-        image, "python3", "-c", SCRIPT, mode, ROOT, old, new, check=False, timeout=TIMEOUT)
+        "run",
+        "--rm",
+        "--label",
+        f"{strays.DELIBERATE_LABEL}={strays.DELIBERATE_VALUE}",
+        "--label",
+        f"{LABEL}={old}",
+        "--log-driver",
+        "none",
+        "--network",
+        "none",
+        "--pull",
+        "never",
+        "--read-only",
+        "--user",
+        "0:0",
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "CHOWN",
+        "--cap-add",
+        "DAC_OVERRIDE",
+        "--cap-add",
+        "FOWNER",
+        "--memory",
+        "256m",
+        "-v",
+        f"{directory}:{ROOT}{':ro' if mode == 'check' else ''}",
+        image,
+        "python3",
+        "-c",
+        SCRIPT,
+        mode,
+        ROOT,
+        old,
+        new,
+        check=False,
+        timeout=TIMEOUT,
+    )
 
 
 def copy(runner: Runner, image: str, directory: str, old: str, new: str) -> Probe:
@@ -192,16 +227,19 @@ def copy(runner: Runner, image: str, directory: str, old: str, new: str) -> Prob
     copy failed; a HopsError means no report came back at all."""
     result = run(runner, image, directory, "copy", old, new)
     if not result.stdout.strip():
-        raise HopsError(f"the volume-copy container gave no report: "
-                        f"{result.stderr.strip() or f'exit code {result.returncode}'}")
+        raise HopsError(
+            f"the volume-copy container gave no report: {result.stderr.strip() or f'exit code {result.returncode}'}"
+        )
     return Probe.parse(result.stdout.strip().splitlines()[-1])
 
 
 def check(runner: Runner, image: str, directory: str, old: str, new: str) -> Probe:
     result = run(runner, image, directory, "check", old, new)
     if result.returncode != 0:
-        raise HopsError(f"the volume-move container could not read {directory}: "
-                        f"{result.stderr.strip() or f'exit code {result.returncode}'}")
+        raise HopsError(
+            f"the volume-move container could not read {directory}: "
+            f"{result.stderr.strip() or f'exit code {result.returncode}'}"
+        )
     return Probe.parse(result.stdout)
 
 
@@ -210,8 +248,9 @@ def move(runner: Runner, image: str, directory: str, old: str, new: str) -> Prob
     stopped part-way; a HopsError means no report came back at all."""
     result = run(runner, image, directory, "move", old, new)
     if not result.stdout.strip():
-        raise HopsError(f"the volume-move container gave no report: "
-                        f"{result.stderr.strip() or f'exit code {result.returncode}'}")
+        raise HopsError(
+            f"the volume-move container gave no report: {result.stderr.strip() or f'exit code {result.returncode}'}"
+        )
     return Probe.parse(result.stdout.strip().splitlines()[-1])
 
 
@@ -222,5 +261,8 @@ def image(declared: Declared) -> str:
 def users(runner: Runner, name: str) -> list[Container]:
     """Every container, running or stopped, that mounts the volume `name`."""
     ids = runner.docker("ps", "-aq", "--no-trunc", "--filter", f"volume={name}").stdout.split()
-    return [c for c in docker.inspect(runner, *ids)
-            if any(m.get("Type") == "volume" and m.get("Name") == name for m in c.raw.get("Mounts") or [])]
+    return [
+        c
+        for c in docker.inspect(runner, *ids)
+        if any(m.get("Type") == "volume" and m.get("Name") == name for m in c.raw.get("Mounts") or [])
+    ]

@@ -1,13 +1,18 @@
 """hops start <target…>: docker start for each Service's existing container."""
+
 from hops import lifecycle
 
 HELP = "start Services' stopped containers (docker start)"
 
 
 def register(subparsers) -> None:
-    p = subparsers.add_parser("start", help=HELP, description=HELP + ". Runtime-reversible: prints the "
-                              "containers, then starts them. Silences from hops stop stay until they "
-                              "expire (see hops alerts).")
+    p = subparsers.add_parser(
+        "start",
+        help=HELP,
+        description=HELP + ". Runtime-reversible: prints the "
+        "containers, then starts them. Silences from hops stop stay until they "
+        "expire (see hops alerts).",
+    )
     lifecycle.add_targets(p)
     p.set_defaults(func=run)
 

@@ -4,13 +4,14 @@ Successful runs and the empty list are recorded as returned. doco-cd had no fail
 memory when they were recorded: the failed run is rebuilt from doco-cd's log of that job, and the
 skipped ones use the messages doco-cd 0.128 writes for a paused Stack and an exhausted retry budget.
 """
+
 import json
 from pathlib import Path
 
 import pytest
+from hops_fakes import container
 
 from hops import doco
-from hops_fakes import container
 
 FIXTURES = Path(__file__).parent / "fixtures" / "doco"
 KEY = "fake-doco-cd-key"
@@ -35,7 +36,9 @@ def doco_cd(fake_host, monkeypatch):
     """prometheus can carry requests to doco-cd and `sops -d` returns KEY; doco_cd(name) sets the answer."""
     monkeypatch.setattr(doco, "decrypt", lambda path: KEY + "\n")
     fake_host.respond("network", "inspect", "metrics", stdout="prometheus \n")
-    fake_host.respond("inspect", stdout=json.dumps([container("prometheus", project="monitoring", service="prometheus")]))
+    fake_host.respond(
+        "inspect", stdout=json.dumps([container("prometheus", project="monitoring", service="prometheus")])
+    )
     fake_host.respond("exec", "prometheus", "sh")
 
     def answer(name: str, status: str = "200 OK", only: str | None = None):
@@ -84,11 +87,14 @@ def test_json_lists_each_run_with_its_stacks_and_message(hops, doco_cd):
     doco_cd("runs.json")
     runs = json.loads(hops("deploys", "--json").out)["runs"]
     assert runs[3] == {
-        "job_id": FAILED, "trigger": "poll", "status": "failed",
-        "repository": "github.com/jbruns/home-ops", "revision": "main",
+        "job_id": FAILED,
+        "trigger": "poll",
+        "status": "failed",
+        "repository": "github.com/jbruns/home-ops",
+        "revision": "main",
         "stacks": ["navidrome", "ownfoil"],
         "message": "deployment failed: failed to deploy stack ownfoil: failed to deploy stack: "
-                   "service ownfoil has a restarting container",
+        "service ownfoil has a restarting container",
         "created_at": "2026-10-21T15:45:37.666093522-07:00",
         "started_at": "2026-10-21T15:45:37.666151807-07:00",
         "finished_at": "2026-10-21T15:45:47.880302816-07:00",

@@ -15,13 +15,15 @@ on the Host.
   by [REDACTED] in every error hops raises.
 - `redact(data, method)` masks credential-looking fields in a method's result before it is printed.
 """
+
 import itertools
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 from urllib.parse import urlsplit
 
 from homelab_hosts import Host, env_prefix
@@ -58,10 +60,15 @@ def load_config(repo_root: Path, host: Host, env=None) -> TrueNASConfig:
     if url.scheme != "https" or not url.netloc:
         raise ConfigError(f"{url_key} must be an https:// URL, e.g. https://truenas.example")
     if "@" in url.netloc:
-        raise ConfigError(f"{url_key} must not contain a user name or password; "
-                          f"hops logs in with {env_prefix(host)}TRUENAS_API_KEY")
-    return TrueNASConfig(url=f"wss://{url.netloc}/api/current", api_key=settings.api_key, verify=not settings.insecure,
-                         key_name=env_prefix(host) + "TRUENAS_API_KEY")
+        raise ConfigError(
+            f"{url_key} must not contain a user name or password; hops logs in with {env_prefix(host)}TRUENAS_API_KEY"
+        )
+    return TrueNASConfig(
+        url=f"wss://{url.netloc}/api/current",
+        api_key=settings.api_key,
+        verify=not settings.insecure,
+        key_name=env_prefix(host) + "TRUENAS_API_KEY",
+    )
 
 
 class Transport(Protocol):
@@ -83,8 +90,14 @@ class TrueNASError(HopsError):
 
 
 class Client:
-    def __init__(self, cfg: TrueNASConfig, *, connect: Connect | None = None,
-                 sleep: Callable[[float], None] = time.sleep, timeout: float = TIMEOUT):
+    def __init__(
+        self,
+        cfg: TrueNASConfig,
+        *,
+        connect: Connect | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        timeout: float = TIMEOUT,
+    ):
         self.cfg = cfg
         self._connect = connect or websocket_connect
         self._sleep = sleep
@@ -111,8 +124,11 @@ class Client:
             if job.get("state") == "SUCCESS":
                 return job.get("result")
             if job.get("state") in JOB_DONE:
-                raise TrueNASError(self._scrub(f"{method}: job {job_id} {job['state'].lower()}: "
-                                               f"{job.get('error') or 'no error message'}"))
+                raise TrueNASError(
+                    self._scrub(
+                        f"{method}: job {job_id} {job['state'].lower()}: {job.get('error') or 'no error message'}"
+                    )
+                )
             if deadline is not None and time.monotonic() >= deadline:
                 raise HostTimeout(f"{method}: job {job_id} still {job.get('state')} after {timeout:g}s")
             self._sleep(JOB_POLL)
@@ -169,8 +185,10 @@ def websocket_connect(url: str, *, verify: bool, timeout: float) -> Transport:
     try:
         import websocket
     except ImportError:
-        raise ConfigError("hops needs websocket-client for TrueNAS: reinstall with "
-                          "`uv tool install` (see hops' README), or `uv pip install websocket-client`") from None
+        raise ConfigError(
+            "hops needs websocket-client for TrueNAS: reinstall with "
+            "`uv tool install` (see hops' README), or `uv pip install websocket-client`"
+        ) from None
     import ssl
 
     class _WebSocket:
@@ -203,16 +221,24 @@ def websocket_connect(url: str, *, verify: bool, timeout: float) -> Transport:
 
 
 # A field is a credential when its name contains one of these (case-insensitive).
-SECRET_NAMES = ("credential", "key", "pass", "pwd", "bindpw", "secret", "token", "salt", "hash",
-                "community")
+SECRET_NAMES = ("credential", "key", "pass", "pwd", "bindpw", "secret", "token", "salt", "hash", "community")
 # Fields (exact names, from TrueNAS's API schema) holding user-written scripts, commands, command
 # arguments or auxiliary config, which can hold a secret in any form. Masked when a string or list.
 FREE_TEXT = {
-    "command", "script", "pre_script", "post_script",  # cronjob, initshutdownscript, cloudsync, acme
-    "args", "extra",  # cloudsync rclone arguments, rsynctask rsync arguments
-    "shutdowncmd", "options", "optionsupsd",  # ups (also ssh, snmp, ftp `options`)
-    "sudo_commands", "sudo_commands_nopasswd",  # user, group
-    "smb_options", "auxsmbconf", "cmdline",  # smb, sharing.smb, process command lines
+    "command",
+    "script",
+    "pre_script",
+    "post_script",  # cronjob, initshutdownscript, cloudsync, acme
+    "args",
+    "extra",  # cloudsync rclone arguments, rsynctask rsync arguments
+    "shutdowncmd",
+    "options",
+    "optionsupsd",  # ups (also ssh, snmp, ftp `options`)
+    "sudo_commands",
+    "sudo_commands_nopasswd",  # user, group
+    "smb_options",
+    "auxsmbconf",
+    "cmdline",  # smb, sharing.smb, process command lines
 }
 # A task's embedded `job` keeps only its status. Its logs, error, result and arguments can echo
 # whatever a script printed, credentials included; the other keys are dropped.
@@ -261,4 +287,3 @@ def redact(data, method: str = ""):
         return out
 
     return walk(data)
-

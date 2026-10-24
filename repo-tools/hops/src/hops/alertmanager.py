@@ -5,6 +5,7 @@ password as a Compose secret (prometheus.yml `alerting:`), so the Host pipes tha
 prometheus container into the alertmanager container, where sh writes amtool's HTTP config to
 amtool's stdin. The password is never in a process argument or on this machine.
 """
+
 from hops import docker
 from hops.runner import Result, Runner
 
@@ -14,9 +15,9 @@ URL = "http://127.0.0.1:9093"
 # `read` and `printf` are sh builtins, and sed gets the password on stdin; YAML single quotes
 # escape ' as ''. "$@" holds amtool's arguments.
 SCRIPT = (
-    "IFS= read -r p; p=$(printf %s \"$p\" | sed \"s/'/''/g\"); "
-    f"printf \"basic_auth:\\n  username: {USERNAME}\\n  password: '%s'\\n\" \"$p\" | "
-    f"amtool --alertmanager.url={URL} --http.config.file=/dev/stdin \"$@\""
+    'IFS= read -r p; p=$(printf %s "$p" | sed "s/\'/\'\'/g"); '
+    f'printf "basic_auth:\\n  username: {USERNAME}\\n  password: \'%s\'\\n" "$p" | '
+    f'amtool --alertmanager.url={URL} --http.config.file=/dev/stdin "$@"'
 )
 
 

@@ -4,6 +4,7 @@ digest and read manifests and blobs, anonymously, as Renovate does.
 Works with Docker Hub (implicit `docker.io` and `library/`), GHCR, lscr.io (which hands out GHCR
 tokens) and any registry that uses the standard Bearer token challenge.
 """
+
 import hashlib
 import json
 import re
@@ -17,12 +18,14 @@ from hops.errors import HopsError
 DOCKER_HUB = "registry-1.docker.io"
 # What Renovate (docker:pinDigests) asks for: with the index types listed, a multi-arch tag
 # answers with its index (manifest list) digest, a single-arch tag with its manifest digest.
-MANIFEST_ACCEPT = ", ".join([
-    "application/vnd.docker.distribution.manifest.v2+json",
-    "application/vnd.docker.distribution.manifest.list.v2+json",
-    "application/vnd.oci.image.manifest.v1+json",
-    "application/vnd.oci.image.index.v1+json",
-])
+MANIFEST_ACCEPT = ", ".join(
+    [
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.oci.image.index.v1+json",
+    ]
+)
 PAGE_SIZE = 1000
 TIMEOUT = 30
 

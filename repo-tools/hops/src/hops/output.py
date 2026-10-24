@@ -1,4 +1,5 @@
 """Printing: JSON for agents (--json), aligned tables for people."""
+
 import json
 import sys
 
@@ -12,7 +13,7 @@ def table(headers: list[str], rows: list[list], file=None) -> None:
     cells = [[str("-" if v is None else v) for v in row] for row in [headers, *rows]]
     widths = [max(len(r[i]) for r in cells) for i in range(len(headers))]
     for row in cells:
-        (file or sys.stdout).write("  ".join(v.ljust(w) for v, w in zip(row, widths)).rstrip() + "\n")
+        (file or sys.stdout).write("  ".join(v.ljust(w) for v, w in zip(row, widths, strict=True)).rstrip() + "\n")
 
 
 def add_json_flag(parser) -> None:

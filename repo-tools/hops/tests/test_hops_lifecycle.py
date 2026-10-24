@@ -1,10 +1,12 @@
 """hops restart, start, stop --for and recreate: runtime state only, with the Disruptive guardrails."""
+
 import json
 
 import pytest
+from hops_fakes import container, hosts_yaml, write
+
 from hops import doco
 from hops.errors import HopsError, HostTimeout
-from hops_fakes import container, hosts_yaml, write
 
 KEY = "fake-doco-cd-key"
 PASSWORD = ["exec", "prometheus", "cat", "/run/secrets/prometheus_password"]
@@ -13,7 +15,7 @@ PASSWORD = ["exec", "prometheus", "cat", "/run/secrets/prometheus_password"]
 def amtool_args(call):
     """The arguments the remote sh passes to amtool ("$@" after $0=amtool)."""
     alertmanager = call.docker[1]
-    return alertmanager[alertmanager.index("amtool") + 1:]
+    return alertmanager[alertmanager.index("amtool") + 1 :]
 
 
 @pytest.fixture
@@ -150,8 +152,7 @@ METRICS = [
 @pytest.fixture
 def metrics(fake_host):
     """The metrics network; every member but sonarr-exporter passes the transport probe."""
-    fake_host.respond("network", "inspect", "metrics",
-                      stdout=" ".join(c["Name"].lstrip("/") for c in METRICS) + " \n")
+    fake_host.respond("network", "inspect", "metrics", stdout=" ".join(c["Name"].lstrip("/") for c in METRICS) + " \n")
     fake_host.respond("inspect", stdout=json.dumps(METRICS))
     for c in METRICS:
         fake_host.respond("exec", c["Name"].lstrip("/"), "sh", returncode=1 if c["Name"] == "/sonarr-exporter" else 0)
@@ -181,13 +182,20 @@ def test_recreate_sends_the_api_key_on_stdin_never_in_argv(hops, metrics, api_ke
 
 
 def test_recreate_reaches_doco_cd_where_hosts_yaml_says(hops, fake_host, api_key, repo):
-    write(repo, {"hosts.yaml": hosts_yaml(extra="""
+    write(
+        repo,
+        {
+            "hosts.yaml": hosts_yaml(
+                extra="""
         doco_cd:
           stack: deployer
           api_secret: deployer/key.sops.txt
           address: cd.internal:8080
           network: ops
-    """)})
+    """
+            )
+        },
+    )
     fake_host.respond("network", "inspect", "ops", stdout="prometheus \n")
     fake_host.respond("inspect", stdout=json.dumps(METRICS[:1]))
     fake_host.respond("exec", "prometheus", "sh")
@@ -202,8 +210,9 @@ def test_recreate_reaches_doco_cd_where_hosts_yaml_says(hops, fake_host, api_key
 
 
 def test_recreate_reports_doco_cds_error(hops, metrics, api_key):
-    metrics.respond("exec", "-i", "prometheus",
-                    stdout=http_response("404 Not Found", {"error": "service not found", "code": 404}))
+    metrics.respond(
+        "exec", "-i", "prometheus", stdout=http_response("404 Not Found", {"error": "service not found", "code": 404})
+    )
     outcome = hops("recreate", "sonarr/sonarr")
     assert outcome.code == 1 and "404" in outcome.err and "service not found" in outcome.err
 
@@ -259,7 +268,7 @@ def test_recreate_bounds_the_request_on_the_host_and_here(hops, metrics, api_key
     metrics.respond("exec", "-i", "prometheus", stdout=http_response("200 OK", {}))
     assert hops("recreate", "sonarr/sonarr", "--timeout", "90").code == 0
     (call,) = requests(metrics)
-    script_args = call.docker[0][call.docker[0].index("-c") + 1:]
+    script_args = call.docker[0][call.docker[0].index("-c") + 1 :]
     assert "timeout" in script_args[0] and script_args[2:] == ["90", "doco-cd", "80"]
     assert call.timeout > 90
 

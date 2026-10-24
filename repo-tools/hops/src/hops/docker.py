@@ -1,4 +1,5 @@
 """Reading containers on the Host: `docker inspect` output as Containers, and finding a Service's."""
+
 import json
 from dataclasses import dataclass, field
 
@@ -51,8 +52,14 @@ class Container:
 
     def bind_source(self, destination: str) -> str | None:
         """The Host path bind-mounted at `destination` in the container, if any."""
-        return next((m.get("Source") for m in self.raw.get("Mounts") or []
-                     if m.get("Type") == "bind" and m.get("Destination") == destination), None)
+        return next(
+            (
+                m.get("Source")
+                for m in self.raw.get("Mounts") or []
+                if m.get("Type") == "bind" and m.get("Destination") == destination
+            ),
+            None,
+        )
 
     @property
     def running(self) -> bool:
@@ -87,7 +94,7 @@ def _only_vanished(stderr: str, ids: list[str]) -> bool:
     them in between. Docker then still prints the others and exits 1."""
     lines = [line.strip() for line in stderr.splitlines() if line.strip()]
     prefix = "Error: No such object: "
-    return bool(lines) and all(line.startswith(prefix) and line[len(prefix):] in ids for line in lines)
+    return bool(lines) and all(line.startswith(prefix) and line[len(prefix) :] in ids for line in lines)
 
 
 def pick(containers: list[Container]) -> Container | None:
@@ -104,8 +111,15 @@ def lookup(runner: Runner, service: Service) -> Container | None:
         if "no such" not in result.stderr.lower():
             raise HopsError(f"docker inspect {service.container_name} failed: {result.stderr.strip()}")
         return None
-    ids = runner.docker("ps", "-aq", "--no-trunc", "--filter", f"label={PROJECT}={service.stack}",
-                        "--filter", f"label={SERVICE}={service.name}").stdout.split()
+    ids = runner.docker(
+        "ps",
+        "-aq",
+        "--no-trunc",
+        "--filter",
+        f"label={PROJECT}={service.stack}",
+        "--filter",
+        f"label={SERVICE}={service.name}",
+    ).stdout.split()
     return pick(inspect(runner, *ids))
 
 
@@ -114,8 +128,7 @@ def find(runner: Runner, service: Service) -> Container:
     found = lookup(runner, service)
     if found:
         return found
-    raise HopsError(f"{service.key} has no container on the Host (expected {service.container}); "
-                    "see hops status")
+    raise HopsError(f"{service.key} has no container on the Host (expected {service.container}); see hops status")
 
 
 def container_ref(runner: Runner, service: Service) -> str:

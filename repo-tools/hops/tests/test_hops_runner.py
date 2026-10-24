@@ -1,4 +1,5 @@
 """The Runner: the one place that builds the ssh argv for `sudo -n docker` on the Host."""
+
 import os
 import shlex
 import subprocess
@@ -20,7 +21,9 @@ def test_docker_runs_over_ssh_with_a_shared_connection(runner, fake_host, host_c
     result = runner.docker("ps", "-aq", "--filter", "label=a b")
     assert result.stdout == "abc\n"
     assert fake_host.calls[0].argv == [
-        *ssh_options(host_config.control_dir), "-T", "agent@tn.example",
+        *ssh_options(host_config.control_dir),
+        "-T",
+        "agent@tn.example",
         "sudo -n docker ps -aq --filter 'label=a b'",
     ]
     assert fake_host.calls[0].capture
@@ -43,7 +46,8 @@ def test_pipeline_runs_each_docker_command_on_the_host_under_bash_pipefail(runne
     call = fake_host.calls[0]
     # The Host's /bin/sh is dash, which has no pipefail; bash is named explicitly.
     assert shlex.split(call.remote) == [
-        "bash", "-c",
+        "bash",
+        "-c",
         "set -o pipefail; sudo -n docker exec a cat /x | sudo -n docker exec -i b sh -c 'read -r p; echo $p'",
     ]
     assert call.docker == [["exec", "a", "cat", "/x"], ["exec", "-i", "b", "sh", "-c", "read -r p; echo $p"]]
@@ -56,13 +60,19 @@ def test_pipeline_fails_when_the_first_command_fails_and_the_last_succeeds(runne
     bin_dir.mkdir()
     (bin_dir / "sudo").write_text('#!/bin/sh\nshift\nexec "$@"\n')
     (bin_dir / "docker").write_text(
-        '#!/bin/sh\nif [ "$1" = produce ]; then echo "no such secret" >&2; exit 1; fi\ncat >/dev/null\n')
+        '#!/bin/sh\nif [ "$1" = produce ]; then echo "no such secret" >&2; exit 1; fi\ncat >/dev/null\n'
+    )
     for stub in bin_dir.iterdir():
         stub.chmod(0o755)
 
     def local_host(argv, *, input=None, capture=True):
-        done = subprocess.run(["bash", "-c", argv[-1]], input=input, capture_output=True, text=True,
-                              env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+        done = subprocess.run(
+            ["bash", "-c", argv[-1]],
+            input=input,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        )
         return Result(argv, done.returncode, done.stdout, done.stderr)
 
     runner.process = local_host
@@ -92,7 +102,6 @@ def test_unreachable_host_is_reported_as_ssh(runner, fake_host):
         runner.docker("ps", check=False)
 
 
-
 PIPE_SCRIPT = """
 import sys
 from hops import cli
@@ -114,8 +123,12 @@ def test_hops_exits_0_when_its_reader_stops_early():
     import sys
     from pathlib import Path
 
-    proc = subprocess.Popen([sys.executable, "-c", PIPE_SCRIPT], cwd=Path(__file__).resolve().parents[1],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", PIPE_SCRIPT],
+        cwd=Path(__file__).resolve().parents[1],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     proc.stdout.readline()
     proc.stdout.close()
     assert proc.wait(timeout=30) == 0

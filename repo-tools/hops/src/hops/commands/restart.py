@@ -1,12 +1,14 @@
 """hops restart <target…>: docker restart for each Service's container."""
+
 from hops import lifecycle
 
 HELP = "restart Services' containers (docker restart)"
 
 
 def register(subparsers) -> None:
-    p = subparsers.add_parser("restart", help=HELP, description=HELP + ". Runtime-reversible: prints the "
-                              "containers, then restarts them.")
+    p = subparsers.add_parser(
+        "restart", help=HELP, description=HELP + ". Runtime-reversible: prints the containers, then restarts them."
+    )
     lifecycle.add_targets(p)
     p.set_defaults(func=run)
 

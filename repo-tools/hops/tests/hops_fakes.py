@@ -3,6 +3,7 @@
 Imported by the tests as `hops_fakes`; a module named conftest would clash with other tools' when
 pytest collects tools/ together.
 """
+
 import shlex
 import subprocess
 import textwrap
@@ -40,12 +41,14 @@ def hosts_yaml(*, capabilities="[truenas, zfs]", extra="") -> str:
 
 
 # A second Host, a plain doco-cd one, for Host selection.
-TWO_HOSTS = hosts_yaml(extra="""
+TWO_HOSTS = hosts_yaml(
+    extra="""
       nas-2:
         stack_root: hosts/nas-2
         deployer: doco-cd
         capabilities: []
-""")
+"""
+)
 NAS_2 = {
     "hosts.yaml": TWO_HOSTS,
     "hosts/nas-2/web/compose.yaml": """
@@ -153,7 +156,7 @@ class Call:
         if tokens[:2] == ["bash", "-c"]:
             prefix = "set -o pipefail; "
             assert len(tokens) == 3 and tokens[2].startswith(prefix), tokens
-            tokens = shlex.split(tokens[2][len(prefix):])
+            tokens = shlex.split(tokens[2][len(prefix) :])
         segments, current = [], []
         for token in tokens + ["|"]:
             if token == "|":
@@ -178,8 +181,14 @@ class FakeHost:
         self.calls: list[Call] = []
         self._responses: list[tuple[tuple[str, ...], tuple[str, ...], int, str, str]] = []
 
-    def respond(self, *docker_args: str, suffix: tuple[str, ...] = (), stdout: str | Callable[[Call], str] = "", stderr: str = "",
-                returncode: int = 0):
+    def respond(
+        self,
+        *docker_args: str,
+        suffix: tuple[str, ...] = (),
+        stdout: str | Callable[[Call], str] = "",
+        stderr: str = "",
+        returncode: int = 0,
+    ):
         self._responses.append((docker_args, tuple(suffix), returncode, stdout, stderr))
 
     def __call__(self, argv, *, input=None, capture=True, timeout=None):
@@ -189,7 +198,7 @@ class FakeHost:
         self.calls.append(call)
         last = tuple(call.docker[-1])
         for prefix, suffix, returncode, stdout, stderr in reversed(self._responses):
-            if last[:len(prefix)] == prefix and last[len(last) - len(suffix):] == suffix:
+            if last[: len(prefix)] == prefix and last[len(last) - len(suffix) :] == suffix:
                 stdout = stdout(call) if callable(stdout) else stdout
                 return Result(list(argv), returncode, stdout if capture else "", stderr if capture else "")
         raise AssertionError(f"unexpected Host call: {call.remote}")
@@ -200,18 +209,35 @@ class FakeHost:
         return [c.docker[-1] for c in self.calls]
 
 
-def container(name: str, *, project: str | None = None, service: str | None = None, image: str = "busybox:1",
-              status: str = "running", health: str | None = "healthy", restarts: int = 0, exit_code: int = 0,
-              oom_killed: bool = False, memory: int = 0, health_log: list | None = None,
-              started_at: str = "2026-10-21T20:00:00.000000000Z") -> dict:
+def container(
+    name: str,
+    *,
+    project: str | None = None,
+    service: str | None = None,
+    image: str = "busybox:1",
+    status: str = "running",
+    health: str | None = "healthy",
+    restarts: int = 0,
+    exit_code: int = 0,
+    oom_killed: bool = False,
+    memory: int = 0,
+    health_log: list | None = None,
+    started_at: str = "2026-10-21T20:00:00.000000000Z",
+) -> dict:
     """One element of `docker inspect` output, trimmed to the fields hops reads."""
     labels = {}
     if project:
         labels["com.docker.compose.project"] = project
     if service:
         labels["com.docker.compose.service"] = service
-    state = {"Status": status, "Running": status == "running", "OOMKilled": oom_killed, "ExitCode": exit_code,
-             "StartedAt": started_at, "FinishedAt": "0001-01-01T00:00:00Z"}
+    state = {
+        "Status": status,
+        "Running": status == "running",
+        "OOMKilled": oom_killed,
+        "ExitCode": exit_code,
+        "StartedAt": started_at,
+        "FinishedAt": "0001-01-01T00:00:00Z",
+    }
     if health:
         state["Health"] = {"Status": health, "FailingStreak": 0, "Log": health_log or []}
     return {
@@ -268,8 +294,13 @@ class FakeTrueNAS:
                 raise FakeTrueNASError("ENOENT", f"Method {req['method']!r} not found")
             answer = {"result": handler(*req["params"])}
         except FakeTrueNASError as exc:
-            answer = {"error": {"code": -32001, "message": "Method call error",
-                                "data": {"error": 2, "errname": exc.errname, "reason": exc.reason}}}
+            answer = {
+                "error": {
+                    "code": -32001,
+                    "message": "Method call error",
+                    "data": {"error": 2, "errname": exc.errname, "reason": exc.reason},
+                }
+            }
         self.outbox.append(json.dumps({"jsonrpc": "2.0", "id": req["id"], **answer}))
 
     def recv(self) -> str:
@@ -290,8 +321,15 @@ def snap(name: str, used: int = 1024, creation: int = 1792540800, **user) -> dic
     """`creation`: seconds since the epoch, as ZFS keeps it (default 2026-10-21T00:00:00Z)."""
     dataset, short = name.split("@")
     created = {"value": "-", "rawvalue": str(creation), "source": "NONE", "parsed": {"$date": creation * 1000}}
-    return {"id": name, "name": name, "dataset": dataset, "snapshot_name": short, "pool": "luna",
-            "type": "SNAPSHOT", "properties": {"used": prop(used, "NONE"), "creation": created, **user}}
+    return {
+        "id": name,
+        "name": name,
+        "dataset": dataset,
+        "snapshot_name": short,
+        "pool": "luna",
+        "type": "SNAPSHOT",
+        "properties": {"used": prop(used, "NONE"), "creation": created, **user},
+    }
 
 
 class FakeSnapshots:
@@ -300,21 +338,29 @@ class FakeSnapshots:
     def __init__(self, *found: dict):
         self.snapshots = {s["id"]: s for s in found}
         self.datasets = {"luna/ix-apps/docker", "luna/apps"}
-        self.server = FakeTrueNAS({
-            "pool.snapshot.query": self.query, "pool.snapshot.create": self.create,
-            "pool.snapshot.delete": self.delete, "zfs.resource.query": self.resources,
-            "filesystem.statfs": self.statfs,
-        })
+        self.server = FakeTrueNAS(
+            {
+                "pool.snapshot.query": self.query,
+                "pool.snapshot.create": self.create,
+                "pool.snapshot.delete": self.delete,
+                "zfs.resource.query": self.resources,
+                "filesystem.statfs": self.statfs,
+            }
+        )
         from hops import truenas
 
-        self.client = truenas.Client(truenas.TrueNASConfig("wss://tn.example/api/current", FakeTrueNAS.KEY),
-                                     connect=self.server.connect)
+        self.client = truenas.Client(
+            truenas.TrueNASConfig("wss://tn.example/api/current", FakeTrueNAS.KEY), connect=self.server.connect
+        )
 
     def query(self, filters, options):
-        assert options in ({"extra": {"properties": ["used", "homeops:issue", "homeops:expires"]}},
-                           {"extra": {"properties": ["creation"]}})
-        return [s for s in self.snapshots.values()
-                if all(s[k] in v if op == "in" else s[k] == v for k, op, v in filters)]
+        assert options in (
+            {"extra": {"properties": ["used", "homeops:issue", "homeops:expires"]}},
+            {"extra": {"properties": ["creation"]}},
+        )
+        return [
+            s for s in self.snapshots.values() if all(s[k] in v if op == "in" else s[k] == v for k, op, v in filters)
+        ]
 
     def create(self, data):
         name = f"{data['dataset']}@{data['name']}"

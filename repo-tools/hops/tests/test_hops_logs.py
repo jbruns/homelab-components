@@ -1,4 +1,5 @@
 """hops logs <svc>: docker logs on the Host, with --since, --tail and -f passed through."""
+
 import json
 
 
@@ -25,13 +26,18 @@ def test_logs_returns_the_remote_exit_code(hops, fake_host):
 
 
 def test_logs_json_merges_stdout_and_stderr_by_time(hops, fake_host):
-    fake_host.respond("logs", stdout="2026-10-21T21:00:00.000000001Z one\n2026-10-21T21:00:00.000000003Z three\n",
-                      stderr="2026-10-21T21:00:00.000000002Z two: oops\n")
+    fake_host.respond(
+        "logs",
+        stdout="2026-10-21T21:00:00.000000001Z one\n2026-10-21T21:00:00.000000003Z three\n",
+        stderr="2026-10-21T21:00:00.000000002Z two: oops\n",
+    )
     outcome = hops("logs", "traefik", "--tail", "3", "--json")
     assert fake_host.calls[0].docker == [["logs", "--tail", "3", "--timestamps", "traefik"]]
     assert fake_host.calls[0].capture
     assert json.loads(outcome.out) == {
-        "stack": "edge", "service": "traefik", "container": "traefik",
+        "stack": "edge",
+        "service": "traefik",
+        "container": "traefik",
         "lines": [
             {"time": "2026-10-21T21:00:00.000000001Z", "stream": "stdout", "text": "one"},
             {"time": "2026-10-21T21:00:00.000000002Z", "stream": "stderr", "text": "two: oops"},

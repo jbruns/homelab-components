@@ -4,6 +4,7 @@
 Backup. Its labels name the change's issue, the volume it copies, and its release date; past that date it
 is a Stray (hops strays), which `hops strays --apply --volumes` removes.
 """
+
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 
@@ -28,8 +29,9 @@ class RollbackVolume:
 
 def plan(old: str, issue: str, expires: str, at: datetime) -> RollbackVolume:
     """The Rollback Volume for changing `old`: `<old>.rollback-<issue>-<UTC time>`."""
-    return RollbackVolume(name=f"{old}.rollback-{issue}-{at.strftime('%Y%m%dT%H%M%SZ')}", of=old, issue=issue,
-                          expires=expires)
+    return RollbackVolume(
+        name=f"{old}.rollback-{issue}-{at.strftime('%Y%m%dT%H%M%SZ')}", of=old, issue=issue, expires=expires
+    )
 
 
 def expired(labels: dict[str, str], on: date) -> bool | None:

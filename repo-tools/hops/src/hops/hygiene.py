@@ -4,6 +4,7 @@ Task objects carry credentials, scripts, rclone arguments and job logs that can 
 every record here is built from an allowlist of named fields, never by copying or filtering
 TrueNAS's objects.
 """
+
 import datetime
 
 from hops import truenas
@@ -23,11 +24,17 @@ def pools(client) -> list[dict]:
     out = []
     for p in client.call("pool.query", [], {"order_by": ["name"]}):
         size, allocated = p.get("size"), p.get("allocated")
-        out.append({
-            "name": p.get("name"), "status": p.get("status"), "healthy": p.get("healthy"),
-            "size_bytes": size, "allocated_bytes": allocated, "free_bytes": p.get("free"),
-            "used_percent": round(100 * allocated / size, 1) if size and allocated is not None else None,
-        })
+        out.append(
+            {
+                "name": p.get("name"),
+                "status": p.get("status"),
+                "healthy": p.get("healthy"),
+                "size_bytes": size,
+                "allocated_bytes": allocated,
+                "free_bytes": p.get("free"),
+                "used_percent": round(100 * allocated / size, 1) if size and allocated is not None else None,
+            }
+        )
     return out
 
 
@@ -48,8 +55,10 @@ def dataset_usage(client, name: str) -> dict:
 
     return {
         "mountpoint": (props.get("mountpoint") or {}).get("value"),
-        "used_bytes": value("used"), "available_bytes": value("available"),
-        "snapshots_bytes": value("usedbysnapshots"), "quota_bytes": value("quota") or None,
+        "used_bytes": value("used"),
+        "available_bytes": value("available"),
+        "snapshots_bytes": value("usedbysnapshots"),
+        "quota_bytes": value("quota") or None,
     }
 
 
@@ -66,17 +75,28 @@ def tasks(client) -> list[dict]:
         st = t.get("state") if isinstance(t.get("state"), dict) else {}
         when = timestamp(st.get("datetime"))
         running = st.get("state") == "RUNNING"
-        out.append({
-            "kind": "snapshot", "id": t.get("id"), "name": t.get("naming_schema"), "source": t.get("dataset"),
-            "enabled": t.get("enabled"),
-            "last_run": _last_run(st.get("state"), when if running else None, None if running else when),
-        })
+        out.append(
+            {
+                "kind": "snapshot",
+                "id": t.get("id"),
+                "name": t.get("naming_schema"),
+                "source": t.get("dataset"),
+                "enabled": t.get("enabled"),
+                "last_run": _last_run(st.get("state"), when if running else None, None if running else when),
+            }
+        )
     for t in client.call("cloudsync.query", [], {"order_by": ["id"]}):
         job = truenas.job_status(t["job"]) if isinstance(t.get("job"), dict) else {}
-        out.append({
-            "kind": "cloudsync", "id": t.get("id"), "name": t.get("description"), "source": t.get("path"),
-            "enabled": t.get("enabled"),
-            "last_run": _last_run(job.get("state"), timestamp(job.get("time_started")),
-                                  timestamp(job.get("time_finished"))),
-        })
+        out.append(
+            {
+                "kind": "cloudsync",
+                "id": t.get("id"),
+                "name": t.get("description"),
+                "source": t.get("path"),
+                "enabled": t.get("enabled"),
+                "last_run": _last_run(
+                    job.get("state"), timestamp(job.get("time_started")), timestamp(job.get("time_finished"))
+                ),
+            }
+        )
     return out

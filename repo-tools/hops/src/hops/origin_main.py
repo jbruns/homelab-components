@@ -1,6 +1,7 @@
 """Declared state as origin/<default branch> has it: what doco-cd deploys, whatever this checkout holds.
 
 The default branch is hosts.yaml's `default_branch` (main unless the repo says otherwise)."""
+
 import io
 import shutil
 import subprocess
@@ -9,7 +10,6 @@ from pathlib import Path
 
 from hops.declared import Declared
 from hops.errors import ConfigError, HopsError
-
 
 
 def ref(branch: str) -> str:
@@ -51,6 +51,8 @@ def load(repo_root: Path, stack_root: str, branch: str = "main") -> tuple[Declar
             tar.extractall(dest)
     declared = Declared.load(dest, stack_root)
     if not declared.services:
-        raise ConfigError(f"{ref(branch)} ({commit[:12]}) declares no Services under {stack_root}/; refusing to remove "
-                          "anything against it")
+        raise ConfigError(
+            f"{ref(branch)} ({commit[:12]}) declares no Services under {stack_root}/; refusing to remove "
+            "anything against it"
+        )
     return declared, commit

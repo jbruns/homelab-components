@@ -21,6 +21,7 @@ A stopped Service also sets off alerts that name others:
 
 Other inhibitions still apply, since a silenced source alert still inhibits.
 """
+
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,7 @@ class Silence:
 @dataclass
 class Monitoring:
     """What the repo says about alerts: static scrape targets, alert rules, inhibit rules."""
+
     targets: list[tuple[str, dict]] = field(default_factory=list)  # (address, labels)
     rules: dict[str, dict] = field(default_factory=dict)  # alertname -> static labels
     inhibitions: list[dict] = field(default_factory=list)
@@ -57,16 +59,23 @@ class Monitoring:
     @classmethod
     def load(cls, repo_root: Path, stack_root: str) -> "Monitoring":
         """Missing files (a repo without the monitoring Stack) give no targets, rules or inhibitions."""
+
         def read(path):
             path = repo_root / stack_root / path
             return (yaml.safe_load(path.read_text()) or {}) if path.is_file() else {}
 
-        targets = [(str(address), static.get("labels") or {})
-                   for sc in read(SCRAPE_CONFIG).get("scrape_configs") or []
-                   for static in sc.get("static_configs") or []
-                   for address in static.get("targets") or []]
-        rules = {r["alert"]: r.get("labels") or {}
-                 for g in read(ALERT_RULES).get("groups") or [] for r in g.get("rules") or [] if "alert" in r}
+        targets = [
+            (str(address), static.get("labels") or {})
+            for sc in read(SCRAPE_CONFIG).get("scrape_configs") or []
+            for static in sc.get("static_configs") or []
+            for address in static.get("targets") or []
+        ]
+        rules = {
+            r["alert"]: r.get("labels") or {}
+            for g in read(ALERT_RULES).get("groups") or []
+            for r in g.get("rules") or []
+            if "alert" in r
+        }
         return cls(targets, rules, read(ALERTMANAGER).get("inhibit_rules") or [])
 
 
@@ -85,8 +94,10 @@ def own(service: Service, container: str | None, monitoring: Monitoring, why: st
     """Each label set by which an alert names the Service; `container` None when it is not known."""
     found = [({"stack": service.stack, "service": service.name}, "ContainerDown and its Probes")]
     if container:
-        found += [({"container": container}, "alerts on its container"),
-                  ({"name": container}, "container alerts by name")]
+        found += [
+            ({"container": container}, "alerts on its container"),
+            ({"name": container}, "container alerts by name"),
+        ]
     hostnames = {container, service.name, service.container_name} - {None}
     for address, labels in monitoring.targets:
         if address.rsplit(":", 1)[0] in hostnames and labels.get("container"):
@@ -120,20 +131,28 @@ def lost_inhibitions(container: str, monitoring: Monitoring) -> list[tuple[dict,
         if not alertname:
             continue
         static = monitoring.rules.get(alertname, {})
-        matchers = {"alertname": alertname, **{k: v for k, v in static.items()
-                                                if k in ("stack", *IDENTITY) and "{{" not in str(v)}}
+        matchers = {
+            "alertname": alertname,
+            **{k: v for k, v in static.items() if k in ("stack", *IDENTITY) and "{{" not in str(v)},
+        }
         what = "covers all Probes, which route through it" if alertname == "ProbeFailed" else f"covers {alertname}"
-        found.append((matchers, f"{container}: {what}; its own {source['alertname']} would inhibit them, but "
-                                f"never fires once Docker SD drops its target"))
+        found.append(
+            (
+                matchers,
+                f"{container}: {what}; its own {source['alertname']} would inhibit them, but "
+                f"never fires once Docker SD drops its target",
+            )
+        )
     return found
 
 
 def stack_scoped(stack: str, monitoring: Monitoring) -> list[tuple[dict, str]]:
     """Notifying alerts labelled with the Stack that name no Service."""
-    return [({"alertname": name, "stack": stack}, f"{stack}: {name} names the Stack but no Service")
-            for name, labels in monitoring.rules.items()
-            if labels.get("stack") == stack and labels.get("tier") in NOTIFYING
-            and not any(k in labels for k in IDENTITY)]
+    return [
+        ({"alertname": name, "stack": stack}, f"{stack}: {name} names the Stack but no Service")
+        for name, labels in monitoring.rules.items()
+        if labels.get("stack") == stack and labels.get("tier") in NOTIFYING and not any(k in labels for k in IDENTITY)
+    ]
 
 
 def plan(declared: Declared, stopped: list[tuple[Service, str]], monitoring: Monitoring) -> list[Silence]:

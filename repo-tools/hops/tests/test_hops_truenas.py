@@ -1,4 +1,5 @@
 """TrueNAS: the JSON-RPC client (hops.truenas) and `hops truenas call`, against FakeTrueNAS."""
+
 import json
 
 import pytest
@@ -29,6 +30,7 @@ def client(server, sleeps):
 @pytest.fixture
 def hops_tn(repo, client, capsys):
     """Run the CLI with the fake TrueNAS: hops_tn("truenas", "call", "system.info")."""
+
     def run(*argv):
         code = cli.main(list(argv), ctx=cli.Context(repo_root=repo, truenas=client))
         captured = capsys.readouterr()
@@ -39,11 +41,14 @@ def hops_tn(repo, client, capsys):
 
 # Client
 
+
 def test_call_logs_in_with_the_key_then_calls(client, server):
     assert client.call("system.info") == {"version": "25.10.4", "hostname": "tn"}
     assert server.connects == [{"url": "wss://tn.example/api/current", "verify": True, "timeout": 30.0}]
     assert [(r["method"], r["params"]) for r in server.requests] == [
-        ("auth.login_with_api_key", [KEY]), ("system.info", [])]
+        ("auth.login_with_api_key", [KEY]),
+        ("system.info", []),
+    ]
     assert all(r["jsonrpc"] == "2.0" for r in server.requests)
 
     client.call("system.info")
@@ -71,6 +76,7 @@ def rate_limited(times: int):
         if next(left, None) is not None:
             raise FakeTrueNASError("EBUSY", "[EBUSY] Rate Limit Exceeded")
         return params == (KEY,)
+
     return handler
 
 
@@ -121,7 +127,11 @@ def test_job_waits_for_the_result(client, server, sleeps):
     states = iter(["WAITING", "RUNNING", "SUCCESS"])
     server.methods["cloudsync.sync"] = lambda task_id: 41
     server.methods["core.get_jobs"] = lambda filters, options: {
-        "id": filters[0][2], "state": next(states), "result": "done", "error": None}
+        "id": filters[0][2],
+        "state": next(states),
+        "result": "done",
+        "error": None,
+    }
 
     assert client.job("cloudsync.sync", 3) == "done"
     polls = [r["params"] for r in server.requests if r["method"] == "core.get_jobs"]
@@ -132,12 +142,17 @@ def test_job_waits_for_the_result(client, server, sleeps):
 def test_failed_job_raises_its_error(client, server):
     server.methods["cloudsync.sync"] = lambda task_id: 41
     server.methods["core.get_jobs"] = lambda filters, options: {
-        "id": 41, "state": "FAILED", "result": None, "error": "bucket not found"}
+        "id": 41,
+        "state": "FAILED",
+        "result": None,
+        "error": "bucket not found",
+    }
     with pytest.raises(truenas.TrueNASError, match="cloudsync.sync: job 41 failed: bucket not found"):
         client.job("cloudsync.sync", 3)
 
 
 # Config
+
 
 def load(repo, **values):
     from hops import config
@@ -148,8 +163,13 @@ def load(repo, **values):
 
 
 def test_config_reads_url_and_key_from_dotenv(repo):
-    write(repo, {".env": f"HOPS_TRUENAS_SSH_HOST=tn.example\nHOPS_TRUENAS_TRUENAS_URL=https://tn.example:8443/ui/\n"
-                         f"HOPS_TRUENAS_TRUENAS_API_KEY={KEY}\n"})
+    write(
+        repo,
+        {
+            ".env": f"HOPS_TRUENAS_SSH_HOST=tn.example\nHOPS_TRUENAS_TRUENAS_URL=https://tn.example:8443/ui/\n"
+            f"HOPS_TRUENAS_TRUENAS_API_KEY={KEY}\n"
+        },
+    )
     from hops import config
 
     cfg = truenas.load_config(repo, config.load_hosts(repo).hosts["truenas"], env={})
@@ -185,6 +205,7 @@ def test_url_with_userinfo_is_refused_without_echoing_it(repo):
 
 # hops truenas call
 
+
 def test_call_prints_the_result_as_json(hops_tn):
     code, out, err = hops_tn("truenas", "call", "system.info", "--json")
     assert (code, err) == (0, "")
@@ -204,22 +225,49 @@ def test_bad_json_param_is_a_usage_error(hops_tn, server):
     assert server.requests == []
 
 
-@pytest.mark.parametrize("method", [
-    "pool.query", "pool.get_instance", "pool.dataset.query", "pool.dataset.details", "pool.snapshot.query",
-    "pool.snapshottask.query", "pool.scrub.query", "disk.query", "boot.environment.query", "replication.query",
-    "cloudsync.query", "service.query", "interface.query", "alert.list", "system.info", "system.version",
-])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "pool.query",
+        "pool.get_instance",
+        "pool.dataset.query",
+        "pool.dataset.details",
+        "pool.snapshot.query",
+        "pool.snapshottask.query",
+        "pool.scrub.query",
+        "disk.query",
+        "boot.environment.query",
+        "replication.query",
+        "cloudsync.query",
+        "service.query",
+        "interface.query",
+        "alert.list",
+        "system.info",
+        "system.version",
+    ],
+)
 def test_call_accepts_reads_in_allowed_namespaces(hops_tn, server, method):
     server.methods[method] = lambda *params: []
     code, _, err = hops_tn("truenas", "call", method)
     assert (code, err) == (0, "")
 
 
-@pytest.mark.parametrize("method", [
-    "pool.snapshot.create", "pool.snapshot.delete", "cloudsync.sync", "api_key.create", "api_key.delete",
-    "api_key.update", "system.reboot", "auth.login_with_api_key", "core.get_jobs", "pool.query.x",
-    "../pool.query",
-])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "pool.snapshot.create",
+        "pool.snapshot.delete",
+        "cloudsync.sync",
+        "api_key.create",
+        "api_key.delete",
+        "api_key.update",
+        "system.reboot",
+        "auth.login_with_api_key",
+        "core.get_jobs",
+        "pool.query.x",
+        "../pool.query",
+    ],
+)
 def test_call_refuses_anything_but_a_read(hops_tn, server, method):
     code, out, err = hops_tn("truenas", "call", method, "{}")
     assert code == 2 and out == ""
@@ -227,11 +275,26 @@ def test_call_refuses_anything_but_a_read(hops_tn, server, method):
     assert server.connects == []  # refused before connecting
 
 
-@pytest.mark.parametrize("method", [
-    "alertservice.query", "snmp.config", "tunable.query", "user.query", "group.query", "api_key.query",
-    "cronjob.query", "ssh.config", "cloudsync.credentials.query", "app.query", "vm.query", "mail.config",
-    "network.configuration.config", "replication.config.config", "alert.query",
-])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "alertservice.query",
+        "snmp.config",
+        "tunable.query",
+        "user.query",
+        "group.query",
+        "api_key.query",
+        "cronjob.query",
+        "ssh.config",
+        "cloudsync.credentials.query",
+        "app.query",
+        "vm.query",
+        "mail.config",
+        "network.configuration.config",
+        "replication.config.config",
+        "alert.query",
+    ],
+)
 def test_call_refuses_namespaces_off_the_allowlist(hops_tn, server, method):
     code, out, err = hops_tn("truenas", "call", method)
     assert code == 2 and out == ""
@@ -239,13 +302,16 @@ def test_call_refuses_namespaces_off_the_allowlist(hops_tn, server, method):
     assert server.connects == []
 
 
-@pytest.mark.parametrize("options", [
-    '{"select": ["attributes.url"]}',  # drops `type`, which defeats TrueNAS's own masking
-    '{"select": [["provider.key", "name"]]}',  # renames a secret
-    '{"select": []}',
-    '{"extra": {"passwords": true}}',  # disk.query: include SED passwords
-    '{"selct": ["name"]}',
-])
+@pytest.mark.parametrize(
+    "options",
+    [
+        '{"select": ["attributes.url"]}',  # drops `type`, which defeats TrueNAS's own masking
+        '{"select": [["provider.key", "name"]]}',  # renames a secret
+        '{"select": []}',
+        '{"extra": {"passwords": true}}',  # disk.query: include SED passwords
+        '{"selct": ["name"]}',
+    ],
+)
 def test_call_refuses_projections_and_unknown_query_options(hops_tn, server, options):
     code, out, err = hops_tn("truenas", "call", "disk.query", "[]", options)
     assert code == 2 and out == ""
@@ -254,17 +320,31 @@ def test_call_refuses_projections_and_unknown_query_options(hops_tn, server, opt
 
 
 def test_call_redacts_credentials(hops_tn, server):
-    server.methods["cloudsync.query"] = lambda: [{
-        "id": 1, "path": "/mnt/tank/a", "encryption_password": "pw", "encryption_salt": "salt",
-        "credentials": {"id": 2, "provider": {"type": "B2", "account": "acct", "key": "k"}},
-        "attributes": {"bucket": "b", "folder": "/x"}, "pre_script": "run-backup.sh", "api_key": None,
-    }]
+    server.methods["cloudsync.query"] = lambda: [
+        {
+            "id": 1,
+            "path": "/mnt/tank/a",
+            "encryption_password": "pw",
+            "encryption_salt": "salt",
+            "credentials": {"id": 2, "provider": {"type": "B2", "account": "acct", "key": "k"}},
+            "attributes": {"bucket": "b", "folder": "/x"},
+            "pre_script": "run-backup.sh",
+            "api_key": None,
+        }
+    ]
     _, out, _ = hops_tn("truenas", "call", "cloudsync.query", "--json")
-    assert json.loads(out) == [{
-        "id": 1, "path": "/mnt/tank/a", "encryption_password": "[REDACTED]", "encryption_salt": "[REDACTED]",
-        "credentials": "[REDACTED]", "attributes": {"bucket": "b", "folder": "/x"}, "pre_script": "[REDACTED]",
-        "api_key": None,
-    }]
+    assert json.loads(out) == [
+        {
+            "id": 1,
+            "path": "/mnt/tank/a",
+            "encryption_password": "[REDACTED]",
+            "encryption_salt": "[REDACTED]",
+            "credentials": "[REDACTED]",
+            "attributes": {"bucket": "b", "folder": "/x"},
+            "pre_script": "[REDACTED]",
+            "api_key": None,
+        }
+    ]
 
 
 def test_call_without_truenas_keys_fails_clearly(repo, capsys):
@@ -278,31 +358,44 @@ def test_call_on_a_host_without_the_truenas_capability_is_refused(plain_host, ca
     assert cli.main(["truenas", "call", "system.info"], ctx=ctx) == 2
     assert capsys.readouterr().err == (
         "hops: error: hops truenas call needs a Host with the truenas capability; Host 'truenas' has none "
-        "(hosts.yaml)\n")
+        "(hosts.yaml)\n"
+    )
 
 
 # redact: defense in depth behind the allowlist
 
-@pytest.mark.parametrize("method, result, shown", [
-    ("ups.config", {"monuser": "upsmon", "monpwd": "pw"}, {"monuser": "upsmon", "monpwd": "[REDACTED]"}),
-    ("mail.config", {"user": "me", "pass": "pw"}, {"user": "me", "pass": "[REDACTED]"}),
-    ("snmp.config", {"location": "rack", "community": "public"}, {"location": "rack", "community": "[REDACTED]"}),
-    ("alertservice.query", [{"attributes": {"snmp": {"community": "c"}}}],
-     [{"attributes": {"snmp": {"community": "[REDACTED]"}}}]),
-    ("kerberos.keytab.query", [{"name": "k", "file": "a2V5"}], [{"name": "k", "file": "[REDACTED]"}]),
-    ("cloudsync.credentials.query", [{"name": "b2", "provider": {"type": "B2", "account": "a", "key": "k"}}],
-     [{"name": "b2", "provider": {"type": "B2", "account": "[REDACTED]", "key": "[REDACTED]"}}]),
-])
+
+@pytest.mark.parametrize(
+    "method, result, shown",
+    [
+        ("ups.config", {"monuser": "upsmon", "monpwd": "pw"}, {"monuser": "upsmon", "monpwd": "[REDACTED]"}),
+        ("mail.config", {"user": "me", "pass": "pw"}, {"user": "me", "pass": "[REDACTED]"}),
+        ("snmp.config", {"location": "rack", "community": "public"}, {"location": "rack", "community": "[REDACTED]"}),
+        (
+            "alertservice.query",
+            [{"attributes": {"snmp": {"community": "c"}}}],
+            [{"attributes": {"snmp": {"community": "[REDACTED]"}}}],
+        ),
+        ("kerberos.keytab.query", [{"name": "k", "file": "a2V5"}], [{"name": "k", "file": "[REDACTED]"}]),
+        (
+            "cloudsync.credentials.query",
+            [{"name": "b2", "provider": {"type": "B2", "account": "a", "key": "k"}}],
+            [{"name": "b2", "provider": {"type": "B2", "account": "[REDACTED]", "key": "[REDACTED]"}}],
+        ),
+    ],
+)
 def test_redact_secrets_with_terse_names(method, result, shown):
     assert truenas.redact(result, method) == shown
 
 
 def test_redact_userinfo_in_any_url():
-    assert truenas.redact({
-        "httpproxy": "http://user:p%40ss@proxy.lan:3128",
-        "nested": [{"mirrors": ["https://bob:pw@reg.example/v2", "https://reg.example/v2"]}],
-        "note": "see https://a@b.example and ftp://x:y@z/",
-    }) == {
+    assert truenas.redact(
+        {
+            "httpproxy": "http://user:p%40ss@proxy.lan:3128",
+            "nested": [{"mirrors": ["https://bob:pw@reg.example/v2", "https://reg.example/v2"]}],
+            "note": "see https://a@b.example and ftp://x:y@z/",
+        }
+    ) == {
         "httpproxy": "http://[REDACTED]@proxy.lan:3128",
         "nested": [{"mirrors": ["https://[REDACTED]@reg.example/v2", "https://reg.example/v2"]}],
         "note": "see https://[REDACTED]@b.example and ftp://[REDACTED]@z/",
@@ -310,32 +403,83 @@ def test_redact_userinfo_in_any_url():
 
 
 def test_redact_user_written_scripts_and_commands_at_any_depth():
-    assert truenas.redact([{
-        "id": 1, "pre_script": "run-backup.sh", "post_script": "", "args": "--b2-key x",
-        "job": {"state": "SUCCESS", "description": None},
-        "tasks": [{"command": "backup --password x", "script": "/mnt/a.sh", "extra": ["--rsh=ssh -i k"],
-                   "sudo_commands": ["/bin/x"], "sudo_commands_nopasswd": [], "shutdowncmd": "/bin/off",
-                   "options": "x", "optionsupsd": "y", "smb_options": "z", "auxsmbconf": "z", "cmdline": None}],
-    }]) == [{
-        "id": 1, "pre_script": "[REDACTED]", "post_script": "[REDACTED]", "args": "[REDACTED]",
-        "job": {"state": "SUCCESS"},
-        "tasks": [{"command": "[REDACTED]", "script": "[REDACTED]", "extra": "[REDACTED]",
-                   "sudo_commands": "[REDACTED]", "sudo_commands_nopasswd": "[REDACTED]",
-                   "shutdowncmd": "[REDACTED]", "options": "[REDACTED]", "optionsupsd": "[REDACTED]",
-                   "smb_options": "[REDACTED]", "auxsmbconf": "[REDACTED]", "cmdline": None}],
-    }]
+    assert truenas.redact(
+        [
+            {
+                "id": 1,
+                "pre_script": "run-backup.sh",
+                "post_script": "",
+                "args": "--b2-key x",
+                "job": {"state": "SUCCESS", "description": None},
+                "tasks": [
+                    {
+                        "command": "backup --password x",
+                        "script": "/mnt/a.sh",
+                        "extra": ["--rsh=ssh -i k"],
+                        "sudo_commands": ["/bin/x"],
+                        "sudo_commands_nopasswd": [],
+                        "shutdowncmd": "/bin/off",
+                        "options": "x",
+                        "optionsupsd": "y",
+                        "smb_options": "z",
+                        "auxsmbconf": "z",
+                        "cmdline": None,
+                    }
+                ],
+            }
+        ]
+    ) == [
+        {
+            "id": 1,
+            "pre_script": "[REDACTED]",
+            "post_script": "[REDACTED]",
+            "args": "[REDACTED]",
+            "job": {"state": "SUCCESS"},
+            "tasks": [
+                {
+                    "command": "[REDACTED]",
+                    "script": "[REDACTED]",
+                    "extra": "[REDACTED]",
+                    "sudo_commands": "[REDACTED]",
+                    "sudo_commands_nopasswd": "[REDACTED]",
+                    "shutdowncmd": "[REDACTED]",
+                    "options": "[REDACTED]",
+                    "optionsupsd": "[REDACTED]",
+                    "smb_options": "[REDACTED]",
+                    "auxsmbconf": "[REDACTED]",
+                    "cmdline": None,
+                }
+            ],
+        }
+    ]
 
 
 def test_call_reduces_embedded_jobs_to_their_status(hops_tn, server):
     leak = "CLOUD_SYNC_KEY=fake-b2-key"
-    job = {"id": 9, "method": "cloudsync.sync", "arguments": [1, leak], "state": "FAILED",
-           "progress": {"percent": 40, "description": leak, "extra": None}, "result": leak,
-           "error": f"script failed: {leak}", "exception": leak, "exc_info": {"repr": leak},
-           "logs_excerpt": f"{leak}\n{leak}", "logs_path": "/var/log/jobs/9.log",
-           "time_started": {"$date": 1}, "time_finished": {"$date": 2}}
+    job = {
+        "id": 9,
+        "method": "cloudsync.sync",
+        "arguments": [1, leak],
+        "state": "FAILED",
+        "progress": {"percent": 40, "description": leak, "extra": None},
+        "result": leak,
+        "error": f"script failed: {leak}",
+        "exception": leak,
+        "exc_info": {"repr": leak},
+        "logs_excerpt": f"{leak}\n{leak}",
+        "logs_path": "/var/log/jobs/9.log",
+        "time_started": {"$date": 1},
+        "time_finished": {"$date": 2},
+    }
     server.methods["cloudsync.query"] = lambda: [{"id": 1, "job": job, "nested": [{"job": dict(job)}]}]
     _, out, _ = hops_tn("truenas", "call", "cloudsync.query")
     assert "fake-b2-key" not in out
-    status = {"id": 9, "method": "cloudsync.sync", "state": "FAILED", "progress": {"percent": 40},
-              "time_started": {"$date": 1}, "time_finished": {"$date": 2}}
+    status = {
+        "id": 9,
+        "method": "cloudsync.sync",
+        "state": "FAILED",
+        "progress": {"percent": 40},
+        "time_started": {"$date": 1},
+        "time_finished": {"$date": 2},
+    }
     assert json.loads(out) == [{"id": 1, "job": status, "nested": [{"job": status}]}]

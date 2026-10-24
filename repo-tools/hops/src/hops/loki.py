@@ -10,10 +10,11 @@ is the same across recreations and across a Stack's Compose project being rename
 label holds legacy project names such as `arr`); a Service without one matches every
 <stack>-<service>-<n> Compose has given it.
 """
+
 import json
 import re
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 from hops.declared import Declared, Service
@@ -58,8 +59,9 @@ def literal(text: str) -> str:
 def selector(services: list[Service]) -> str:
     """The LogQL stream selector for the containers of `services` (Docker's streams only)."""
     # Compose names a container without container_name <project>-<service>-<n>.
-    patterns = [literal(s.container_name) if s.container_name else literal(f"{s.stack}-{s.name}-") + "[0-9]+"
-                for s in services]
+    patterns = [
+        literal(s.container_name) if s.container_name else literal(f"{s.stack}-{s.name}-") + "[0-9]+" for s in services
+    ]
     if len(services) == 1 and services[0].container_name:
         matcher = f"container={json.dumps(services[0].container_name)}"
     else:
@@ -85,7 +87,7 @@ def parse_time(value: str, now: datetime) -> int:
         when = datetime.fromisoformat(parts["head"] + (parts["tz"] or ""))
     except ValueError:
         raise UsageError(f"{value!r} is neither a duration (10m, 2h, 7d) nor an ISO 8601 time") from None
-    when = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    when = when if when.tzinfo else when.replace(tzinfo=UTC)
     return int(when.timestamp()) * 10**9 + int((parts["frac"] or "").ljust(9, "0"))
 
 
@@ -96,7 +98,7 @@ def to_ns(when: datetime) -> int:
 def rfc3339(ns: int) -> str:
     """Docker's --timestamps form: UTC with nanoseconds."""
     seconds, frac = divmod(ns, 10**9)
-    return datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + f".{frac:09d}Z"
+    return datetime.fromtimestamp(seconds, UTC).strftime("%Y-%m-%dT%H:%M:%S") + f".{frac:09d}Z"
 
 
 def transport_image(declared: Declared, purpose: str = "logs --loki runs its image to reach Loki") -> str:
@@ -109,13 +111,36 @@ def transport_image(declared: Declared, purpose: str = "logs --loki runs its ima
 
 def fetcher(runner: Runner, image: str) -> Callable[[dict], dict]:
     """A function that sends one query_range request from a throwaway container on the Host."""
+
     def fetch(params: dict) -> dict:
         url = f"http://{ADDRESS}/loki/api/v1/query_range?{urlencode(params)}"
         result = runner.docker(
-            "run", "--rm", "--label", "startup-order=skip", "--log-driver", "none",
-            "--network", NETWORK, "--pull", "never", "--read-only", "--cap-drop", "ALL",
-            "--user", "65534:65534", "--memory", "256m",
-            image, "python3", "-c", SCRIPT, url, str(TIMEOUT), check=False, timeout=TIMEOUT + 30)
+            "run",
+            "--rm",
+            "--label",
+            "startup-order=skip",
+            "--log-driver",
+            "none",
+            "--network",
+            NETWORK,
+            "--pull",
+            "never",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--user",
+            "65534:65534",
+            "--memory",
+            "256m",
+            image,
+            "python3",
+            "-c",
+            SCRIPT,
+            url,
+            str(TIMEOUT),
+            check=False,
+            timeout=TIMEOUT + 30,
+        )
         if result.returncode != 0:
             detail = result.stderr.strip() or f"exit code {result.returncode}"
             raise HopsError(f"Loki query failed: {detail}")
@@ -124,21 +149,27 @@ def fetcher(runner: Runner, image: str) -> Callable[[dict], dict]:
         except (json.JSONDecodeError, KeyError, TypeError):
             raise HopsError(f"Loki answered something other than JSON: {result.stdout[:200]!r}") from None
         if data.get("resultType") != "streams":
-            raise HopsError(f"the query returned {data.get('resultType')}, not log lines; "
-                            "hops logs --loki takes log queries only")
+            raise HopsError(
+                f"the query returned {data.get('resultType')}, not log lines; hops logs --loki takes log queries only"
+            )
         return data
+
     return fetch
 
 
 def entries(data: dict) -> list[tuple[int, dict, str]]:
     """(ns, labels, line) for every value in a streams answer, oldest first."""
-    found = [(int(ns), s.get("stream") or {}, line)
-             for s in data.get("result") or [] for ns, line, *_ in s.get("values") or []]
+    found = [
+        (int(ns), s.get("stream") or {}, line)
+        for s in data.get("result") or []
+        for ns, line, *_ in s.get("values") or []
+    ]
     return sorted(found, key=lambda e: e[0])
 
 
-def query_range(fetch: Callable[[dict], dict], query: str, start: int, end: int,
-                limit: int) -> tuple[list[tuple[int, dict, str]], bool]:
+def query_range(
+    fetch: Callable[[dict], dict], query: str, start: int, end: int, limit: int
+) -> tuple[list[tuple[int, dict, str]], bool]:
     """Up to `limit` entries in [start, end), oldest first, paging PAGE lines at a time.
     Returns them and whether Loki may hold more in the range.
 
@@ -150,21 +181,23 @@ def query_range(fetch: Callable[[dict], dict], query: str, start: int, end: int,
     seen_at_start: set = set()
     while len(found) < limit:
         want = min(PAGE, limit - len(found) + len(seen_at_start))
-        page = entries(fetch({"query": query, "start": start, "end": end, "limit": want,
-                              "direction": "forward"}))
-        new = [e for e in page if key(e) not in seen_at_start][:limit - len(found)]
+        page = entries(fetch({"query": query, "start": start, "end": end, "limit": want, "direction": "forward"}))
+        new = [e for e in page if key(e) not in seen_at_start][: limit - len(found)]
         found += new
         if len(page) < want:
             return found, False
         if not new:
-            tied = entries(fetch({"query": query, "start": start, "end": start + 1, "limit": MAX_ENTRIES,
-                                  "direction": "forward"}))
+            tied = entries(
+                fetch({"query": query, "start": start, "end": start + 1, "limit": MAX_ENTRIES, "direction": "forward"})
+            )
             if len(tied) >= MAX_ENTRIES:
-                raise HopsError(f"{MAX_ENTRIES} or more lines share the timestamp {rfc3339(start)}, more than "
-                                "Loki returns in one request, so hops cannot page past them; narrow the "
-                                "query with --grep, or a selector with --query")
+                raise HopsError(
+                    f"{MAX_ENTRIES} or more lines share the timestamp {rfc3339(start)}, more than "
+                    "Loki returns in one request, so hops cannot page past them; narrow the "
+                    "query with --grep, or a selector with --query"
+                )
             rest = [e for e in tied if key(e) not in seen_at_start]
-            found += rest[:limit - len(found)]
+            found += rest[: limit - len(found)]
             if len(found) >= limit:
                 return found, True
             start, seen_at_start = start + 1, set()

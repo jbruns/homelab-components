@@ -13,6 +13,7 @@ argument on either machine and never written to disk on the Host. `nc -e` hands 
 which copies the request from stdin and then the response to stdout. A plain `… | nc` would
 half-close the connection at the end of stdin, which also cancels the recreate.
 """
+
 import json
 import subprocess
 from pathlib import Path
@@ -31,7 +32,7 @@ PREFERRED = "monitoring/prometheus"
 PROBE = "command -v timeout >/dev/null && nc --help 2>&1 | grep -q -- '-e PROG'"
 # fd 5 keeps ssh's stdin and fd 6 its stdout across nc's exec, which makes the socket stdin and
 # stdout (nc keeps fd 3 for the socket). $1 is the deadline in seconds, $2 and $3 doco-cd's host and port.
-SCRIPT = "exec 5<&0 6>&1; exec timeout \"$1\" nc -w 10 \"$2\" \"$3\" -e sh -c 'cat <&5 && exec cat >&6 5<&-'"
+SCRIPT = 'exec 5<&0 6>&1; exec timeout "$1" nc -w 10 "$2" "$3" -e sh -c \'cat <&5 && exec cat >&6 5<&-\''
 # What docker exec returns when `timeout` ends the request: busybox's TERM, or coreutils' 124.
 TIMED_OUT = {124, 143}
 # Added to the deadline on this machine, so the Host's `timeout` normally fires first.
@@ -75,8 +76,9 @@ def request(method: str, path: str, key: str, cfg: DocoCd) -> str:
 
 def transport(runner: Runner, declared: Declared, excluded: list[Service], cfg: DocoCd) -> str:
     """The container to send requests from: running on doco-cd's network, able to, and not in `excluded`."""
-    names = runner.docker("network", "inspect", cfg.network, "--format",
-                          "{{range .Containers}}{{.Name}} {{end}}").stdout.split()
+    names = runner.docker(
+        "network", "inspect", cfg.network, "--format", "{{range .Containers}}{{.Name}} {{end}}"
+    ).stdout.split()
     keys = {s.key for s in excluded}
     excluded_names = {s.container_name for s in excluded} - {None}
     candidates = []
@@ -87,18 +89,33 @@ def transport(runner: Runner, declared: Declared, excluded: list[Service], cfg: 
     for _, name in sorted(candidates):
         if runner.docker("exec", name, "sh", "-c", PROBE, check=False).returncode == 0:
             return name
-    raise HopsError(f"no running container on the {cfg.network} network outside the Services being recreated "
-                    "has busybox nc -e and timeout to reach doco-cd; recreate fewer Services at once")
+    raise HopsError(
+        f"no running container on the {cfg.network} network outside the Services being recreated "
+        "has busybox nc -e and timeout to reach doco-cd; recreate fewer Services at once"
+    )
 
 
-def send(runner: Runner, via: str, method: str, path: str, key: str, timeout: int, cfg: DocoCd,
-         interrupted: str = "") -> tuple[int, str, str]:
+def send(
+    runner: Runner, via: str, method: str, path: str, key: str, timeout: int, cfg: DocoCd, interrupted: str = ""
+) -> tuple[int, str, str]:
     """Send one request to doco-cd from container `via` within `timeout` seconds; returns the status
     code, the status line after the version, and the body. `interrupted` is appended to deadline errors."""
     suffix = f"; {interrupted}" if interrupted else ""
     try:
-        result = runner.docker("exec", "-i", via, "sh", "-c", SCRIPT, "sh", str(timeout), *address(cfg),
-                               input=request(method, path, key, cfg), check=False, timeout=timeout + SSH_GRACE)
+        result = runner.docker(
+            "exec",
+            "-i",
+            via,
+            "sh",
+            "-c",
+            SCRIPT,
+            "sh",
+            str(timeout),
+            *address(cfg),
+            input=request(method, path, key, cfg),
+            check=False,
+            timeout=timeout + SSH_GRACE,
+        )
     except HostTimeout as exc:
         raise HopsError(f"{exc}{suffix}") from None
     # The Runner reads text with universal newlines, so CRLF arrives as LF.
@@ -124,8 +141,9 @@ def error_message(body: str) -> str:
 def recreate(runner: Runner, via: str, service: Service, key: str, timeout: int, cfg: DocoCd) -> None:
     """Ask doco-cd, from container `via`, to force-recreate one Service within `timeout` seconds;
     raises HopsError unless it answers 2xx."""
-    interrupted = (f"doco-cd's recreate of {service.key} may have been interrupted; "
-                   f"check it with hops status {service.key}")
+    interrupted = (
+        f"doco-cd's recreate of {service.key} may have been interrupted; check it with hops status {service.key}"
+    )
     path = f"/v1/api/project/{quote(service.stack, safe='')}/recreate?service={quote(service.name, safe='')}"
     code, status, body = send(runner, via, "POST", path, key, timeout, cfg, interrupted)
     if not 200 <= code < 300:
@@ -139,7 +157,8 @@ def get(runner: Runner, via: str, path: str, key: str, cfg: DocoCd, timeout: int
     endpoint = path.split("?")[0]
     if not 200 <= code < 300:
         raise (NotFound if code == 404 else HopsError)(
-            f"doco-cd answered {status} for {endpoint}: {error_message(body)}")
+            f"doco-cd answered {status} for {endpoint}: {error_message(body)}"
+        )
     try:
         return json.loads(body)
     except json.JSONDecodeError:

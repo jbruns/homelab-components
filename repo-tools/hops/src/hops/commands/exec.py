@@ -1,4 +1,5 @@
 """hops exec <svc> [-- cmd…]: run a command in a Service's container, or open a shell in it."""
+
 import argparse
 
 from hops import docker, terminal
@@ -10,9 +11,11 @@ SHELL = "if command -v bash >/dev/null 2>&1; then exec bash; fi; exec sh"
 
 def register(subparsers) -> None:
     p = subparsers.add_parser(
-        "exec", help=HELP,
+        "exec",
+        help=HELP,
         description=HELP + ". With a command it runs non-interactively and returns the command's exit "
-        "code. Without one it is Disruptive: it needs a TTY and uses ssh -t and docker exec -it.")
+        "code. Without one it is Disruptive: it needs a TTY and uses ssh -t and docker exec -it.",
+    )
     p.add_argument("service", help="a Service: stack/service, or a unique Service name")
     p.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
     p.set_defaults(func=run)
@@ -23,6 +26,5 @@ def run(args, ctx) -> int:
     service = ctx.declared.resolve_one(args.service)
     if not command:
         terminal.require_tty(f"hops exec {service.key} without a command")
-        return ctx.runner.attach("exec", "-it", docker.container_ref(ctx.runner, service),
-                                 "sh", "-c", SHELL, tty=True)
+        return ctx.runner.attach("exec", "-it", docker.container_ref(ctx.runner, service), "sh", "-c", SHELL, tty=True)
     return ctx.runner.attach("exec", docker.container_ref(ctx.runner, service), *command)

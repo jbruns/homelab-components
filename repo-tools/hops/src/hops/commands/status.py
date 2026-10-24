@@ -1,4 +1,5 @@
 """hops status [target…]: each declared Service against what runs on the Host."""
+
 from hops import docker, output
 from hops.declared import Service
 from hops.strays import undeclared as no_declared_service
@@ -44,10 +45,11 @@ def report(declared, services: list[Service], containers: list[docker.Container]
     return {
         "services": [service_row(s, docker.pick(by_service.get(s.key, []))) for s in services],
         "undeclared": [
-            {"container": c.name, "image": c.image, "state": c.status,
-             "stack": c.compose[0], "service": c.compose[1]}
+            {"container": c.name, "image": c.image, "state": c.status, "stack": c.compose[0], "service": c.compose[1]}
             for c in sorted(strays, key=lambda c: c.name)
-        ] if undeclared else [],
+        ]
+        if undeclared
+        else [],
     }
 
 
@@ -59,19 +61,33 @@ def run(args, ctx) -> int:
         return 0
     output.table(
         ["SERVICE", "TIER", "STATE", "HEALTH", "RESTARTS", "DIGEST"],
-        [[f"{r['stack']}/{r['service']}", r["tier"], r["state"], r["health"], r["restart_count"],
-          {True: "DRIFT", False: "ok", None: None}[r["digest_drift"]]] for r in data["services"]],
+        [
+            [
+                f"{r['stack']}/{r['service']}",
+                r["tier"],
+                r["state"],
+                r["health"],
+                r["restart_count"],
+                {True: "DRIFT", False: "ok", None: None}[r["digest_drift"]],
+            ]
+            for r in data["services"]
+        ],
         ctx.stdout,
     )
     drifted = [r for r in data["services"] if r["digest_drift"]]
     if drifted:
         ctx.stdout.write("\n")
     for r in drifted:
-        ctx.stdout.write(f"{r['stack']}/{r['service']} runs {r['running_image']}, the repo pins "
-                         f"{r['declared_image']} this checkout pins: a Deploy did not apply, or this checkout "
-                         "is not what doco-cd deploys.\n")
+        ctx.stdout.write(
+            f"{r['stack']}/{r['service']} runs {r['running_image']}, the repo pins "
+            f"{r['declared_image']} this checkout pins: a Deploy did not apply, or this checkout "
+            "is not what doco-cd deploys.\n"
+        )
     if data["undeclared"]:
         ctx.stdout.write("\nRunning containers no Stack declares:\n")
-        output.table(["CONTAINER", "IMAGE", "COMPOSE PROJECT"],
-                     [[u["container"], u["image"], u["stack"]] for u in data["undeclared"]], ctx.stdout)
+        output.table(
+            ["CONTAINER", "IMAGE", "COMPOSE PROJECT"],
+            [[u["container"], u["image"], u["stack"]] for u in data["undeclared"]],
+            ctx.stdout,
+        )
     return 0

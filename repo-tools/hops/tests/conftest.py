@@ -2,6 +2,7 @@
 
 hops is installed (uv pip install -e .); this puts the tests directory on sys.path for hops_fakes.
 """
+
 import os
 import sys
 from dataclasses import dataclass

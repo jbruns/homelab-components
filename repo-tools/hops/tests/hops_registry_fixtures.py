@@ -5,6 +5,7 @@ Re-record (needs network). Tokens are redacted, and tag lists keep only version-
 
     cd repo-tools/hops && PYTHONPATH=tests .venv/bin/python -m hops_registry_fixtures [name ...]
 """
+
 import json
 import sys
 from pathlib import Path
@@ -39,11 +40,17 @@ class Recorder:
             data = json.loads(body)
             data["tags"] = [t for t in data.get("tags") or [] if t == "latest" or VERSION_TAG.match(t)]
             body = json.dumps(data)
-        self.exchanges.append({
-            "method": method, "url": url, "authorized": "Authorization" in headers,
-            "accept": headers.get("Accept"), "status": resp.status,
-            "headers": {k: v for k, v in resp.headers.items() if k in KEPT_HEADERS}, "body": body,
-        })
+        self.exchanges.append(
+            {
+                "method": method,
+                "url": url,
+                "authorized": "Authorization" in headers,
+                "accept": headers.get("Accept"),
+                "status": resp.status,
+                "headers": {k: v for k, v in resp.headers.items() if k in KEPT_HEADERS},
+                "body": body,
+            }
+        )
         return resp
 
 

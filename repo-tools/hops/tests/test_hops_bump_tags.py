@@ -1,10 +1,11 @@
 """hops bump's target tag: the newest tag shaped like the pinned one (the rule Canary uses), refusing
 a jump of more than one major version."""
+
 import pytest
+from hops_registry_fixtures import Replay
 
 from hops.registry import Registry
 from hops.tags import propose
-from hops_registry_fixtures import Replay
 
 
 def newest_same_shape(pinned, tags):
@@ -36,10 +37,13 @@ def test_excludes_pre_releases():
     assert newest_same_shape("17.0-alpine", ["17.0-alpine", "18.0-rc1-alpine"]) == "17.0-alpine"
 
 
-@pytest.mark.parametrize("fixture, repository", [
-    ("lscr", "lscr.io/linuxserver/qbittorrent"),
-    ("ghcr-qbittorrent", "ghcr.io/linuxserver/qbittorrent"),
-])
+@pytest.mark.parametrize(
+    "fixture, repository",
+    [
+        ("lscr", "lscr.io/linuxserver/qbittorrent"),
+        ("ghcr-qbittorrent", "ghcr.io/linuxserver/qbittorrent"),
+    ],
+)
 def test_a_stray_tag_more_than_one_major_ahead_is_rejected(fixture, repository):
     tags = Registry(Replay(fixture)).tags(repository)  # the real tag set: has a 2021 `20.04.1`
     proposal = propose("5.2.4", tags)

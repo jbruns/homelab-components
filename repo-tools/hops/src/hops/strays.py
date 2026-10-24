@@ -5,7 +5,8 @@ Data that belongs to a Stack is never a Stray: a volume is kept when its Compose
 Stack or a Stack names it, even while nothing mounts it. A Rollback Volume (hops/rollback_volumes.py) is no Stray
 until its release date has passed; then it is one that --apply --volumes removes.
 """
-from datetime import date, datetime, timezone
+
+from datetime import UTC, date, datetime
 
 from hops import rollback_volumes
 from hops.declared import PROJECT, VARIABLE, Declared
@@ -28,8 +29,11 @@ def undeclared(declared: Declared, c: Container, truenas: bool = True) -> bool:
     """A container no declared Service accounts for, by its Compose labels or its declared
     container_name (a container deployed under a legacy Compose project), and, on a TrueNAS Host,
     not a TrueNAS App's."""
-    return (declared.by_compose_labels(c.labels) is None and not (truenas and truenas_app(c.name, c.compose[0]))
-            and c.name not in {s.container for s in declared.services})
+    return (
+        declared.by_compose_labels(c.labels) is None
+        and not (truenas and truenas_app(c.name, c.compose[0]))
+        and c.name not in {s.container for s in declared.services}
+    )
 
 
 def deliberate(c: Container) -> bool:
@@ -50,8 +54,16 @@ def unresolved(names: dict[str, str]) -> list[str]:
     return sorted(n for n in names if VARIABLE.search(n))
 
 
-def classify(declared: Declared, containers: list[Container], images: list[dict], volumes: list[dict],
-             networks: list[dict], *, truenas: bool = True, on: date | None = None) -> dict:
+def classify(
+    declared: Declared,
+    containers: list[Container],
+    images: list[dict],
+    volumes: list[dict],
+    networks: list[dict],
+    *,
+    truenas: bool = True,
+    on: date | None = None,
+) -> dict:
     """The Strays of each kind, as the JSON `hops strays` prints (README). Rows are `docker … ls` JSON.
 
     When ownership is unknown, a Stray is listed with the reason in `kept` and never removed. Images,
@@ -59,7 +71,7 @@ def classify(declared: Declared, containers: list[Container], images: list[dict]
     containers use is not. `truenas`: the Host runs TrueNAS, whose Apps' (ix-*) resources are never
     Strays. `on` (default today, UTC) decides whether a Rollback Volume is past its release date.
     """
-    on = on or datetime.now(timezone.utc).date()
+    on = on or datetime.now(UTC).date()
 
     def app(name, project):
         return truenas and truenas_app(name, project)
@@ -69,17 +81,29 @@ def classify(declared: Declared, containers: list[Container], images: list[dict]
         if not undeclared(declared, c, truenas):
             kept.append(c)
             continue
-        keep = None if c.status in REMOVABLE_STATES else f"{c.status}: only {', '.join(REMOVABLE_STATES[:-1])} " \
-                                                          f"or {REMOVABLE_STATES[-1]} containers are removed"
+        keep = (
+            None
+            if c.status in REMOVABLE_STATES
+            else f"{c.status}: only {', '.join(REMOVABLE_STATES[:-1])} or {REMOVABLE_STATES[-1]} containers are removed"
+        )
         if keep:
             kept.append(c)
-        stray_containers.append({
-            "container": c.name, "id": c.id, "image": c.image, "state": c.status,
-            "stack": c.compose[0], "service": c.compose[1], "deliberate": deliberate(c), "kept": keep,
-            "removed": None,
-        })
+        stray_containers.append(
+            {
+                "container": c.name,
+                "id": c.id,
+                "image": c.image,
+                "state": c.status,
+                "stack": c.compose[0],
+                "service": c.compose[1],
+                "deliberate": deliberate(c),
+                "kept": keep,
+                "removed": None,
+            }
+        )
 
     used_images = {c.raw.get("Image") for c in kept}
+
     def mounts(c):
         return [m.get("Name") for m in c.raw.get("Mounts") or [] if m.get("Type") == "volume"]
 
@@ -100,9 +124,18 @@ def classify(declared: Declared, containers: list[Container], images: list[dict]
         if row["ID"] in used_images:
             continue
         repository = row.get("Repository") if row.get("Repository") not in ("", "<none>") else None
-        entry = by_id.setdefault(row["ID"], {"id": row["ID"], "repository": repository, "refs": [],
-                                             "size": row.get("Size"), "created": row.get("CreatedAt"),
-                                             "kept": None, "removed": None})
+        entry = by_id.setdefault(
+            row["ID"],
+            {
+                "id": row["ID"],
+                "repository": repository,
+                "refs": [],
+                "size": row.get("Size"),
+                "created": row.get("CreatedAt"),
+                "kept": None,
+                "removed": None,
+            },
+        )
         if repository and row.get("Tag") not in (None, "", "<none>"):
             entry["refs"].append(f"{row['Repository']}:{row['Tag']}")
     for entry in by_id.values():
@@ -116,8 +149,7 @@ def classify(declared: Declared, containers: list[Container], images: list[dict]
         labels = parse_labels(row.get("Labels", ""))
         project = labels.get(PROJECT) or None
         name = row["Name"]
-        if (project in kept_projects or name in declared_volumes or name in used_volumes
-                or app(name, project)):
+        if project in kept_projects or name in declared_volumes or name in used_volumes or app(name, project):
             continue
         rollback = rollback_volumes.expired(labels, on)
         if rollback is False:
@@ -143,11 +175,15 @@ def classify(declared: Declared, containers: list[Container], images: list[dict]
     for row in networks:
         project = parse_labels(row.get("Labels", "")).get(PROJECT) or None
         name = row["Name"]
-        if (name in DEFAULT_NETWORKS or project in declared.stacks or name in declared_networks
-                or name in used_networks or app(name, project)):
+        if (
+            name in DEFAULT_NETWORKS
+            or project in declared.stacks
+            or name in declared_networks
+            or name in used_networks
+            or app(name, project)
+        ):
             continue
-        stray_networks.append({"network": name, "id": row["ID"], "stack": project, "kept": None,
-                               "removed": None})
+        stray_networks.append({"network": name, "id": row["ID"], "stack": project, "kept": None, "removed": None})
 
     return {
         "containers": sorted(stray_containers, key=lambda r: r["container"]),

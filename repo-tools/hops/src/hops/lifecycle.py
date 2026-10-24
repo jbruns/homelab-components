@@ -1,11 +1,11 @@
 """Shared by restart, start and stop: the containers a target names, printed before acting on them."""
+
 from hops import docker
 from hops.declared import Service
 
 
 def add_targets(parser) -> None:
-    parser.add_argument("targets", nargs="+", metavar="target",
-                        help="stack/service, a unique Service name, or a Stack")
+    parser.add_argument("targets", nargs="+", metavar="target", help="stack/service, a unique Service name, or a Stack")
 
 
 def containers(ctx, services: list[Service]) -> list[tuple[Service, str]]:

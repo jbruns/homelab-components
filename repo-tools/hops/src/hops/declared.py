@@ -4,6 +4,7 @@ Names resolve from the repo, never from running containers, so a typo fails befo
 touches the Host. Compose files are read as doco-cd deploys them: each Stack's entry file and
 everything it includes, recursively.
 """
+
 import difflib
 import re
 from dataclasses import dataclass, field
@@ -16,9 +17,12 @@ from hops.errors import ConfigError, ResolveError
 VARIABLE = re.compile(r"\$\{?[A-Za-z_]")
 # Datastore (GLOSSARY) engines, by the last path segment of the image repository.
 DATASTORE_IMAGES = {
-    "mariadb": "mariadb", "mysql": "mariadb",
-    "postgres": "postgres", "postgis": "postgres",
-    "valkey": "valkey", "redis": "valkey",
+    "mariadb": "mariadb",
+    "mysql": "mariadb",
+    "postgres": "postgres",
+    "postgis": "postgres",
+    "valkey": "valkey",
+    "redis": "valkey",
 }
 
 
@@ -143,8 +147,11 @@ class Declared:
                 for key, spec in ((yaml.safe_load(f.read_text()) or {}).get(kind) or {}).items():
                     spec = spec or {}
                     external = spec.get("external")
-                    name = spec.get("name") or (isinstance(external, dict) and external.get("name")) or (
-                        key if external else f"{stack}_{key}")
+                    name = (
+                        spec.get("name")
+                        or (isinstance(external, dict) and external.get("name"))
+                        or (key if external else f"{stack}_{key}")
+                    )
                     names.setdefault(str(name), stack)
         return names
 
@@ -188,8 +195,9 @@ class Declared:
         if allow_stack and name in self.stacks:
             if len(self.stacks[name]) == 1:
                 return self.stacks[name][0]
-            raise ResolveError(f"Stack {name} has several Services; name one: "
-                               + ", ".join(s.key for s in self.stacks[name]))
+            raise ResolveError(
+                f"Stack {name} has several Services; name one: " + ", ".join(s.key for s in self.stacks[name])
+            )
         known = {*self.stacks, *(s.name for s in self.services)}
         raise ResolveError(f"unknown Stack or Service {name!r}{self._suggest(name, known)}")
 

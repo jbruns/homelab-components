@@ -1,10 +1,10 @@
 """hops host: pools, datasets, Docker usage and task status, from recorded TrueNAS and docker output."""
+
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from datetime import datetime, timezone
-
 from hops_fakes import FakeTrueNAS, FakeTrueNASError, container, rollback, snap, write
 
 from hops import cli, snapshots, truenas
@@ -36,8 +36,12 @@ STACK_BACK = {
 STACK_BACK_MOUNTS = [
     {"Type": "bind", "Source": "/mnt/andromeda/docker-backups", "Destination": "/backups"},
     {"Type": "bind", "Source": "/var/run/docker.sock", "Destination": "/tmp/docker.sock"},
-    {"Type": "volume", "Name": "ops_stack-back_cache",
-     "Source": "/mnt/.ix-apps/docker/volumes/ops_stack-back_cache/_data", "Destination": "/cache"},
+    {
+        "Type": "volume",
+        "Name": "ops_stack-back_cache",
+        "Source": "/mnt/.ix-apps/docker/volumes/ops_stack-back_cache/_data",
+        "Destination": "/cache",
+    },
 ]
 
 
@@ -59,7 +63,7 @@ def recorded_methods() -> dict:
 
 @pytest.fixture(autouse=True)
 def clock(monkeypatch):
-    monkeypatch.setattr(snapshots, "now", lambda: datetime(2026, 10, 23, 15, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(snapshots, "now", lambda: datetime(2026, 10, 23, 15, 0, tzinfo=UTC))
 
 
 @pytest.fixture
@@ -81,6 +85,7 @@ def host(fake_host, repo):
 @pytest.fixture
 def run_host(repo, runner, host, server, capsys):
     """hops host with the recorded TrueNAS; `env` holds settings, `truenas=False` leaves it unconfigured."""
+
     def run(*argv, env=None, truenas_on=True):
         client = truenas.Client(CFG, connect=server.connect) if truenas_on else None
         ctx = cli.Context(repo_root=repo, runner=runner, truenas=client, env=env or {})
@@ -97,28 +102,75 @@ def test_json_reports_pools_datasets_docker_and_tasks(run_host):
     report = json.loads(out)
 
     assert report["pools"][1] == {
-        "name": "luna", "status": "ONLINE", "healthy": True, "size_bytes": 3831110828032,
-        "allocated_bytes": 588037693440, "free_bytes": 3243073134592, "used_percent": 15.3}
+        "name": "luna",
+        "status": "ONLINE",
+        "healthy": True,
+        "size_bytes": 3831110828032,
+        "allocated_bytes": 588037693440,
+        "free_bytes": 3243073134592,
+        "used_percent": 15.3,
+    }
     assert [(d["name"], d["roles"]) for d in report["datasets"]] == [
-        ("luna/ix-apps/docker", ["docker"]), ("andromeda/docker-backups", ["restic"]), ("luna", ["configured"])]
+        ("luna/ix-apps/docker", ["docker"]),
+        ("andromeda/docker-backups", ["restic"]),
+        ("luna", ["configured"]),
+    ]
     assert report["datasets"][1] == {
-        "name": "andromeda/docker-backups", "roles": ["restic"], "mountpoint": "/mnt/andromeda/docker-backups",
-        "used_bytes": 1836465068256, "available_bytes": 149728127125120, "snapshots_bytes": 0, "quota_bytes": None}
+        "name": "andromeda/docker-backups",
+        "roles": ["restic"],
+        "mountpoint": "/mnt/andromeda/docker-backups",
+        "used_bytes": 1836465068256,
+        "available_bytes": 149728127125120,
+        "snapshots_bytes": 0,
+        "quota_bytes": None,
+    }
     assert report["docker"][0] == {
-        "type": "images", "total": 107, "active": 50, "size": "61.48GB", "size_bytes": 61480000000,
-        "reclaimable": "36.53GB (59%)", "reclaimable_bytes": 36530000000, "reclaimable_percent": 59}
+        "type": "images",
+        "total": 107,
+        "active": 50,
+        "size": "61.48GB",
+        "size_bytes": 61480000000,
+        "reclaimable": "36.53GB (59%)",
+        "reclaimable_bytes": 36530000000,
+        "reclaimable_percent": 59,
+    }
     assert [d["type"] for d in report["docker"]] == ["images", "containers", "volumes", "build_cache"]
     assert report["docker"][3]["reclaimable_percent"] is None
     assert report["rollback_snapshots"] == {
-        "count": 2, "size_bytes": 4 * 2**30,
-        "expired": [{"name": "luna/ix-apps/docker@hops-637-20261015T120000Z", "dataset": "luna/ix-apps/docker",
-                     "issue": "637", "expires": "2026-10-22", "size": 3 * 2**30, "expired": True}]}
+        "count": 2,
+        "size_bytes": 4 * 2**30,
+        "expired": [
+            {
+                "name": "luna/ix-apps/docker@hops-637-20261015T120000Z",
+                "dataset": "luna/ix-apps/docker",
+                "issue": "637",
+                "expires": "2026-10-22",
+                "size": 3 * 2**30,
+                "expired": True,
+            }
+        ],
+    }
     assert report["tasks"] == [
-        {"kind": "snapshot", "id": 1, "name": "luna-%Y-%m-%d_%H-%M", "source": "luna", "enabled": True,
-         "last_run": {"state": "FINISHED", "started_at": None, "finished_at": "2026-10-23T06:00:00Z"}},
-        {"kind": "cloudsync", "id": 3, "name": "Nightly restic repository", "source": "/mnt/andromeda/docker-backups",
-         "enabled": True,
-         "last_run": {"state": "SUCCESS", "started_at": "2026-10-23T11:00:01Z", "finished_at": "2026-10-23T11:00:23Z"}},
+        {
+            "kind": "snapshot",
+            "id": 1,
+            "name": "luna-%Y-%m-%d_%H-%M",
+            "source": "luna",
+            "enabled": True,
+            "last_run": {"state": "FINISHED", "started_at": None, "finished_at": "2026-10-23T06:00:00Z"},
+        },
+        {
+            "kind": "cloudsync",
+            "id": 3,
+            "name": "Nightly restic repository",
+            "source": "/mnt/andromeda/docker-backups",
+            "enabled": True,
+            "last_run": {
+                "state": "SUCCESS",
+                "started_at": "2026-10-23T11:00:01Z",
+                "finished_at": "2026-10-23T11:00:23Z",
+            },
+        },
     ]
     assert report["notes"] == []
 
@@ -137,15 +189,29 @@ def test_plain_output_has_a_section_each(run_host):
 
 def test_task_status_never_shows_credentials_scripts_or_job_output(run_host, server):
     def seeded(task, allowed):
-        return {k: v if k in allowed else SECRET if not isinstance(v, dict) else {"type": "B2", "key": SECRET}
-                for k, v in task.items()}
+        return {
+            k: v if k in allowed else SECRET if not isinstance(v, dict) else {"type": "B2", "key": SECRET}
+            for k, v in task.items()
+        }
 
     snapshot_task = seeded(RECORDED["pool.snapshottask.query"][0], {"id", "naming_schema", "dataset", "enabled"})
-    snapshot_task["state"] = {"state": "ERROR", "datetime": {"$date": 1792735200000}, "error": SECRET,
-                              "last_snapshot": SECRET}
+    snapshot_task["state"] = {
+        "state": "ERROR",
+        "datetime": {"$date": 1792735200000},
+        "error": SECRET,
+        "last_snapshot": SECRET,
+    }
     cloud = seeded(RECORDED["cloudsync.query"][0], {"id", "description", "path", "enabled", "job"})
-    cloud["job"] = dict(cloud["job"], state="FAILED", error=SECRET, logs_excerpt=SECRET, exception=SECRET,
-                        result=SECRET, arguments=[SECRET], progress={"percent": 50, "description": SECRET})
+    cloud["job"] = dict(
+        cloud["job"],
+        state="FAILED",
+        error=SECRET,
+        logs_excerpt=SECRET,
+        exception=SECRET,
+        result=SECRET,
+        arguments=[SECRET],
+        progress={"percent": 50, "description": SECRET},
+    )
     server.methods["pool.snapshottask.query"] = lambda *p: [snapshot_task]
     server.methods["cloudsync.query"] = lambda *p: [cloud]
 
@@ -168,7 +234,9 @@ def test_configured_dataset_that_does_not_exist_is_a_note(run_host, server):
     report = json.loads(out)
     assert code == 0
     assert [(d["name"], d["roles"]) for d in report["datasets"]] == [
-        ("luna/ix-apps/docker", ["docker", "configured"]), ("andromeda/docker-backups", ["restic"])]
+        ("luna/ix-apps/docker", ["docker", "configured"]),
+        ("andromeda/docker-backups", ["restic"]),
+    ]
     assert any("tank/gone" in n for n in report["notes"])
 
 
@@ -234,15 +302,19 @@ def test_dataset_errors_are_noted_without_their_text(run_host, server):
     assert json.loads(out)["notes"] == [
         "docker dataset unknown: TrueNAS read failed (filesystem.statfs)",
         "restic dataset unknown: TrueNAS read failed (filesystem.statfs)",
-        "dataset luna skipped: TrueNAS read failed (zfs.resource.query)"]
+        "dataset luna skipped: TrueNAS read failed (zfs.resource.query)",
+    ]
 
 
 def test_restic_dataset_is_only_the_repository_mount(run_host, host):
     stack_back = container("stack-back", project="ops", service="stack-back")
     stack_back["Mounts"] = [
         {"Type": "bind", "Source": "/mnt/andromeda/secrets/b2.env", "Destination": "/run/secrets/b2.env"},
-        *STACK_BACK_MOUNTS]
+        *STACK_BACK_MOUNTS,
+    ]
     host.respond("inspect", "stack-back", stdout=json.dumps([stack_back]))
     report = json.loads(run_host("--json")[1])
     assert [(d["name"], d["roles"]) for d in report["datasets"]] == [
-        ("luna/ix-apps/docker", ["docker"]), ("andromeda/docker-backups", ["restic"])]
+        ("luna/ix-apps/docker", ["docker"]),
+        ("andromeda/docker-backups", ["restic"]),
+    ]

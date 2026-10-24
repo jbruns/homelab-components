@@ -1,4 +1,5 @@
 """hops recreate <target…>: doco-cd force-recreates each Service (hops never runs docker compose)."""
+
 from hops import doco, lifecycle
 from hops.errors import UsageError
 
@@ -6,13 +7,23 @@ HELP = "force-recreate Services through doco-cd's REST API"
 
 
 def register(subparsers) -> None:
-    p = subparsers.add_parser("recreate", help=HELP, description=(
-        HELP + ", e.g. after ContainerLeftoverName. Runtime-reversible: doco-cd recreates the Service "
-        "from the Stack it last deployed. Decrypts the API key with sops on this machine and sends it "
-        "on stdin to a container on doco-cd's network (not one being recreated), which calls doco-cd."))
+    p = subparsers.add_parser(
+        "recreate",
+        help=HELP,
+        description=(
+            HELP + ", e.g. after ContainerLeftoverName. Runtime-reversible: doco-cd recreates the Service "
+            "from the Stack it last deployed. Decrypts the API key with sops on this machine and sends it "
+            "on stdin to a container on doco-cd's network (not one being recreated), which calls doco-cd."
+        ),
+    )
     lifecycle.add_targets(p)
-    p.add_argument("--timeout", type=int, default=600, metavar="SECONDS",
-                   help="give up on each Service after this long (default 600)")
+    p.add_argument(
+        "--timeout",
+        type=int,
+        default=600,
+        metavar="SECONDS",
+        help="give up on each Service after this long (default 600)",
+    )
     p.set_defaults(func=run)
 
 

@@ -6,6 +6,7 @@ command that makes several calls pays for one handshake. Nothing is installed on
 
 Tests swap `process` for a fake that records the argv (tests/conftest.py FakeHost).
 """
+
 import shlex
 import subprocess
 from collections.abc import Sequence
@@ -27,12 +28,14 @@ class Result:
 
 
 class Process(Protocol):
-    def __call__(self, argv: list[str], *, input: str | None = None, capture: bool = True,
-                 timeout: float | None = None) -> Result: ...
+    def __call__(
+        self, argv: list[str], *, input: str | None = None, capture: bool = True, timeout: float | None = None
+    ) -> Result: ...
 
 
-def run_process(argv: list[str], *, input: str | None = None, capture: bool = True,
-                timeout: float | None = None) -> Result:
+def run_process(
+    argv: list[str], *, input: str | None = None, capture: bool = True, timeout: float | None = None
+) -> Result:
     """Run argv locally; with capture=False stdin/stdout/stderr stay attached to the terminal.
     Past `timeout` seconds the process is killed and HostTimeout raised."""
     if capture:
@@ -60,22 +63,28 @@ class Runner:
     def ssh_argv(self, remote: str, *, tty: bool = False) -> list[str]:
         key = ["-i", str(self.host.key)] if self.host.key else []
         return [
-            "ssh", *key,
-            "-o", "BatchMode=yes",
-            "-o", "ControlMaster=auto",
-            "-o", f"ControlPath={self.host.control_dir}/%C",
-            "-o", "ControlPersist=10m",
+            "ssh",
+            *key,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            f"ControlPath={self.host.control_dir}/%C",
+            "-o",
+            "ControlPersist=10m",
             "-t" if tty else "-T",
-            self.destination, remote,
+            self.destination,
+            remote,
         ]
 
-    def docker(self, *args: str, input: str | None = None, check: bool = True,
-               timeout: float | None = None) -> Result:
+    def docker(self, *args: str, input: str | None = None, check: bool = True, timeout: float | None = None) -> Result:
         """Run `docker <args>` on the Host and capture its output; `timeout` bounds the ssh process."""
         return self.pipeline(args, input=input, check=check, timeout=timeout)
 
-    def pipeline(self, *commands: Sequence[str], input: str | None = None, check: bool = True,
-                 timeout: float | None = None) -> Result:
+    def pipeline(
+        self, *commands: Sequence[str], input: str | None = None, check: bool = True, timeout: float | None = None
+    ) -> Result:
         """Run docker commands piped into each other on the Host, so data between them never
         reaches this machine (e.g. a secret read in one container and fed to another)."""
         remote = " | ".join(shlex.join(["sudo", "-n", "docker", *c]) for c in commands)
@@ -87,8 +96,14 @@ class Runner:
 
     def attach(self, *args: str, tty: bool = False) -> int:
         """Run `docker <args>` with this terminal attached (follow logs, interactive exec)."""
-        return self._run(shlex.join(["sudo", "-n", "docker", *args]), shlex.join(["docker", *args]),
-                         input=None, capture=False, check=False, tty=tty).returncode
+        return self._run(
+            shlex.join(["sudo", "-n", "docker", *args]),
+            shlex.join(["docker", *args]),
+            input=None,
+            capture=False,
+            check=False,
+            tty=tty,
+        ).returncode
 
     def _run(self, remote: str, what: str, *, input, capture, check, tty=False, timeout=None) -> Result:
         self.host.control_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

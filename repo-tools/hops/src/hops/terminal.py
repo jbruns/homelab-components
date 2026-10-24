@@ -1,4 +1,5 @@
 """The local terminal: interactive (Disruptive) modes need a person at a TTY."""
+
 import sys
 
 from hops.errors import UsageError

@@ -1,12 +1,22 @@
 """hops inspect <svc>: health-check log, last exit code, OOM kill, memory vs limit, start time, image."""
+
 import json
 import re
 
 from hops import docker, output
 
 HELP = "why a Service's container is in its state: health log, exit code, OOM kill, memory"
-UNITS = {"b": 1, "kb": 1000, "mb": 1000**2, "gb": 1000**3, "tb": 1000**4,
-         "kib": 1024, "mib": 1024**2, "gib": 1024**3, "tib": 1024**4}
+UNITS = {
+    "b": 1,
+    "kb": 1000,
+    "mb": 1000**2,
+    "gb": 1000**3,
+    "tb": 1000**4,
+    "kib": 1024,
+    "mib": 1024**2,
+    "gib": 1024**3,
+    "tib": 1024**4,
+}
 
 
 def register(subparsers) -> None:
@@ -58,8 +68,15 @@ def run(args, ctx) -> int:
         "oom_killed": c.oom_killed,
         "restart_count": c.restart_count,
         "memory": memory(ctx.runner, c),
-        "health_log": [{"start": e.get("Start"), "end": e.get("End"), "exit_code": e.get("ExitCode"),
-                        "output": e.get("Output", "")} for e in health.get("Log") or []],
+        "health_log": [
+            {
+                "start": e.get("Start"),
+                "end": e.get("End"),
+                "exit_code": e.get("ExitCode"),
+                "output": e.get("Output", ""),
+            }
+            for e in health.get("Log") or []
+        ],
     }
     if args.json:
         output.print_json(data, ctx.stdout)

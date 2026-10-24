@@ -1,4 +1,5 @@
 """hops bump: pin a Service's image to a new tag and its index digest, on a branch in a new worktree."""
+
 import json
 import os
 import stat
@@ -7,7 +8,6 @@ import sys
 import textwrap
 
 import pytest
-
 from hops_fakes import HOSTS_YAML, git, write
 
 SONARR = "tn/sonarr/compose.yaml"
@@ -17,14 +17,17 @@ DIGEST_4 = "sha256:" + "4" * 64
 TAGS = ["latest", "4.0.20.3012", "5.0.0.2742", "5.0.0.2701", "5.0.1.2800-develop", "rolling"]
 TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 RENOVATE_PR = {
-    "number": 42, "title": "chore(deps): update ghcr.io/home-operations/sonarr docker tag to v5.0.0.2742",
+    "number": 42,
+    "title": "chore(deps): update ghcr.io/home-operations/sonarr docker tag to v5.0.0.2742",
     "url": "https://github.com/jbruns/home-ops/pull/42",
     "body": "| Package | Update | Change |\n|---|---|---|\n"
-            "| [ghcr.io/home-operations/sonarr](https://redirect.github.com/Sonarr/Sonarr) | major |"
-            " `4.0.20.3012` → `5.0.0.2742` |\n",
+    "| [ghcr.io/home-operations/sonarr](https://redirect.github.com/Sonarr/Sonarr) | major |"
+    " `4.0.20.3012` → `5.0.0.2742` |\n",
 }
 OTHER_RENOVATE_PR = {
-    "number": 7, "title": "chore(deps): update traefik docker tag to v3.7.16", "url": "u",
+    "number": 7,
+    "title": "chore(deps): update traefik docker tag to v3.7.16",
+    "url": "u",
     "body": "| [traefik](https://hub.docker.com/_/traefik) | patch | `v3.7.15` → `v3.7.16` |\n",
 }
 
@@ -156,7 +159,10 @@ def test_a_failed_validation_leaves_the_edit_uncommitted_in_the_worktree(hops, c
     outcome = hops("bump", "sonarr/sonarr")
     assert outcome.code == 1
     wt = worktree(checkout, "5.0.0.2742")
-    assert "validate (python3 tools/validate/validate.py secrets env compose) failed" in outcome.err and str(wt) in outcome.err
+    assert (
+        "validate (python3 tools/validate/validate.py secrets env compose) failed" in outcome.err
+        and str(wt) in outcome.err
+    )
     assert git(wt, "rev-parse", "HEAD") == head
     assert git(wt, "status", "--porcelain") == f"M {SONARR}"  # git() strips the leading space
 
@@ -214,11 +220,17 @@ def test_a_leftover_branch_is_refused_with_how_to_discard_it(hops, checkout):
 
 
 def test_every_service_in_the_stack_pinning_the_same_image_moves_together(hops, checkout, repo):
-    (repo / SONARR).write_text((repo / SONARR).read_text() + textwrap.indent(textwrap.dedent(f"""\
+    (repo / SONARR).write_text(
+        (repo / SONARR).read_text()
+        + textwrap.indent(
+            textwrap.dedent(f"""\
         sonarr-cron:
           image: {OLD}  # same image, run as a job
           labels: {{tier: info}}
-    """), "  "))
+    """),
+            "  ",
+        )
+    )
     other = "tn/radarr/compose.yaml"
     (repo / other).parent.mkdir()
     (repo / other).write_text(f"services:\n  radarr-sonarr:\n    image: {OLD}\n")
@@ -251,7 +263,9 @@ def test_pr_pushes_the_branch_and_opens_a_pr_that_supersedes_renovates(hops, che
     outcome = hops("bump", "sonarr/sonarr", "--pr")
     assert outcome.code == 0, outcome.err
     branch = "hops/bump-sonarr-5.0.0.2742"
-    assert git(checkout.remote, "--git-dir=.", "rev-parse", branch) == git(worktree(checkout, "5.0.0.2742"), "rev-parse", "HEAD")
+    assert git(checkout.remote, "--git-dir=.", "rev-parse", branch) == git(
+        worktree(checkout, "5.0.0.2742"), "rev-parse", "HEAD"
+    )
     create = checkout.calls("gh")[-1]
     argv = create["argv"]
     assert argv[:2] == ["pr", "create"]
@@ -287,7 +301,9 @@ def test_the_bump_starts_from_origin_main_not_the_callers_branch(hops, checkout,
     (other / "README.md").write_text("merged elsewhere\n")
     land(other, "merged on main")
     git(repo, "checkout", "-q", "-b", "feature")
-    (repo / SONARR).write_text((repo / SONARR).read_text().replace(OLD, "ghcr.io/home-operations/sonarr:9.9.9.9@sha256:9999"))
+    (repo / SONARR).write_text(
+        (repo / SONARR).read_text().replace(OLD, "ghcr.io/home-operations/sonarr:9.9.9.9@sha256:9999")
+    )
     (repo / "feature.txt").write_text("wip\n")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "feature work")

@@ -1,4 +1,5 @@
 """hops exec <svc> [-- cmd…]: a command in a Service's container, or an interactive shell."""
+
 import pytest
 
 

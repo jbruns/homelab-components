@@ -1,9 +1,10 @@
 """hops volume move: preconditions, the move itself (its script run here against a directory), and failure reports."""
+
 import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from hops_fakes import container, rollback
 
 from hops import snapshots, volumes
 
-NOW = datetime(2026, 10, 23, 15, 47, 5, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 23, 15, 47, 5, tzinfo=UTC)
 PYTHON = "python:3.14.8-alpine3.24@sha256:4444"
 DOCKER_ROOT = "/mnt/.ix-apps/docker"
 DATASET = "luna/ix-apps/docker"
@@ -25,13 +26,21 @@ OLD, NEW = "home_mariadb_data", "nextcloud_mariadb_data"
 def setup(repo, monkeypatch):
     monkeypatch.setattr(snapshots, "now", lambda: NOW)
     compose = repo / "tn" / "monitoring" / "compose.yaml"
-    compose.write_text(compose.read_text() + f"  dependencies-render:\n    image: {PYTHON}\n"
-                       "    container_name: dependencies-render\n")
+    compose.write_text(
+        compose.read_text() + f"  dependencies-render:\n    image: {PYTHON}\n    container_name: dependencies-render\n"
+    )
 
 
 def volume(name, docker_root=DOCKER_ROOT, **over) -> dict:
-    return {"Name": name, "Driver": "local", "Labels": {}, "Options": None, "Scope": "local",
-            "Mountpoint": f"{docker_root}/volumes/{name}/_data", **over}
+    return {
+        "Name": name,
+        "Driver": "local",
+        "Labels": {},
+        "Options": None,
+        "Scope": "local",
+        "Mountpoint": f"{docker_root}/volumes/{name}/_data",
+        **over,
+    }
 
 
 def mounting(name, vol, **kw) -> dict:
@@ -48,7 +57,13 @@ class Host:
     """
 
     def __init__(self, fake_host, root: Path, dataset=DATASET, fstype="zfs", docker_root=DOCKER_ROOT):
-        self.fake, self.root, self.dataset, self.fstype, self.docker_root = fake_host, root, dataset, fstype, docker_root
+        self.fake, self.root, self.dataset, self.fstype, self.docker_root = (
+            fake_host,
+            root,
+            dataset,
+            fstype,
+            docker_root,
+        )
         self.containers: dict[str, list[dict]] = {}
         self.deployer: dict | None = None  # doco-cd's container, found by its Compose labels
         self.runs: list[str] = []
@@ -103,8 +118,9 @@ class Host:
         mode, root, old, new = args[-4:]
         assert root == volumes.ROOT and args[args.index("-v") + 1].startswith(f"{self.docker_root}/volumes:{root}")
         self.runs.append(mode)
-        done = subprocess.run([sys.executable, "-c", args[-5], mode, str(self.root), old, new],
-                              capture_output=True, text=True)
+        done = subprocess.run(
+            [sys.executable, "-c", args[-5], mode, str(self.root), old, new], capture_output=True, text=True
+        )
         report = json.loads(done.stdout)
         report["mount"] = [self.fstype, self.dataset]
         return json.dumps(report)
@@ -195,8 +211,10 @@ def test_a_name_off_the_adr_0010_convention_only_warns(hops, host, pool):
     assert "warning: scratch-new does not follow ADR 0010" in outcome.err
 
 
-@pytest.mark.parametrize("old, new, issue", [("a;rm -rf /", NEW, "638"), (OLD, "x", "638"), (OLD, "../etc", "638"),
-                                            (OLD, OLD, "638"), (OLD, NEW, "#638")])
+@pytest.mark.parametrize(
+    "old, new, issue",
+    [("a;rm -rf /", NEW, "638"), (OLD, "x", "638"), (OLD, "../etc", "638"), (OLD, OLD, "638"), (OLD, NEW, "#638")],
+)
 def test_bad_input_is_refused_before_the_host_is_touched(hops, fake_host, pool, old, new, issue):
     outcome = hops("volume", "move", old, new, "--issue", issue, truenas=pool.client)
     assert outcome.code == 2 and fake_host.calls == []
@@ -216,8 +234,10 @@ def refused(outcome, text):
 
 
 def nothing_changed(host, fake_host):
-    return not any(c[0] in ("rm",) or c[:2] in (["volume", "create"], ["volume", "rm"])
-                   for c in fake_host.docker_calls) and "move" not in host.runs
+    return (
+        not any(c[0] in ("rm",) or c[:2] in (["volume", "create"], ["volume", "rm"]) for c in fake_host.docker_calls)
+        and "move" not in host.runs
+    )
 
 
 def test_refuses_a_missing_old_volume(hops, host, pool, fake_host):
@@ -225,11 +245,14 @@ def test_refuses_a_missing_old_volume(hops, host, pool, fake_host):
     assert nothing_changed(host, fake_host)
 
 
-@pytest.mark.parametrize("over, text", [
-    ({"Options": {"type": "none", "o": "bind", "device": "/mnt/tank/x"}}, "driver options (device=/mnt/tank/x"),
-    ({"Driver": "nfs"}, "driver is nfs"),
-    ({"Mountpoint": "/elsewhere/_data"}, "Mountpoint /elsewhere/_data is not"),
-])
+@pytest.mark.parametrize(
+    "over, text",
+    [
+        ({"Options": {"type": "none", "o": "bind", "device": "/mnt/tank/x"}}, "driver options (device=/mnt/tank/x"),
+        ({"Driver": "nfs"}, "driver is nfs"),
+        ({"Mountpoint": "/elsewhere/_data"}, "Mountpoint /elsewhere/_data is not"),
+    ],
+)
 def test_refuses_a_volume_whose_data_is_not_under_dockers_volumes_directory(hops, host, pool, fake_host, over, text):
     host.add(OLD, {"f": "x"}, **over)
     assert refused(move(hops, pool), text)
@@ -268,15 +291,19 @@ def test_a_snapshot_created_after_the_last_stop_covers_the_move(hops, host, pool
 def test_refuses_a_snapshot_created_before_the_containers_on_old_stopped(hops, host, pool, fake_host):
     host.add(OLD, {"f": "x"})
     stopped_mariadb(host, "2026-10-22T00:00:01.5Z")
-    assert refused(move(hops, pool), f"{SNAPSHOT} was created at 2026-10-22 00:00:00Z, before mariadb stopped "
-                                     "(2026-10-22 00:00:01.500000Z)")
+    assert refused(
+        move(hops, pool),
+        f"{SNAPSHOT} was created at 2026-10-22 00:00:00Z, before mariadb stopped (2026-10-22 00:00:01.500000Z)",
+    )
     assert nothing_changed(host, fake_host)
 
 
-@pytest.mark.parametrize("finished_at", ["2026-10-22T00:00:00.000000001Z", "2026-10-22T00:00:00.5Z",
-                                         "2026-10-22T00:00:00Z"])
-def test_refuses_a_snapshot_created_in_the_second_the_containers_on_old_stopped(hops, host, pool, fake_host,
-                                                                                finished_at):
+@pytest.mark.parametrize(
+    "finished_at", ["2026-10-22T00:00:00.000000001Z", "2026-10-22T00:00:00.5Z", "2026-10-22T00:00:00Z"]
+)
+def test_refuses_a_snapshot_created_in_the_second_the_containers_on_old_stopped(
+    hops, host, pool, fake_host, finished_at
+):
     # ZFS keeps creation to the second, so a snapshot of that second may be from before the stop.
     host.add(OLD, {"f": "x"})
     stopped_mariadb(host, finished_at)
@@ -319,12 +346,15 @@ def test_refuses_a_new_volume_that_is_not_empty(hops, host, pool, fake_host):
     assert nothing_changed(host, fake_host)
 
 
-@pytest.mark.parametrize("found", [
-    [],
-    [rollback(SNAPSHOT, issue="638", expires="2026-10-22")],  # expired
-    [rollback(SNAPSHOT, issue="999")],  # another change's
-    [rollback("luna/apps@hops-638-x", issue="638")],  # another dataset's
-])
+@pytest.mark.parametrize(
+    "found",
+    [
+        [],
+        [rollback(SNAPSHOT, issue="638", expires="2026-10-22")],  # expired
+        [rollback(SNAPSHOT, issue="999")],  # another change's
+        [rollback("luna/apps@hops-638-x", issue="638")],  # another dataset's
+    ],
+)
 def test_refuses_without_an_unexpired_rollback_snapshot_of_the_volumes_dataset(hops, host, fake_host, found):
     host.add(OLD, {"f": "x"})
     assert refused(move(hops, Pool(*found)), f"no unexpired Rollback Snapshot of {DATASET}")
@@ -358,6 +388,7 @@ def test_refuses_volumes_on_different_filesystems(hops, host, pool, fake_host, m
         report = json.loads(run(call))
         report["old"]["dev"] += 1
         return json.dumps(report)
+
     fake_host.respond("run", stdout=other_device)
     assert refused(move(hops, pool), "not all on the filesystem")
     assert nothing_changed(host, fake_host)
@@ -371,9 +402,14 @@ def test_a_failure_part_way_reports_both_volumes_and_rolls_nothing_back(hops, ho
         if call.docker[-1][-4] == "check":
             return run(call)
         report = json.loads(run(call))  # moves everything, then report as if it stopped after one
-        report.update(moved=1, error="PermissionError: [Errno 13] Permission denied",
-                      old={**report["old"], "entries": 2}, new={**report["new"], "entries": 1})
+        report.update(
+            moved=1,
+            error="PermissionError: [Errno 13] Permission denied",
+            old={**report["old"], "entries": 2},
+            new={**report["new"], "entries": 1},
+        )
         return json.dumps(report)
+
     fake_host.respond("run", stdout=fails_after_one)
 
     outcome = move(hops, pool)
@@ -403,6 +439,7 @@ def test_refuses_when_a_consumer_starts_between_the_checks_and_the_move(hops, ho
     def deploy_starts_it(call):
         db["State"]["Status"] = "running"
         return create(call)
+
     fake_host.respond("volume", "create", stdout=deploy_starts_it)
 
     outcome = move(hops, pool)
@@ -423,8 +460,10 @@ def test_a_consumer_appearing_during_the_move_stops_before_cleanup(hops, host, p
         report = run(call)
         if call.docker[-1][-4] == "move":
             host.containers.setdefault(on, []).append(
-                mounting("mariadb", on, project="nextcloud", service="mariadb", status=status))
+                mounting("mariadb", on, project="nextcloud", service="mariadb", status=status)
+            )
         return report
+
     fake_host.respond("run", stdout=deploy_during_move)
 
     outcome = move(hops, pool)
@@ -450,6 +489,7 @@ def test_a_known_consumer_that_ran_before_the_move_stops_it(hops, host, pool, fa
     def runs_meanwhile(call):
         ran_and_exited(db, host, write=False)
         return create(call)
+
     fake_host.respond("volume", "create", stdout=runs_meanwhile)
 
     outcome = move(hops, pool)
@@ -469,6 +509,7 @@ def test_a_known_consumer_that_ran_during_the_move_stops_before_cleanup(hops, ho
         if call.docker[-1][-4] == "move":
             ran_and_exited(db, host)
         return report
+
     fake_host.respond("run", stdout=runs_during_move)
 
     outcome = move(hops, pool)
@@ -486,6 +527,7 @@ def test_old_is_kept_when_it_is_not_empty_just_before_its_removal(hops, host, po
     def something_writes(call):
         (host.root / OLD / "_data" / "late").write_text("new")
         return ""
+
     fake_host.respond("rm", stdout=something_writes)
 
     outcome = move(hops, pool)
@@ -498,8 +540,9 @@ def test_old_is_kept_when_it_is_not_empty_just_before_its_removal(hops, host, po
 
 
 def doco_cd(status="exited"):
-    return container("doco-cd-doco-cd-1", project="doco-cd", service="doco-cd", status=status,
-                     started_at="2026-10-21T00:00:00Z")
+    return container(
+        "doco-cd-doco-cd-1", project="doco-cd", service="doco-cd", status=status, started_at="2026-10-21T00:00:00Z"
+    )
 
 
 @pytest.mark.parametrize("status", ["running", "restarting"])
@@ -523,6 +566,7 @@ def test_refuses_when_doco_cd_starts_between_the_checks_and_the_move(hops, host,
     def doco_cd_starts(call):
         host.deployer["State"]["Status"] = "running"
         return create(call)
+
     fake_host.respond("volume", "create", stdout=doco_cd_starts)
 
     outcome = move(hops, pool)
@@ -543,6 +587,7 @@ def test_doco_cd_starting_during_the_move_stops_before_cleanup(hops, host, pool,
             host.deployer = doco_cd("exited" if ran else "running")
             host.deployer["State"]["StartedAt"] = "2026-10-23T15:47:06.1Z"
         return report
+
     fake_host.respond("run", stdout=doco_cd_during_move)
 
     outcome = move(hops, pool)
@@ -573,9 +618,19 @@ def test_without_zfs_move_first_copies_old_into_a_labelled_rollback_volume(hops,
     report = json.loads(outcome.out)
     assert report["rollback_volume"] == {"name": ROLLBACK, "of": OLD, "issue": "638", "expires": "2026-10-30"}
     assert (report["dataset"], report["snapshot"], report["moved"]) == (None, None, True)
-    assert rollback_volume_created(fake_host) == [[
-        "volume", "create", "--label", "hops.rollback.issue=638", "--label", f"hops.rollback.of={OLD}",
-        "--label", "hops.rollback.expires=2026-10-30", ROLLBACK]]
+    assert rollback_volume_created(fake_host) == [
+        [
+            "volume",
+            "create",
+            "--label",
+            "hops.rollback.issue=638",
+            "--label",
+            f"hops.rollback.of={OLD}",
+            "--label",
+            "hops.rollback.expires=2026-10-30",
+            ROLLBACK,
+        ]
+    ]
     assert host.runs == ["check", "copy", "move", "check"]
     kept = host.root / ROLLBACK / "_data"
     assert (kept / ".hidden").read_text() == "dot" and (kept / "nested" / "file").read_text() == "x"
@@ -607,8 +662,10 @@ def test_without_zfs_dry_run_names_the_rollback_volume_and_changes_nothing(hops,
 def test_without_zfs_take_snapshot_is_refused_before_the_host_is_touched(hops, fake_host):
     outcome = move(hops, None, "--take-snapshot")
     assert outcome.code == 2
-    assert ("--take-snapshot (a Rollback Snapshot) needs a Host with the truenas and zfs capabilities; "
-            "Host 'truenas' has none") in outcome.err
+    assert (
+        "--take-snapshot (a Rollback Snapshot) needs a Host with the truenas and zfs capabilities; "
+        "Host 'truenas' has none"
+    ) in outcome.err
     assert fake_host.calls == []
 
 
@@ -631,12 +688,15 @@ def test_without_zfs_a_failed_copy_moves_nothing(hops, host, fake_host):
         report = json.loads(run(call))
         report["error"] = "RuntimeError: cp -a: No space left on device"
         return json.dumps(report)
+
     fake_host.respond("run", stdout=copy_fails)
 
     outcome = move(hops, None)
     assert outcome.code == 1
-    assert (f"copying {OLD} into {ROLLBACK} failed: RuntimeError: cp -a: No space left on device. Nothing was moved "
-            f"and {OLD} is as it was; remove {ROLLBACK}") in outcome.err
+    assert (
+        f"copying {OLD} into {ROLLBACK} failed: RuntimeError: cp -a: No space left on device. Nothing was moved "
+        f"and {OLD} is as it was; remove {ROLLBACK}"
+    ) in outcome.err
     assert "move" not in host.runs and (host.root / OLD / "_data" / "f").exists()
 
 

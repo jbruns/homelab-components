@@ -1,5 +1,6 @@
 """Host selection: --host (before or after the command), else the working directory, else the only Host;
 and the capability gates on commands a Host cannot serve."""
+
 import json
 
 import pytest
@@ -17,6 +18,7 @@ def two_hosts(repo):
 @pytest.fixture
 def run(two_hosts, runner, capsys):
     """hops in the two-Host repo, from `cwd` (default: the repo root)."""
+
     def run(*argv, cwd=None, client=None):
         ctx = cli.Context(repo_root=two_hosts, runner=runner, truenas=client, env={}, cwd=cwd or two_hosts)
         code = cli.main(list(argv), ctx=ctx)
@@ -55,21 +57,33 @@ def test_an_unknown_host_is_refused(run, fake_host):
 
 def test_truenas_call_runs_on_the_host_with_truenas(run, two_hosts):
     server = FakeTrueNAS({"system.info": lambda: {"hostname": "tn"}})
-    client = truenas.Client(truenas.TrueNASConfig(url="wss://tn.example/api/current", api_key=FakeTrueNAS.KEY),
-                            connect=server.connect)
+    client = truenas.Client(
+        truenas.TrueNASConfig(url="wss://tn.example/api/current", api_key=FakeTrueNAS.KEY), connect=server.connect
+    )
     code, out, err, _ = run("truenas", "call", "system.info", "--json", cwd=two_hosts / "tn", client=client)
     assert (code, err) == (0, "")
     assert json.loads(out) == {"hostname": "tn"}
 
 
-@pytest.mark.parametrize("argv, what", [
-    (["truenas", "call", "system.info"], "hops truenas call needs a Host with the truenas capability"),
-    (["snapshot", "list"], "hops snapshot (Rollback Snapshots) needs a Host with the truenas and zfs capabilities"),
-    (["snapshot", "take", "--issue", "638"], "hops snapshot (Rollback Snapshots) needs a Host with the truenas and zfs capabilities"),
-    (["snapshot", "release", "luna/x@hops-638-x"], "hops snapshot (Rollback Snapshots) needs a Host with the truenas and zfs capabilities"),
-    (["volume", "move", "a_b_data", "c_d_data", "--issue", "638", "--take-snapshot"],
-     "--take-snapshot (a Rollback Snapshot) needs a Host with the truenas and zfs capabilities"),
-])
+@pytest.mark.parametrize(
+    "argv, what",
+    [
+        (["truenas", "call", "system.info"], "hops truenas call needs a Host with the truenas capability"),
+        (["snapshot", "list"], "hops snapshot (Rollback Snapshots) needs a Host with the truenas and zfs capabilities"),
+        (
+            ["snapshot", "take", "--issue", "638"],
+            "hops snapshot (Rollback Snapshots) needs a Host with the truenas and zfs capabilities",
+        ),
+        (
+            ["snapshot", "release", "luna/x@hops-638-x"],
+            "hops snapshot (Rollback Snapshots) needs a Host with the truenas and zfs capabilities",
+        ),
+        (
+            ["volume", "move", "a_b_data", "c_d_data", "--issue", "638", "--take-snapshot"],
+            "--take-snapshot (a Rollback Snapshot) needs a Host with the truenas and zfs capabilities",
+        ),
+    ],
+)
 def test_truenas_and_zfs_commands_are_refused_on_a_host_without_them(run, fake_host, argv, what):
     code, _, err, _ = run(*argv, "--host", "nas-2")
     assert code == 2

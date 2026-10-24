@@ -1,6 +1,7 @@
 """hops snapshot take|list|release and hops.snapshots, against hops_fakes.FakeSnapshots."""
+
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 from hops_fakes import FakeSnapshots as Pool
@@ -8,7 +9,7 @@ from hops_fakes import prop, rollback, snap
 
 from hops import snapshots
 
-NOW = datetime(2026, 10, 23, 15, 47, 5, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 23, 15, 47, 5, tzinfo=UTC)
 DOCKER = "luna/ix-apps/docker"  # holds Docker's data-root, /mnt/.ix-apps/docker (FakeSnapshots)
 PERIODIC = f"{DOCKER}@luna-2026-10-19_23-00"
 
@@ -27,16 +28,29 @@ def test_take_snapshots_dockers_data_root_with_its_properties_set_at_creation(ho
     pool = Pool()
     outcome = hops("snapshot", "take", "--issue", "637", "--json", truenas=pool.client)
     assert outcome.code == 0, outcome.err
-    assert pool.called("pool.snapshot.create") == [[{
-        "dataset": DOCKER, "name": "hops-637-20261023T154705Z",
-        "properties": {"homeops:issue": "637", "homeops:expires": "2026-10-30"}}]]
+    assert pool.called("pool.snapshot.create") == [
+        [
+            {
+                "dataset": DOCKER,
+                "name": "hops-637-20261023T154705Z",
+                "properties": {"homeops:issue": "637", "homeops:expires": "2026-10-30"},
+            }
+        ]
+    ]
     assert json.loads(outcome.out)["snapshot"] == {
-        "name": f"{DOCKER}@hops-637-20261023T154705Z", "dataset": DOCKER, "issue": "637",
-        "expires": "2026-10-30", "size": 0, "expired": False}
+        "name": f"{DOCKER}@hops-637-20261023T154705Z",
+        "dataset": DOCKER,
+        "issue": "637",
+        "expires": "2026-10-30",
+        "size": 0,
+        "expired": False,
+    }
 
 
-@pytest.mark.parametrize("when, expires", [(["--for", "2w"], "2026-11-06"), (["--for", "1d"], "2026-10-24"),
-                                           (["--expires", "2026-12-01"], "2026-12-01")])
+@pytest.mark.parametrize(
+    "when, expires",
+    [(["--for", "2w"], "2026-11-06"), (["--for", "1d"], "2026-10-24"), (["--expires", "2026-12-01"], "2026-12-01")],
+)
 def test_take_sets_the_release_date(hops, when, expires):
     pool = Pool()
     outcome = hops("snapshot", "take", "--issue", "9", "--dataset", "luna/apps", *when, truenas=pool.client)
@@ -45,11 +59,14 @@ def test_take_sets_the_release_date(hops, when, expires):
     assert pool.snapshots["luna/apps@hops-9-20261023T154705Z"]["properties"]["homeops:expires"]["value"] == expires
 
 
-@pytest.mark.parametrize("args, message", [
-    (["--expires", "2026-10-22"], "already past"),
-    (["--for", "soon"], "not a duration"),
-    (["--issue", "abc"], "not an issue number"),
-])
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["--expires", "2026-10-22"], "already past"),
+        (["--for", "soon"], "not a duration"),
+        (["--issue", "abc"], "not an issue number"),
+    ],
+)
 def test_take_refuses_bad_input_before_creating(hops, args, message):
     pool = Pool()
     outcome = hops("snapshot", "take", "--issue", "637", *args, truenas=pool.client)
@@ -92,12 +109,26 @@ def test_list_shows_only_snapshots_with_their_own_homeops_properties(hops):
     outcome = hops("snapshot", "list", "--json", truenas=pool.client)
     assert outcome.code == 0, outcome.err
     # Expired means the release date is before today (UTC); on the day itself it has not.
-    assert json.loads(outcome.out) == {"snapshots": [
-        {"name": f"{DOCKER}@hops-1-20261001T000000Z", "dataset": DOCKER, "issue": "1", "expires": "2026-10-22",
-         "size": 5 * 2**30, "expired": True},
-        {"name": f"{DOCKER}@hops-2-20261020T000000Z", "dataset": DOCKER, "issue": "2", "expires": "2026-10-23",
-         "size": 1024, "expired": False},
-    ]}
+    assert json.loads(outcome.out) == {
+        "snapshots": [
+            {
+                "name": f"{DOCKER}@hops-1-20261001T000000Z",
+                "dataset": DOCKER,
+                "issue": "1",
+                "expires": "2026-10-22",
+                "size": 5 * 2**30,
+                "expired": True,
+            },
+            {
+                "name": f"{DOCKER}@hops-2-20261020T000000Z",
+                "dataset": DOCKER,
+                "issue": "2",
+                "expires": "2026-10-23",
+                "size": 1024,
+                "expired": False,
+            },
+        ]
+    }
     table = hops("snapshot", "list", truenas=pool.client).out
     assert "5.0GiB" in table and "luna-2026" not in table and "auto-1" not in table
 
@@ -105,7 +136,8 @@ def test_list_shows_only_snapshots_with_their_own_homeops_properties(hops):
 def test_rollback_snapshots_is_usable_without_the_cli():
     pool = Pool(rollback(f"{DOCKER}@hops-1-x", expires="2026-10-01"), snap(PERIODIC))
     assert [(r.name, r.expired) for r in snapshots.rollback_snapshots(pool.client, date(2026, 9, 1))] == [
-        (f"{DOCKER}@hops-1-x", False)]
+        (f"{DOCKER}@hops-1-x", False)
+    ]
 
 
 def test_release_destroys_a_rollback_snapshot(hops):

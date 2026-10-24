@@ -6,6 +6,7 @@ The Host is HOPS_CONSUMER_HOST, else the consuming repo's only Host; its HOPS_<N
 repo's .env. The Services named below are home-ops's; the TrueNAS and host tests need a Host with the
 truenas and zfs capabilities. Never add a command here that changes anything on the Host.
 """
+
 import json
 import os
 from pathlib import Path

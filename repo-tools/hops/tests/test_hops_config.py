@@ -1,4 +1,5 @@
 """Config: the repo root (hosts.yaml), the Host, the repo-root .env and environment overrides."""
+
 from pathlib import Path
 
 import pytest
@@ -7,28 +8,40 @@ from hops_fakes import NAS_2, git, hosts_yaml, write
 from hops import config
 from hops.errors import ConfigError
 
+
 def truenas_host(root: Path):
     return config.load_hosts(root).hosts["truenas"]
 
 
 def test_host_config_reads_the_hosts_keys_from_dotenv(repo):
-    write(repo, {".env": """
+    write(
+        repo,
+        {
+            ".env": """
         # Host access
         HOPS_TRUENAS_TRUENAS_URL=https://tn.example
         HOPS_TRUENAS_TRUENAS_API_KEY=fake-key
         export HOPS_TRUENAS_SSH_HOST="tn.example"
         HOPS_TRUENAS_SSH_USER=agent
         HOPS_TRUENAS_SSH_KEY=~/.ssh/agent_ed25519
-    """})
+    """
+        },
+    )
     host = config.load_host(repo, truenas_host(repo), env={"HOME": "/home/me"})
     assert (host.host, host.user, host.key) == ("tn.example", "agent", Path("/home/me/.ssh/agent_ed25519"))
 
 
 def test_environment_overrides_dotenv(plain_host):
     write(plain_host, {".env": "HOPS_TRUENAS_SSH_HOST=tn.example\nHOPS_TRUENAS_SSH_USER=someone\n"})
-    host = config.load_host(plain_host, truenas_host(plain_host), env={
-        "HOME": "/home/me", "HOPS_TRUENAS_SSH_HOST": "other.example", "HOPS_TRUENAS_SSH_KEY": "~/.ssh/k",
-    })
+    host = config.load_host(
+        plain_host,
+        truenas_host(plain_host),
+        env={
+            "HOME": "/home/me",
+            "HOPS_TRUENAS_SSH_HOST": "other.example",
+            "HOPS_TRUENAS_SSH_KEY": "~/.ssh/k",
+        },
+    )
     assert (host.host, host.user, host.key) == ("other.example", "someone", Path("/home/me/.ssh/k"))
 
 
@@ -58,8 +71,14 @@ def test_dotenv_falls_back_to_the_main_worktree(tmp_path):
     main = tmp_path / "main"
     main.mkdir()
     git(main, "init", "-q")
-    write(main, {"hosts.yaml": hosts_yaml(capabilities="[]"), "tn/edge/compose.yaml": "services: {}\n",
-                 ".env": "HOPS_TRUENAS_SSH_HOST=tn.example\nHOPS_TRUENAS_SSH_USER=u\n"})
+    write(
+        main,
+        {
+            "hosts.yaml": hosts_yaml(capabilities="[]"),
+            "tn/edge/compose.yaml": "services: {}\n",
+            ".env": "HOPS_TRUENAS_SSH_HOST=tn.example\nHOPS_TRUENAS_SSH_USER=u\n",
+        },
+    )
     git(main, "add", "hosts.yaml", "tn")
     git(main, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x")
     git(main, "worktree", "add", "-q", str(main / ".worktrees" / "1"))

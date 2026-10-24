@@ -10,6 +10,7 @@ non-zero when the command fails.
 `hops db [<datastore>] --users` compares a MariaDB Datastore's live accounts (mysql.user) with
 its homeops.db.users label, through the same in-container login.
 """
+
 import re
 import shlex
 from collections.abc import Callable
@@ -22,10 +23,10 @@ HELP = "the Datastore's own client (MariaDB, Valkey, Postgres), interactive or o
 
 # Each script runs as `sh -c SCRIPT hops-db <arg> <client args…>`; only Valkey uses <arg> (its config file).
 MARIADB = (
-    'shift; p=; '
+    "shift; p=; "
     'if [ -n "${MARIADB_ROOT_PASSWORD_FILE:-}" ]; then p=$(cat "$MARIADB_ROOT_PASSWORD_FILE") || exit 1; '
     'elif [ -n "${MYSQL_ROOT_PASSWORD_FILE:-}" ]; then p=$(cat "$MYSQL_ROOT_PASSWORD_FILE") || exit 1; '
-    'else p=${MARIADB_ROOT_PASSWORD:-${MYSQL_ROOT_PASSWORD:-}}; fi; '
+    "else p=${MARIADB_ROOT_PASSWORD:-${MYSQL_ROOT_PASSWORD:-}}; fi; "
     'if [ -z "$p" ]; then echo "hops: no MARIADB_ROOT_PASSWORD(_FILE) in the container" >&2; exit 1; fi; '
     'export MYSQL_PWD="$p"; '
     'c=$(command -v mariadb || command -v mysql) || { echo "hops: no mariadb client" >&2; exit 127; }; '
@@ -33,15 +34,15 @@ MARIADB = (
 )
 VALKEY = (
     'p=; if [ -n "$1" ] && [ -r "$1" ]; then p=$(sed -n "s/^requirepass //p" "$1"); fi; shift; '
-    'p=${p:-${VALKEY_PASSWORD:-${REDIS_PASSWORD:-}}}; '
+    "p=${p:-${VALKEY_PASSWORD:-${REDIS_PASSWORD:-}}}; "
     'if [ -n "$p" ]; then export REDISCLI_AUTH="$p"; fi; '
     'c=$(command -v valkey-cli || command -v redis-cli) || { echo "hops: no valkey-cli" >&2; exit 127; }; '
     'exec "$c" "$@"'
 )
 POSTGRES = (
-    'shift; u=${POSTGRES_USER:-postgres}; '
+    "shift; u=${POSTGRES_USER:-postgres}; "
     'if [ -n "${POSTGRES_PASSWORD_FILE:-}" ]; then PGPASSWORD=$(cat "$POSTGRES_PASSWORD_FILE") || exit 1; '
-    'else PGPASSWORD=${POSTGRES_PASSWORD:-}; fi; '
+    "else PGPASSWORD=${POSTGRES_PASSWORD:-}; fi; "
     'if [ -n "$PGPASSWORD" ]; then export PGPASSWORD; else unset PGPASSWORD; fi; '
     'exec psql -X -U "$u" -d "${POSTGRES_DB:-$u}" "$@"'
 )
@@ -50,15 +51,77 @@ POSTGRES = (
 SQL_READ = {"SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC"}
 SQL_FIRST_WORD = re.compile(r"\(*\s*([A-Za-z]+)\b")
 VALKEY_READ = {
-    "PING", "ECHO", "INFO", "DBSIZE", "TIME", "LASTSAVE", "ROLE", "EXISTS", "TYPE", "TTL", "PTTL",
-    "EXPIRETIME", "PEXPIRETIME", "KEYS", "SCAN", "RANDOMKEY", "GET", "MGET", "STRLEN", "GETRANGE",
-    "GETBIT", "BITCOUNT", "BITPOS", "LCS", "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS", "HLEN",
-    "HEXISTS", "HSTRLEN", "HSCAN", "HRANDFIELD", "LRANGE", "LLEN", "LINDEX", "LPOS", "SMEMBERS",
-    "SISMEMBER", "SMISMEMBER", "SCARD", "SSCAN", "SRANDMEMBER", "SINTER", "SINTERCARD", "SUNION",
-    "SDIFF", "ZRANGE", "ZRANGEBYSCORE", "ZRANGEBYLEX", "ZREVRANGE", "ZREVRANGEBYSCORE",
-    "ZREVRANGEBYLEX", "ZRANK", "ZREVRANK", "ZSCORE", "ZMSCORE", "ZCARD", "ZCOUNT", "ZLEXCOUNT",
-    "ZSCAN", "ZRANDMEMBER", "XLEN", "XRANGE", "XREVRANGE", "PFCOUNT", "GEOPOS", "GEODIST",
-    "GEOHASH", "GEOSEARCH",
+    "PING",
+    "ECHO",
+    "INFO",
+    "DBSIZE",
+    "TIME",
+    "LASTSAVE",
+    "ROLE",
+    "EXISTS",
+    "TYPE",
+    "TTL",
+    "PTTL",
+    "EXPIRETIME",
+    "PEXPIRETIME",
+    "KEYS",
+    "SCAN",
+    "RANDOMKEY",
+    "GET",
+    "MGET",
+    "STRLEN",
+    "GETRANGE",
+    "GETBIT",
+    "BITCOUNT",
+    "BITPOS",
+    "LCS",
+    "HGET",
+    "HMGET",
+    "HGETALL",
+    "HKEYS",
+    "HVALS",
+    "HLEN",
+    "HEXISTS",
+    "HSTRLEN",
+    "HSCAN",
+    "HRANDFIELD",
+    "LRANGE",
+    "LLEN",
+    "LINDEX",
+    "LPOS",
+    "SMEMBERS",
+    "SISMEMBER",
+    "SMISMEMBER",
+    "SCARD",
+    "SSCAN",
+    "SRANDMEMBER",
+    "SINTER",
+    "SINTERCARD",
+    "SUNION",
+    "SDIFF",
+    "ZRANGE",
+    "ZRANGEBYSCORE",
+    "ZRANGEBYLEX",
+    "ZREVRANGE",
+    "ZREVRANGEBYSCORE",
+    "ZREVRANGEBYLEX",
+    "ZRANK",
+    "ZREVRANK",
+    "ZSCORE",
+    "ZMSCORE",
+    "ZCARD",
+    "ZCOUNT",
+    "ZLEXCOUNT",
+    "ZSCAN",
+    "ZRANDMEMBER",
+    "XLEN",
+    "XRANGE",
+    "XREVRANGE",
+    "PFCOUNT",
+    "GEOPOS",
+    "GEODIST",
+    "GEOHASH",
+    "GEOSEARCH",
 }
 VALKEY_READ_SUBCOMMANDS = {
     "CLIENT": {"LIST", "INFO", "GETNAME", "ID"},
@@ -80,19 +143,34 @@ USERS_QUERY = "SELECT HEX(User), HEX(Host) FROM mysql.user\n"
 
 def register(subparsers) -> None:
     p = subparsers.add_parser(
-        "db", help=HELP,
+        "db",
+        help=HELP,
         description=HELP + ". Without -e it is Disruptive: it needs a TTY (ssh -t, docker exec -it). "
-        "Credentials are read inside the container and never reach this machine.")
-    p.add_argument("datastore", nargs="?",
-                   help="a Datastore Service: stack/service, or a unique Service name "
-                        f"(with --users, omit it to check every Datastore labelled {USERS_LABEL})")
-    p.add_argument("-e", dest="statement", metavar="STATEMENT",
-                   help="run one statement non-interactively (Valkey: one command per line) and print the result")
-    p.add_argument("--write", action="store_true",
-                   help="allow an -e statement that does not start with SELECT, SHOW, EXPLAIN or DESCRIBE "
-                        "(Valkey: a read command)")
-    p.add_argument("--users", action="store_true",
-                   help=f"compare a MariaDB Datastore's users with its {USERS_LABEL} label; exit 1 on drift")
+        "Credentials are read inside the container and never reach this machine.",
+    )
+    p.add_argument(
+        "datastore",
+        nargs="?",
+        help="a Datastore Service: stack/service, or a unique Service name "
+        f"(with --users, omit it to check every Datastore labelled {USERS_LABEL})",
+    )
+    p.add_argument(
+        "-e",
+        dest="statement",
+        metavar="STATEMENT",
+        help="run one statement non-interactively (Valkey: one command per line) and print the result",
+    )
+    p.add_argument(
+        "--write",
+        action="store_true",
+        help="allow an -e statement that does not start with SELECT, SHOW, EXPLAIN or DESCRIBE "
+        "(Valkey: a read command)",
+    )
+    p.add_argument(
+        "--users",
+        action="store_true",
+        help=f"compare a MariaDB Datastore's users with its {USERS_LABEL} label; exit 1 on drift",
+    )
     output.add_json_flag(p)
     p.set_defaults(func=run)
 
@@ -101,8 +179,11 @@ def sql_read(statement: str) -> bool:
     """Every ;-separated statement starts with a read keyword, and there is no client command: psql
     and mariadb act on a backslash command (\\g, \\!) anywhere in a line."""
     statements = [s for s in statement.split(";") if s.strip()]
-    return "\\" not in statement and bool(statements) and all(
-        (m := SQL_FIRST_WORD.match(s.strip())) and m[1].upper() in SQL_READ for s in statements)
+    return (
+        "\\" not in statement
+        and bool(statements)
+        and all((m := SQL_FIRST_WORD.match(s.strip())) and m[1].upper() in SQL_READ for s in statements)
+    )
 
 
 def valkey_read(statement: str) -> bool:
@@ -172,8 +253,10 @@ def declared_users(service) -> list[str]:
         user, at, host = entry.strip().rpartition("@")
         host = host.lower()
         if not (at and user and host) or any(c.isspace() for c in entry.strip()):
-            raise UsageError(f"{service.key}: {USERS_LABEL} entry {entry.strip()!r} is not user@host "
-                             "(the label is a comma-separated list of user@host)")
+            raise UsageError(
+                f"{service.key}: {USERS_LABEL} entry {entry.strip()!r} is not user@host "
+                "(the label is a comma-separated list of user@host)"
+            )
         if f"{user}@{host}" in users:
             raise UsageError(f"{service.key}: {USERS_LABEL} lists {user}@{host} twice")
         users.append(f"{user}@{host}")
@@ -184,15 +267,25 @@ def _users_target(service) -> list[str]:
     if service.datastore is None:
         raise UsageError(f"{service.key} is not a Datastore (a MariaDB, Valkey or Postgres image)")
     if service.datastore != "mariadb":
-        raise UsageError(f"--users checks MariaDB Datastores only; {service.key} is {service.datastore} "
-                         "(Postgres and Valkey are out of scope)")
+        raise UsageError(
+            f"--users checks MariaDB Datastores only; {service.key} is {service.datastore} "
+            "(Postgres and Valkey are out of scope)"
+        )
     return declared_users(service)
 
 
 def live_users(ctx, service) -> list[str]:
     script = ["sh", "-c", MARIADB, "hops-db", ""]
-    result = ctx.runner.docker("exec", "-i", docker.container_ref(ctx.runner, service), *script,
-                               "--batch", "--skip-column-names", input=USERS_QUERY, check=False)
+    result = ctx.runner.docker(
+        "exec",
+        "-i",
+        docker.container_ref(ctx.runner, service),
+        *script,
+        "--batch",
+        "--skip-column-names",
+        input=USERS_QUERY,
+        check=False,
+    )
     if result.returncode:
         raise HopsError(f"{service.key}: reading mysql.user failed: {result.stderr.strip()}")
     try:
@@ -226,19 +319,29 @@ def run_users(args, ctx) -> int:
         live = live_users(ctx, service)
         checked = [u for u in live if u not in SYSTEM_USERS]
         wanted = [u for u in declared if u not in SYSTEM_USERS]
-        reports.append({
-            "stack": service.stack, "service": service.name, "container": service.container,
-            "declared": declared, "live": live,
-            "unexpected": [u for u in checked if u not in wanted],
-            "missing": sorted(u for u in wanted if u not in checked),
-        })
+        reports.append(
+            {
+                "stack": service.stack,
+                "service": service.name,
+                "container": service.container,
+                "declared": declared,
+                "live": live,
+                "unexpected": [u for u in checked if u not in wanted],
+                "missing": sorted(u for u in wanted if u not in checked),
+            }
+        )
     drift = any(r["unexpected"] or r["missing"] for r in reports)
     if args.json:
         output.print_json({"datastores": reports, "drift": drift}, ctx.stdout)
     else:
-        output.table(["DATASTORE", "UNEXPECTED", "MISSING"],
-                     [[f"{r['stack']}/{r['service']}", ", ".join(r["unexpected"]) or None,
-                       ", ".join(r["missing"]) or None] for r in reports], ctx.stdout)
+        output.table(
+            ["DATASTORE", "UNEXPECTED", "MISSING"],
+            [
+                [f"{r['stack']}/{r['service']}", ", ".join(r["unexpected"]) or None, ", ".join(r["missing"]) or None]
+                for r in reports
+            ],
+            ctx.stdout,
+        )
     return 1 if drift else 0
 
 
@@ -268,8 +371,9 @@ def run(args, ctx) -> int:
         runs = [(list(engine.one_shot_args), statement)]
     container = docker.container_ref(ctx.runner, service)
     for argv, statement in runs:
-        result = ctx.runner.docker("exec", *(["-i"] if statement else []), container, *script, *argv,
-                                   input=statement, check=False)
+        result = ctx.runner.docker(
+            "exec", *(["-i"] if statement else []), container, *script, *argv, input=statement, check=False
+        )
         ctx.stdout.write(result.stdout)
         ctx.stderr.write(result.stderr)
         if result.returncode:

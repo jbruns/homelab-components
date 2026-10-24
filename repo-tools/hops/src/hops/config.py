@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import homelab_hosts
-from homelab_hosts import Host, Hosts, HostSettings, HostsError
+from homelab_hosts import Host, Hosts, HostsError, HostSettings
 
 from hops.errors import ConfigError
 

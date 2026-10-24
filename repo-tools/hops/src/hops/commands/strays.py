@@ -1,17 +1,22 @@
 """hops strays [--apply [--volumes]]: list, or remove, what no Stack declares or uses."""
+
 import json
 
 from hops import docker, origin_main, output, snapshots, strays
 from hops.errors import ConfigError, HopsError, UsageError
 
-HELP = ("Stray containers, images, volumes, networks, and expired Rollback Snapshots and Rollback Volumes; "
-        "--apply removes them")
-DESCRIPTION = (HELP + ". Lists by default (against this checkout) and changes nothing. --apply fetches "
-               "origin/<default branch>, classifies against it, and removes stopped Stray containers, then Stray "
-               "images and networks; volumes (expired Rollback Volumes included), the only Strays that can hold "
-               "data, only with --apply --volumes. Anything whose ownership is unknown is listed but never removed. "
-               "On a Host with the truenas and zfs capabilities, expired Rollback Snapshots are listed (through "
-               "TrueNAS) and released only with hops snapshot release.")
+HELP = (
+    "Stray containers, images, volumes, networks, and expired Rollback Snapshots and Rollback Volumes; "
+    "--apply removes them"
+)
+DESCRIPTION = (
+    HELP + ". Lists by default (against this checkout) and changes nothing. --apply fetches "
+    "origin/<default branch>, classifies against it, and removes stopped Stray containers, then Stray "
+    "images and networks; volumes (expired Rollback Volumes included), the only Strays that can hold "
+    "data, only with --apply --volumes. Anything whose ownership is unknown is listed but never removed. "
+    "On a Host with the truenas and zfs capabilities, expired Rollback Snapshots are listed (through "
+    "TrueNAS) and released only with hops snapshot release."
+)
 
 
 def register(subparsers) -> None:
@@ -56,6 +61,7 @@ def expired_snapshots(ctx) -> tuple[list[dict] | None, str | None]:
         found = snapshots.rollback_snapshots(ctx.truenas)
     except ConfigError as exc:
         return None, str(exc)
+
     def row(r):
         fields = r.to_json()
         fields.pop("expired")  # true for every row here
@@ -88,10 +94,12 @@ def removals(report: dict, volumes: bool):
     `remove(runner)` returns None on success, else the reason. Nothing is forced: Docker refuses
     anything that something started using since the list was read.
     """
+
     def docker_rm(*args):
         def remove(runner):
             result = runner.docker(*args, check=False)
             return None if result.returncode == 0 else result.stderr.strip()
+
         return remove
 
     for c in removable(report, "containers"):
@@ -132,17 +140,35 @@ def image_label(image: dict) -> str:
 
 def print_report(report: dict, source: str, out, snapshots_possible: bool = True) -> None:
     sections = [
-        ("containers", "Stray containers:", ["CONTAINER", "IMAGE", "STATE", "COMPOSE PROJECT", "NOTE"],
-         lambda c: [c["container"], c["image"], c["state"], c["stack"], note(c)]),
-        ("images", "Stray images:", ["IMAGE", "ID", "SIZE", "CREATED", "NOTE"],
-         lambda i: [image_label(i), short(i["id"]), i["size"], i["created"], note(i)]),
+        (
+            "containers",
+            "Stray containers:",
+            ["CONTAINER", "IMAGE", "STATE", "COMPOSE PROJECT", "NOTE"],
+            lambda c: [c["container"], c["image"], c["state"], c["stack"], note(c)],
+        ),
+        (
+            "images",
+            "Stray images:",
+            ["IMAGE", "ID", "SIZE", "CREATED", "NOTE"],
+            lambda i: [image_label(i), short(i["id"]), i["size"], i["created"], note(i)],
+        ),
         ("networks", "Stray networks:", ["NETWORK", "COMPOSE PROJECT"], lambda n: [n["network"], n["stack"]]),
-        ("volumes", "Stray volumes (they can hold data):", ["VOLUME", "COMPOSE PROJECT", "NOTE"],
-         lambda v: [v["volume"], v["stack"], note(v)]),
+        (
+            "volumes",
+            "Stray volumes (they can hold data):",
+            ["VOLUME", "COMPOSE PROJECT", "NOTE"],
+            lambda v: [v["volume"], v["stack"], note(v)],
+        ),
     ]
     if report["snapshots"] is not None:
-        sections.append(("snapshots", "Expired Rollback Snapshots:", ["SNAPSHOT", "ISSUE", "EXPIRES", "SIZE"],
-                         lambda s: [s["snapshot"], s["issue"], s["expires"], output.size(s["size"])]))
+        sections.append(
+            (
+                "snapshots",
+                "Expired Rollback Snapshots:",
+                ["SNAPSHOT", "ISSUE", "EXPIRES", "SIZE"],
+                lambda s: [s["snapshot"], s["issue"], s["expires"], output.size(s["size"])],
+            )
+        )
     first = True
     out.write(f"Declared state: {source}\n\n")
     if not any(report[k] for k in KINDS) and not report["snapshots"]:
@@ -208,11 +234,15 @@ def run(args, ctx) -> int:
         output.print_json(report, ctx.stdout)
         return 0 if ok and snapshots_ok else 1
     if not args.apply and any(report[k] for k in KINDS):
-        ctx.stdout.write("\nNothing removed. hops strays --apply removes the Strays above not marked kept, except "
-                         "volumes; add --volumes to remove those too.\n")
+        ctx.stdout.write(
+            "\nNothing removed. hops strays --apply removes the Strays above not marked kept, except "
+            "volumes; add --volumes to remove those too.\n"
+        )
     elif args.apply and removable(report, "volumes") and not args.volumes:
         ctx.stdout.write("\nVolumes kept: add --volumes to remove them; they can hold data.\n")
     if report["snapshots"]:
-        ctx.stdout.write("\nRelease each expired Rollback Snapshot with hops snapshot release <snapshot> once its "
-                         "change is verified, or take a new one if it is still needed.\n")
+        ctx.stdout.write(
+            "\nRelease each expired Rollback Snapshot with hops snapshot release <snapshot> once its "
+            "change is verified, or take a new one if it is still needed.\n"
+        )
     return 0 if ok and snapshots_ok else 1

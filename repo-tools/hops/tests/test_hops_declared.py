@@ -1,4 +1,5 @@
 """The declared Stacks and Services, and how target names resolve to them."""
+
 import pytest
 
 from hops.declared import Declared
@@ -16,9 +17,16 @@ def keys(services):
 
 def test_reads_every_stack_through_its_includes(declared):
     assert keys(declared.services) == [
-        "doco-cd/doco-cd", "edge/traefik", "monitoring/alertmanager", "monitoring/prometheus",
-        "nextcloud/exporter", "nextcloud/mariadb", "nextcloud/nextcloud", "nextcloud/valkey",
-        "sonarr/exporter", "sonarr/sonarr",
+        "doco-cd/doco-cd",
+        "edge/traefik",
+        "monitoring/alertmanager",
+        "monitoring/prometheus",
+        "nextcloud/exporter",
+        "nextcloud/mariadb",
+        "nextcloud/nextcloud",
+        "nextcloud/valkey",
+        "sonarr/exporter",
+        "sonarr/sonarr",
     ]
 
 
@@ -44,25 +52,34 @@ def test_datastore_engine_comes_from_the_image(declared):
     assert declared.get("nextcloud", "nextcloud").datastore is None
 
 
-@pytest.mark.parametrize("names, expected", [
-    (["nextcloud/exporter"], ["nextcloud/exporter"]),
-    (["valkey"], ["nextcloud/valkey"]),
-    (["edge"], ["edge/traefik"]),
-    # A bare Stack name targets every Service in it, even when a Service shares its name.
-    (["nextcloud"], ["nextcloud/exporter", "nextcloud/mariadb", "nextcloud/nextcloud", "nextcloud/valkey"]),
-    (["nextcloud/nextcloud"], ["nextcloud/nextcloud"]),
-    (["sonarr", "sonarr/sonarr", "traefik"], ["sonarr/exporter", "sonarr/sonarr", "edge/traefik"]),
-])
+@pytest.mark.parametrize(
+    "names, expected",
+    [
+        (["nextcloud/exporter"], ["nextcloud/exporter"]),
+        (["valkey"], ["nextcloud/valkey"]),
+        (["edge"], ["edge/traefik"]),
+        # A bare Stack name targets every Service in it, even when a Service shares its name.
+        (["nextcloud"], ["nextcloud/exporter", "nextcloud/mariadb", "nextcloud/nextcloud", "nextcloud/valkey"]),
+        (["nextcloud/nextcloud"], ["nextcloud/nextcloud"]),
+        (["sonarr", "sonarr/sonarr", "traefik"], ["sonarr/exporter", "sonarr/sonarr", "edge/traefik"]),
+    ],
+)
 def test_resolve_targets(declared, names, expected):
     assert keys(declared.resolve(names)) == expected
 
 
-@pytest.mark.parametrize("names, message", [
-    (["exporter"], r"'exporter' is ambiguous: nextcloud/exporter, sonarr/exporter"),
-    (["sonar"], r"unknown Stack or Service 'sonar' \(did you mean sonarr\?\)"),
-    (["nextcloud/redis"], r"Stack nextcloud has no Service 'redis' \(it has exporter, mariadb, nextcloud, valkey\)"),
-    (["plex/plex"], r"unknown Stack 'plex'"),
-])
+@pytest.mark.parametrize(
+    "names, message",
+    [
+        (["exporter"], r"'exporter' is ambiguous: nextcloud/exporter, sonarr/exporter"),
+        (["sonar"], r"unknown Stack or Service 'sonar' \(did you mean sonarr\?\)"),
+        (
+            ["nextcloud/redis"],
+            r"Stack nextcloud has no Service 'redis' \(it has exporter, mariadb, nextcloud, valkey\)",
+        ),
+        (["plex/plex"], r"unknown Stack 'plex'"),
+    ],
+)
 def test_resolve_rejects_unknown_and_ambiguous_names(declared, names, message):
     with pytest.raises(ResolveError, match=message):
         declared.resolve(names)
@@ -80,12 +97,18 @@ def test_resolve_one_prefers_the_service_then_a_single_service_stack(declared):
 
 def test_resolve_one_needs_a_service_in_a_multi_service_stack(repo):
     (repo / "tn/nextcloud/nextcloud/service.yaml").write_text("services: {}\n")
-    with pytest.raises(ResolveError, match=r"Stack nextcloud has several Services; name one: nextcloud/exporter, nextcloud/mariadb"):
+    with pytest.raises(
+        ResolveError, match=r"Stack nextcloud has several Services; name one: nextcloud/exporter, nextcloud/mariadb"
+    ):
         Declared.load(repo, "tn").resolve_one("nextcloud")
 
 
 def test_finds_the_service_behind_compose_labels(declared):
-    assert declared.by_compose_labels({"com.docker.compose.project": "nextcloud",
-                                       "com.docker.compose.service": "valkey"}).key == "nextcloud/valkey"
+    assert (
+        declared.by_compose_labels(
+            {"com.docker.compose.project": "nextcloud", "com.docker.compose.service": "valkey"}
+        ).key
+        == "nextcloud/valkey"
+    )
     assert declared.by_compose_labels({"com.docker.compose.project": "old", "com.docker.compose.service": "x"}) is None
     assert declared.by_compose_labels({}) is None

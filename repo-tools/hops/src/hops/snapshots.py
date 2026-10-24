@@ -5,9 +5,10 @@ Usable without the CLI: `rollback_snapshots(client)` lists them for any `hops.tr
 Only a snapshot whose own (LOCAL) properties include a `homeops:` one is a Rollback Snapshot: a
 periodic-task or TrueNAS system snapshot never is, so it is never listed, reported or released.
 """
+
 import re
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from hops.errors import HopsError, UsageError
 from hops.truenas import TrueNASError
@@ -35,7 +36,7 @@ class RollbackSnapshot:
 
 
 def now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def today() -> date:
@@ -69,8 +70,13 @@ def record(snapshot: dict, on: date) -> RollbackSnapshot:
     parsed = size.get("parsed")
     expires = own_property(snapshot, EXPIRES)
     return RollbackSnapshot(
-        name=snapshot["id"], dataset=snapshot["dataset"], issue=own_property(snapshot, ISSUE),
-        expires=expires, size=parsed if isinstance(parsed, int) else None, expired=expired(expires, on))
+        name=snapshot["id"],
+        dataset=snapshot["dataset"],
+        issue=own_property(snapshot, ISSUE),
+        expires=expires,
+        size=parsed if isinstance(parsed, int) else None,
+        expired=expired(expires, on),
+    )
 
 
 def rollback_snapshots(client, on: date | None = None) -> list[RollbackSnapshot]:
@@ -122,7 +128,7 @@ def created(client, names: list[str]) -> dict[str, datetime | None]:
     at = {}
     for s in found:
         raw = ((s.get("properties") or {}).get("creation") or {}).get("rawvalue")
-        at[s["id"]] = datetime.fromtimestamp(int(raw), timezone.utc) if str(raw).isdigit() else None
+        at[s["id"]] = datetime.fromtimestamp(int(raw), UTC) if str(raw).isdigit() else None
     return at
 
 
@@ -143,8 +149,12 @@ def plan_take(client, issue: str, dataset: str, expires: str, at: datetime) -> d
 
 def would_take(plan: dict) -> dict:
     """A plan as `--dry-run --json` prints it: name, dataset, issue and expires."""
-    return {"name": f"{plan['dataset']}@{plan['name']}", "dataset": plan["dataset"],
-            "issue": plan["properties"][ISSUE], "expires": plan["properties"][EXPIRES]}
+    return {
+        "name": f"{plan['dataset']}@{plan['name']}",
+        "dataset": plan["dataset"],
+        "issue": plan["properties"][ISSUE],
+        "expires": plan["properties"][EXPIRES],
+    }
 
 
 def take(client, plan: dict) -> RollbackSnapshot:
@@ -162,16 +172,23 @@ def releasable(client, name: str) -> RollbackSnapshot:
     if "@" not in name:
         matches = [r for r in rollback_snapshots(client) if r.name.split("@", 1)[1] == name]
         if len(matches) != 1:
-            raise UsageError(f"{name}: give the full name <dataset>@<snapshot>"
-                             + (f" ({', '.join(m.name for m in matches)})" if matches else
-                                "; no Rollback Snapshot has that name (hops snapshot list)"))
+            raise UsageError(
+                f"{name}: give the full name <dataset>@<snapshot>"
+                + (
+                    f" ({', '.join(m.name for m in matches)})"
+                    if matches
+                    else "; no Rollback Snapshot has that name (hops snapshot list)"
+                )
+            )
         return matches[0]
     snapshot = find(client, name)
     if snapshot is None:
         raise HopsError(f"no snapshot {name} on the Host")
     if not is_rollback(snapshot):
-        raise UsageError(f"refusing to release {name}: it has no {ISSUE} or {EXPIRES} of its own, so it is "
-                         "not a Rollback Snapshot (periodic-task and system snapshots are never released)")
+        raise UsageError(
+            f"refusing to release {name}: it has no {ISSUE} or {EXPIRES} of its own, so it is "
+            "not a Rollback Snapshot (periodic-task and system snapshots are never released)"
+        )
     return record(snapshot, today())
 
 
