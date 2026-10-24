@@ -34,7 +34,7 @@ DEPLOYERS = frozenset({"doco-cd"})
 _HOST_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 _STACK_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 _DOCKER_NETWORK = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
-_TOP_KEYS = {"version", "default_branch", "hosts"}
+_TOP_KEYS = {"version", "default_branch", "validate", "hosts"}
 _HOST_KEYS = {"stack_root", "deployer", "capabilities", "doco_cd"}
 _DOCO_CD_DEFAULTS = {
     "stack": "doco-cd",
@@ -90,6 +90,9 @@ class Hosts(Mapping[str, Host]):
     """The repo root (the directory holding hosts.yaml)."""
     default_branch: str
     hosts: Mapping[str, Host]
+    validate: tuple[str, ...] = ()
+    """The repo's validation command (argv, run from the repo root) that tools run before committing a change;
+    empty when hosts.yaml declares none."""
 
     def __getitem__(self, name: str) -> Host:
         return self.hosts[name]
@@ -164,7 +167,7 @@ def load_hosts(root: str | Path | None = None) -> Hosts:
 
     problems: list[str] = []
     if not isinstance(data, dict):
-        raise HostsError(f"{file}: must be a mapping with version, hosts and optionally default_branch")
+        raise HostsError(f"{file}: must be a mapping with version, hosts and optionally default_branch and validate")
     _unknown_keys(data, _TOP_KEYS, "", problems)
     if "version" not in data:
         problems.append("version: missing; this library reads version 1")
@@ -173,6 +176,12 @@ def load_hosts(root: str | Path | None = None) -> Hosts:
     default_branch = data.get("default_branch", "main")
     if not isinstance(default_branch, str) or not default_branch:
         problems.append(f"default_branch: must be a non-empty string, not {default_branch!r}")
+    validate = data.get("validate", [])
+    if not isinstance(validate, list) or "validate" in data and not validate:
+        problems.append(f"validate: must be a non-empty list of strings (a command's argv), not {validate!r}")
+        validate = []
+    elif not all(isinstance(arg, str) and arg for arg in validate):
+        problems.append(f"validate: every argument must be a non-empty string, not {validate!r}")
 
     hosts: dict[str, Host] = {}
     raw_hosts = data.get("hosts")
@@ -197,7 +206,7 @@ def load_hosts(root: str | Path | None = None) -> Hosts:
 
     if problems:
         raise HostsError([f"{file}: {p}" for p in problems])
-    return Hosts(root=root, default_branch=default_branch, hosts=hosts)
+    return Hosts(root=root, default_branch=default_branch, hosts=hosts, validate=tuple(validate))
 
 
 def _unknown_keys(data: dict, known: set[str], where: str, problems: list[str]) -> None:

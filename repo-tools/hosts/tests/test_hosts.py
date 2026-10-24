@@ -28,6 +28,7 @@ def test_a_minimal_hosts_file_gets_the_documented_defaults(tmp_path):
     hosts = load_hosts(write_repo(tmp_path, MINIMAL))
 
     assert hosts.default_branch == "main"
+    assert hosts.validate == ()
     host = hosts["nc8kg1101"]
     assert host.name == "nc8kg1101"
     assert host.stack_root == "nc8kg1101"
@@ -61,6 +62,12 @@ def test_doco_cd_overrides_and_default_branch_replace_only_what_they_name(tmp_pa
     assert hosts.default_branch == "trunk"
     doco_cd = hosts["truenas"].doco_cd
     assert (doco_cd.stack, doco_cd.address, doco_cd.network) == ("doco-cd", "doco-cd:80", "monitoring")
+
+
+def test_validate_is_the_repos_validation_argv(tmp_path):
+    hosts = load_hosts(write_repo(tmp_path, MINIMAL + "    validate: [python3, tools/validate.py, compose]\n"))
+
+    assert hosts.validate == ("python3", "tools/validate.py", "compose")
 
 
 def host_entry(**overrides):
@@ -102,6 +109,12 @@ def host_entry(**overrides):
         ),
         ("version: 2\nhosts:\n  nc8kg1101:\n" + host_entry(), "version: 2 is not supported"),
         ("version: 1\nhosts: {}\n", "hosts: must map at least one Host"),
+        (
+            "version: 1\nvalidate: make check\nhosts:\n  nc8kg1101:\n" + host_entry(),
+            "validate: must be a non-empty list",
+        ),
+        ("version: 1\nvalidate: []\nhosts:\n  nc8kg1101:\n" + host_entry(), "validate: must be a non-empty list"),
+        ("version: 1\nvalidate: [make, 1]\nhosts:\n  nc8kg1101:\n" + host_entry(), "validate: every argument"),
     ],
     ids=[
         "unknown top-level key",
@@ -119,6 +132,9 @@ def host_entry(**overrides):
         "capability not a string",
         "unsupported version",
         "no Hosts",
+        "validate not a list",
+        "validate empty",
+        "validate argument not a string",
     ],
 )
 def test_an_invalid_hosts_file_is_rejected_naming_the_problem(tmp_path, hosts_yaml, expected):
