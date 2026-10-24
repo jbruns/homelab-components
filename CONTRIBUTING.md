@@ -82,7 +82,8 @@ jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shar
 - **hosts.yaml.** A consuming repo declares its Hosts in a committed `hosts.yaml` at its root
   ([schema](repo-tools/hosts/README.md)). `repo-tools/hosts` (`homelab_hosts`) is the only code that parses it:
   every tool that needs Hosts depends on that package, takes the Host from `--host`, the stack path, or the only
-  Host (`Hosts.pick`), reads connection details from `.env` through `host_settings`, and gates Host-specific
+  Host (`Hosts.pick`) (a repo-wide check or generator may instead default to every Host, with `--host` to pick
+  one), reads connection details from `.env` through `host_settings`, and gates Host-specific
   features on `Host.has(...)`. Never assume a Host, a stack root or a capability.
 - **Test first**, as for a Component: CI installs every `repo-tools/<tool>` and runs ruff and its pytest suite on
   every PR (`.github/workflows/test-repo-tool.yaml`).

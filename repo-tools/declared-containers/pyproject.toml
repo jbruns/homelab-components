@@ -1,0 +1,37 @@
+[project]
+name = "homelab-declared-containers"
+version = "0"
+description = "Writes each Host's declared-containers node-exporter textfile from its Compose Stacks"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0",
+  "homelab-hosts @ git+https://github.com/jbruns/homelab-components@hosts-v1.0.0#subdirectory=repo-tools/hosts",
+]
+license = "MIT"
+
+[project.scripts]
+homelab-declared-containers = "homelab_declared_containers.__main__:main"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/homelab_declared_containers"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --import-mode=importlib"
+testpaths = ["tests"]
+pythonpath = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
