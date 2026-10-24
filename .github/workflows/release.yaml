@@ -3,6 +3,8 @@ name: release
 # Push a tag <component>-vX.Y.Z on a commit in main to release that Component. Its checks run first. A Component
 # with a Dockerfile is pushed as ghcr.io/<owner>/<component>:X.Y.Z (amd64 and arm64, with provenance and an SBOM);
 # one without (e.g. a Host shell script) attaches the files directly under its src/ to the GitHub Release.
+# A tag <tool>-vX.Y.Z naming a folder under repo-tools/ runs that tool's checks, then creates a GitHub Release with
+# no image and no assets; consumers install or pin the tag itself.
 on:
   push:
     tags:
@@ -16,7 +18,8 @@ jobs:
     name: parse tag
     runs-on: ubuntu-24.04
     outputs:
-      component: ${{ steps.tag.outputs.component }}
+      kind: ${{ steps.tag.outputs.kind }}
+      name: ${{ steps.tag.outputs.name }}
       version: ${{ steps.tag.outputs.version }}
       image: ${{ steps.tag.outputs.image }}
     steps:
@@ -35,20 +38,28 @@ jobs:
 
   test:
     needs: tag
+    if: needs.tag.outputs.kind == 'component'
     uses: ./.github/workflows/test-component.yaml
     with:
-      component: ${{ needs.tag.outputs.component }}
+      component: ${{ needs.tag.outputs.name }}
+
+  test-repo-tool:
+    needs: tag
+    if: needs.tag.outputs.kind == 'repo-tool'
+    uses: ./.github/workflows/test-repo-tool.yaml
+    with:
+      tool: ${{ needs.tag.outputs.name }}
 
   image:
     name: push image
     needs: [tag, test]
-    if: needs.tag.outputs.image == 'true'
+    if: needs.tag.outputs.kind == 'component' && needs.tag.outputs.image == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
     outputs:
-      reference: ghcr.io/${{ github.repository_owner }}/${{ needs.tag.outputs.component }}:${{ needs.tag.outputs.version }}@${{ steps.build.outputs.digest }}
+      reference: ghcr.io/${{ github.repository_owner }}/${{ needs.tag.outputs.name }}:${{ needs.tag.outputs.version }}@${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -61,23 +72,27 @@ jobs:
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: components/${{ needs.tag.outputs.component }}
+          context: components/${{ needs.tag.outputs.name }}
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: mode=max
           sbom: true
-          tags: ghcr.io/${{ github.repository_owner }}/${{ needs.tag.outputs.component }}:${{ needs.tag.outputs.version }}
+          tags: ghcr.io/${{ github.repository_owner }}/${{ needs.tag.outputs.name }}:${{ needs.tag.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/components/${{ needs.tag.outputs.component }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/components/${{ needs.tag.outputs.name }}
             org.opencontainers.image.version=${{ needs.tag.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=MIT
 
   github-release:
     name: GitHub Release
-    needs: [tag, test, image]
-    if: always() && needs.test.result == 'success' && (needs.image.result == 'success' || needs.image.result == 'skipped')
+    needs: [tag, test, test-repo-tool, image]
+    if: >-
+      always() && (
+        (needs.tag.outputs.kind == 'component' && needs.test.result == 'success'
+          && (needs.image.result == 'success' || needs.image.result == 'skipped'))
+        || (needs.tag.outputs.kind == 'repo-tool' && needs.test-repo-tool.result == 'success'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -86,15 +101,22 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          COMPONENT: ${{ needs.tag.outputs.component }}
+          KIND: ${{ needs.tag.outputs.kind }}
+          NAME: ${{ needs.tag.outputs.name }}
           IMAGE: ${{ needs.image.outputs.reference }}
         run: |
+          if [ "$KIND" = repo-tool ]; then
+            install="uv tool install \"git+$GITHUB_SERVER_URL/$GITHUB_REPOSITORY@$TAG#subdirectory=repo-tools/$NAME\""
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag \
+              --notes "Shared Repo Tooling. Install: \`$install\`. See repo-tools/$NAME/README.md."
+            exit 0
+          fi
           assets=()
           if [ -n "$IMAGE" ]; then
             notes="Image: \`$IMAGE\`."
           else
-            mapfile -t assets < <(find "components/$COMPONENT/src" -maxdepth 1 -type f | sort)
-            notes="Assets: the files under \`components/$COMPONENT/src\`."
+            mapfile -t assets < <(find "components/$NAME/src" -maxdepth 1 -type f | sort)
+            notes="Assets: the files under \`components/$NAME/src\`."
           fi
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag \
-            --notes "$notes See components/$COMPONENT/README.md." "${assets[@]}"
+            --notes "$notes See components/$NAME/README.md." "${assets[@]}"
