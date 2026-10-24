@@ -6,19 +6,21 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6.0",
-  "homelab-hosts @ git+https://github.com/jbruns/homelab-components@hosts-v1.0.0#subdirectory=repo-tools/hosts",
+  "homelab-hosts",
 ]
 license = "MIT"
 
 [project.scripts]
 homelab-declared-containers = "homelab_declared_containers.__main__:main"
 
+# homelab-hosts comes from this repo at the same commit, so a tag pins the hosts.yaml loader too.
+# uv resolves the path inside the git checkout for `uv tool install "git+…@<ref>#subdirectory=repo-tools/declared-containers"`.
+[tool.uv.sources]
+homelab-hosts = { path = "../hosts" }
+
 [build-system]
 requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/homelab_declared_containers"]

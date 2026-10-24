@@ -746,6 +746,13 @@ def test_cli_reports_an_invalid_hosts_file(repo):
     assert r.returncode == 1 and "hosts.yaml" in r.stderr
 
 
+def test_cli_accepts_a_hosts_file_naming_a_validate_command(repo):
+    hosts = (repo / "hosts.yaml").read_text()
+    write(repo, {"hosts.yaml": "validate: [homelab-validate, secrets]\n" + hosts})
+    r = run_cli("--root", str(repo), "secrets")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 def test_github_annotations(validate, monkeypatch, capsys):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     validate.fail("a\nb", validate.ROOT / "tn/x.yml")

@@ -196,3 +196,8 @@ def test_reports_an_invalid_hosts_file(root):
     write(root, {"hosts.yaml": "version: 2\nhosts: {}\n"})
     r = run("--root", str(root))
     assert r.returncode == 1 and "version" in r.stdout
+
+
+def test_accepts_a_hosts_file_naming_a_validate_command(root):
+    write(root, {"hosts.yaml": "validate: [homelab-validate]\n" + textwrap.dedent(HOSTS_YAML)})
+    assert run("--root", str(root)).returncode == 0
