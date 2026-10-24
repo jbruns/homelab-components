@@ -1,6 +1,8 @@
 # A consuming repo in miniature: ci.yaml runs the reusable repo-validate and repo-declared-containers workflows here.
 # One Host with one Stack that meets the Baseline; no monitoring or Traefik, so those checks skip it.
 version: 1
+# hops bump's check; validate and declared-containers must load a hosts.yaml that names one.
+validate: [homelab-validate, secrets, env, compose]
 hosts:
   example:
     stack_root: example

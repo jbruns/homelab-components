@@ -5,10 +5,13 @@ requires-python = ">=3.11"
 [[package]]
 name = "homelab-hosts"
 version = "0"
-source = { git = "https://github.com/jbruns/homelab-components?subdirectory=repo-tools%2Fhosts&rev=hosts-v1.0.0#6c8ab04a2350e6672a8224bde1ca8bbf923c0400" }
+source = { directory = "../hosts" }
 dependencies = [
     { name = "pyyaml" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "pyyaml", specifier = ">=6.0" }]
 
 [[package]]
 name = "homelab-validate"
@@ -21,7 +24,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "homelab-hosts", git = "https://github.com/jbruns/homelab-components?subdirectory=repo-tools%2Fhosts&rev=hosts-v1.0.0" },
+    { name = "homelab-hosts", directory = "../hosts" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
 
