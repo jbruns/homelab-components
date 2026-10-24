@@ -686,7 +686,7 @@ def test_without_zfs_a_failed_copy_moves_nothing(hops, host, fake_host):
         if call.docker[-1][-4] != "copy":
             return run(call)
         report = json.loads(run(call))
-        report["error"] = "RuntimeError: cp -a: No space left on device"
+        report["error"] = "RuntimeError: /volumes/r/_data/f: No space left on device"
         return json.dumps(report)
 
     fake_host.respond("run", stdout=copy_fails)
@@ -694,7 +694,7 @@ def test_without_zfs_a_failed_copy_moves_nothing(hops, host, fake_host):
     outcome = move(hops, None)
     assert outcome.code == 1
     assert (
-        f"copying {OLD} into {ROLLBACK} failed: RuntimeError: cp -a: No space left on device. Nothing was moved "
+        f"copying {OLD} into {ROLLBACK} failed: RuntimeError: /volumes/r/_data/f: No space left on device. Nothing was moved "
         f"and {OLD} is as it was; remove {ROLLBACK}"
     ) in outcome.err
     assert "move" not in host.runs and (host.root / OLD / "_data" / "f").exists()
