@@ -491,7 +491,33 @@ def test_a_legacy_stack_fails_on_an_untracked_file_without_a_sops_twin(validate,
     commit(repo)
     configure(validate, repo, legacy_stacks={"old"})
     validate.check_secrets()
-    assert "referenced file tn/old/web/web.env is not tracked and no tn/old/web/web.sops.env is" in messages(validate)
+    assert (
+        "referenced file tn/old/web/web.env is not tracked and no SOPS-encrypted tn/old/web/web.sops.env is"
+        in messages(validate)
+    )
+
+
+@pytest.mark.parametrize(
+    "ref,twin,content",
+    [
+        ("password", "password.sops", "hunter2\n"),  # extensionless: the repo-wide *.sops.* scan misses password.sops
+        (".yaml", ".sops.yaml", "creation_rules: []\n"),  # the SOPS config file, which the scan exempts
+        ("web.env", "web.sops.env", "TOKEN=hunter2\n"),  # named *.sops.* but not encrypted
+    ],
+)
+def test_a_legacy_stack_refuses_a_twin_that_is_not_a_sops_payload(validate, repo, ref, twin, content):
+    write(
+        repo,
+        {
+            **LEGACY_STACK,
+            "tn/old/web/docker-compose.yaml": f"services:\n  web:\n    image: nginx:1\n    env_file: '{ref}'\n",
+            f"tn/old/web/{twin}": content,
+        },
+    )
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert f"referenced file tn/old/web/{ref} is not tracked" in messages(validate)
 
 
 def test_a_legacy_stack_may_reference_an_encrypted_file(validate, repo):

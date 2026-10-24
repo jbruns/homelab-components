@@ -272,7 +272,7 @@ def check_secrets() -> None:
         if ".sops." in f.name or f.name == ".sops.env":
             if f.name == ".sops.yaml":
                 continue
-            if not any(m in f.read_text(errors="ignore") for m in SOPS_MARKERS):
+            if not sops_encrypted(f):
                 fail("file is named *.sops.* but is not SOPS-encrypted", f)
             twin = f.with_name(f.name.replace(".sops.", ".", 1))
             if twin != f and twin in tracked:
@@ -379,11 +379,26 @@ def check_legacy_secrets(host: Host, tracked: set[Path]) -> None:
                     check_sensitive_refs(compose, tracked, decrypted_copies=True)
 
 
-def sops_twin(p: Path) -> Path:
-    """The SOPS-encrypted name of a plaintext file: x.env -> x.sops.env, .env -> .sops.env."""
+def sops_encrypted(f: Path) -> bool:
+    return any(m in f.read_text(errors="ignore") for m in SOPS_MARKERS)
+
+
+def sops_twin(p: Path) -> Path | None:
+    """The SOPS-encrypted name of a plaintext file: x.env -> x.sops.env, .env -> .sops.env. None when it has no
+    extension (password -> password.sops escapes the *.sops.* scan) or the twin is the SOPS config .sops.yaml."""
     if p.name.startswith(".") and p.name.count(".") == 1:
-        return p.with_name(".sops" + p.name)
-    return p.with_name(f"{p.stem}.sops{p.suffix}")
+        twin = p.with_name(".sops" + p.name)
+    elif p.suffix:
+        twin = p.with_name(f"{p.stem}.sops{p.suffix}")
+    else:
+        return None
+    return None if twin.name in (".sops.yaml", ".sops.yml") else twin
+
+
+def decrypted_copy_of_tracked_sops(ref: Path, tracked: set[Path]) -> bool:
+    """Whether `ref` is the plaintext copy of a tracked, SOPS-encrypted file."""
+    twin = sops_twin(ref)
+    return twin is not None and twin in tracked and sops_encrypted(twin)
 
 
 def check_sensitive_refs(compose: Path, tracked: set[Path], decrypted_copies: bool = False) -> None:
@@ -391,9 +406,10 @@ def check_sensitive_refs(compose: Path, tracked: set[Path], decrypted_copies: bo
         if not ref.is_relative_to(ROOT):
             continue  # Host path outside the repo, e.g. the age key
         if ref not in tracked:
-            if decrypted_copies and sops_twin(ref) in tracked:
+            if decrypted_copies and decrypted_copy_of_tracked_sops(ref, tracked):
                 continue
-            hint = f" and no {_rel(sops_twin(ref))} is" if decrypted_copies else ""
+            twin = sops_twin(ref) if decrypted_copies else None
+            hint = f" and no SOPS-encrypted {_rel(twin)} is" if twin else ""
             fail(f"referenced file {_rel(ref)} is not tracked{hint}", compose)
         elif ".sops." not in ref.name:
             fail(f"sensitive file {_rel(ref)} must be SOPS-encrypted and named *.sops.*", compose)

@@ -74,7 +74,8 @@ With no check named, every check runs, including `isolation`. Exit status is 1 i
     and the secret references of its `docker-compose.y(a)ml` files and what they include (`env_file`,
     `secrets.<x>.file`, `x-sops` bind mounts). Each must be a tracked `*.sops.*` file, or the untracked plaintext
     copy of one (`x.env` for a tracked `x.sops.env`, `web.yml` for `web.sops.yml`) that the other tool's deploy
-    decrypts on the Host. A tracked plaintext file it references fails.
+    decrypts on the Host. The twin must be SOPS-encrypted, the same check as for every `*.sops.*` file; an
+    extensionless reference or one whose twin would be the SOPS config `.sops.yaml` gets no twin. A tracked plaintext file it references fails.
 
   `secrets` fails while one is given whose folder has a `compose.yaml` (it has been cut over), and a `secrets` run
   over every Host fails while one is given that no Host has, so the list only shrinks.
