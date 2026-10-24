@@ -564,7 +564,8 @@ def test_strays_without_truenas_keys_says_snapshots_were_not_checked(hops, fake_
     report = json.loads(outcome.out)
     assert report["snapshots"] is None
     assert "HOPS_TRUENAS_TRUENAS_URL is not set" in report["snapshots_unchecked"]
-    assert "Rollback Snapshots not checked: HOPS_TRUENAS_SSH_HOST is not set" in hops("strays").out
+    assert "Rollback Snapshots not checked: HOPS_TRUENAS_TRUENAS_URL is not set" in hops("strays").out
+    assert "SSH_HOST" not in report["snapshots_unchecked"]
 
 
 @pytest.mark.usefixtures("plain_host")

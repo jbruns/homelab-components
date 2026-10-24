@@ -60,13 +60,15 @@ under `.worktrees/` have no `.env` of their own, so they use the main one. Envir
 | `HOPS_<NAME>_SSH_HOST` | yes | The Host's SSH address |
 | `HOPS_<NAME>_SSH_USER` | yes | The SSH user; it needs passwordless `sudo -n docker` |
 | `HOPS_<NAME>_SSH_KEY` | no | Private key for `ssh -i`; unset, ssh picks one (its config or default keys) |
-| `HOPS_<NAME>_TRUENAS_URL` | on a `truenas` Host | The TrueNAS address, e.g. `https://nas.example.lan`; no user name or password |
-| `HOPS_<NAME>_TRUENAS_API_KEY` | on a `truenas` Host | A TrueNAS API key |
+| `HOPS_<NAME>_TRUENAS_URL` | for TrueNAS reads on a `truenas` Host | The TrueNAS address, e.g. `https://nas.example.lan`; no user name or password |
+| `HOPS_<NAME>_TRUENAS_API_KEY` | for TrueNAS reads on a `truenas` Host | A TrueNAS API key |
 | `HOPS_<NAME>_TRUENAS_INSECURE` | no | `1`/`true`/`yes`/`on` skips TLS verification for a self-signed certificate |
 | `HOPS_<NAME>_HOST_DATASETS` | no | Dataset names, comma- or space-separated, that `hops host` also reports |
 
-A missing required key fails any command that reaches the Host (exit 2), naming the key and the files searched;
-values are never printed. So on a `truenas` Host the TrueNAS keys are needed even for Docker-only commands.
+A missing required key fails the command that needs it (exit 2), naming the key and the files searched; values are
+never printed. Commands that only use SSH need only the SSH keys, even on a `truenas` Host. The TrueNAS keys are
+read only when a command talks to TrueNAS: `truenas call` and `snapshot` fail without them, while `host` and
+`strays` show what they can and name the missing keys.
 
 - **SSH:** `ssh [-i $HOPS_<NAME>_SSH_KEY] $HOPS_<NAME>_SSH_USER@$HOPS_<NAME>_SSH_HOST sudo -n docker …` with
   `BatchMode=yes`, so `hops` never prompts. Calls share one connection

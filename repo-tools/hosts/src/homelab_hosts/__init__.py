@@ -25,6 +25,8 @@ __all__ = [
     "find_repo_root",
     "host_settings",
     "load_hosts",
+    "ssh_settings",
+    "truenas_settings",
 ]
 
 HOSTS_FILE = "hosts.yaml"
@@ -337,32 +339,59 @@ def env_prefix(host: Host) -> str:
     return f"HOPS_{host.name.upper().replace('-', '_')}_"
 
 
-def host_settings(env: Mapping[str, str], host: Host) -> HostSettings:
-    """A Host's connection settings from `env` (the caller's parsed .env and/or os.environ; this never reads a
-    file). Raises HostsError naming every required key that is missing or empty; never includes values."""
-    prefix = env_prefix(host)
-
-    def get(key: str) -> str | None:
-        value = env.get(prefix + key)
-        return value if value else None
-
-    missing = [prefix + key for key in ("SSH_HOST",) if get(key) is None]
-    if host.has("truenas"):
-        missing += [prefix + key for key in ("TRUENAS_URL", "TRUENAS_API_KEY") if get(key) is None]
-    problems = [f"{key} is not set (needed for Host {host.name!r})" for key in missing]
-
-    insecure = False
-    if host.has("truenas"):
-        raw = (env.get(prefix + "TRUENAS_INSECURE") or "").strip().lower()
-        if raw in _TRUTHY:
-            insecure = True
-        elif raw not in _FALSY:
-            problems.append(f"{prefix}TRUENAS_INSECURE must be 1/0, true/false, yes/no or on/off")
+def ssh_settings(env: Mapping[str, str], host: Host) -> SshSettings:
+    """How to reach the Host over SSH, from `env`. Needs only the SSH keys, whatever the Host's capabilities.
+    Raises HostsError naming a missing key; never includes values."""
+    problems: list[str] = []
+    settings = _ssh(env, host, problems)
     if problems:
         raise HostsError(problems)
+    return settings
 
-    ssh = SshSettings(host=get("SSH_HOST"), user=get("SSH_USER"), key=get("SSH_KEY"))
-    truenas = None
-    if host.has("truenas"):
-        truenas = TrueNasSettings(url=get("TRUENAS_URL"), api_key=get("TRUENAS_API_KEY"), insecure=insecure)
+
+def truenas_settings(env: Mapping[str, str], host: Host) -> TrueNasSettings:
+    """The Host's TrueNAS API settings, from `env`. Needs only the TrueNAS keys. Raises HostsError for a Host
+    without the truenas capability, or naming each missing or invalid key; never includes values."""
+    if not host.has("truenas"):
+        raise HostsError(f"Host {host.name!r} does not have the truenas capability")
+    problems: list[str] = []
+    settings = _truenas(env, host, problems)
+    if problems:
+        raise HostsError(problems)
+    return settings
+
+
+def host_settings(env: Mapping[str, str], host: Host) -> HostSettings:
+    """All of a Host's settings from `env` (the caller's parsed .env and/or os.environ; this never reads a
+    file): ssh_settings, plus truenas_settings for a truenas Host. Raises HostsError naming every required key
+    that is missing or empty; never includes values. A tool that needs only one part should call that part."""
+    problems: list[str] = []
+    ssh = _ssh(env, host, problems)
+    truenas = _truenas(env, host, problems) if host.has("truenas") else None
+    if problems:
+        raise HostsError(problems)
     return HostSettings(ssh=ssh, truenas=truenas)
+
+
+def _getter(env: Mapping[str, str], host: Host):
+    prefix = env_prefix(host)
+    return prefix, lambda key: env.get(prefix + key) or None
+
+
+def _missing(prefix: str, host: Host, keys: list[str]) -> list[str]:
+    return [f"{prefix}{key} is not set (needed for Host {host.name!r})" for key in keys]
+
+
+def _ssh(env: Mapping[str, str], host: Host, problems: list[str]) -> SshSettings:
+    prefix, get = _getter(env, host)
+    problems += _missing(prefix, host, [k for k in ("SSH_HOST",) if get(k) is None])
+    return SshSettings(host=get("SSH_HOST"), user=get("SSH_USER"), key=get("SSH_KEY"))
+
+
+def _truenas(env: Mapping[str, str], host: Host, problems: list[str]) -> TrueNasSettings:
+    prefix, get = _getter(env, host)
+    problems += _missing(prefix, host, [k for k in ("TRUENAS_URL", "TRUENAS_API_KEY") if get(k) is None])
+    raw = (env.get(prefix + "TRUENAS_INSECURE") or "").strip().lower()
+    if raw not in _TRUTHY | _FALSY:
+        problems.append(f"{prefix}TRUENAS_INSECURE must be 1/0, true/false, yes/no or on/off")
+    return TrueNasSettings(url=get("TRUENAS_URL"), api_key=get("TRUENAS_API_KEY"), insecure=raw in _TRUTHY)

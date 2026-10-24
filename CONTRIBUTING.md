@@ -85,8 +85,8 @@ jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shar
   ([schema](repo-tools/hosts/README.md)). `repo-tools/hosts` (`homelab_hosts`) is the only code that parses it:
   every tool that needs Hosts depends on that package, takes the Host from `--host`, the stack path, or the only
   Host (`Hosts.pick`) (a repo-wide check or generator may instead default to every Host, with `--host` to pick
-  one), reads connection details from `.env` through `host_settings`, and gates Host-specific
-  features on `Host.has(...)`. Never assume a Host, a stack root or a capability.
+  one), reads connection details from `.env` through `ssh_settings`/`truenas_settings` (only what the command
+  uses), and gates Host-specific features on `Host.has(...)`. Never assume a Host, a stack root or a capability.
 - **Test first**, as for a Component: CI installs every `repo-tools/<tool>` and runs ruff and its pytest suite on
   every PR (`.github/workflows/test-repo-tool.yaml`).
 - **Release and pin.** Merge to `main`, then tag `<tool>-vX.Y.Z` on `main` and push it; the release workflow

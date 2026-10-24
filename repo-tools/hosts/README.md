@@ -124,10 +124,15 @@ Everything below is exported from `homelab_hosts`; nothing else is public.
   (a frozenset), `doco_cd` (a `DocoCd` with `stack`, `api_secret`, `address`, `network`, defaults filled in), and
   `has(capability) -> bool`, which raises `HostsError` for a capability name it does not know, so a typo cannot
   read as "no".
-- `host_settings(env, host) -> HostSettings`: the Host's settings from the `.env` keys above, read from the
-  mapping `env`; it never reads a file. `HostSettings.ssh` is an `SshSettings(host, user, key)`;
-  `HostSettings.truenas` is a `TrueNasSettings(url, api_key, insecure)` for a `truenas` Host and `None`
-  otherwise. Missing required keys raise `HostsError` naming the keys, never their values.
+- `ssh_settings(env, host) -> SshSettings`: the Host's `SshSettings(host, user, key)` from the `.env` keys above,
+  read from the mapping `env` (it never reads a file). Needs only `SSH_HOST`, whatever the Host's capabilities.
+- `truenas_settings(env, host) -> TrueNasSettings`: the Host's `TrueNasSettings(url, api_key, insecure)`. Needs
+  only the TrueNAS keys; a Host without `truenas` raises `HostsError`.
+- `host_settings(env, host) -> HostSettings`: both at once: `HostSettings.ssh`, and `HostSettings.truenas` for a
+  `truenas` Host (`None` otherwise). It requires every key the Host could need, so a tool that uses only SSH or
+  only TrueNAS should call the narrower function.
+
+  Each raises `HostsError` naming every missing or invalid key, never a value.
 - `env_prefix(host) -> str`: `HOPS_<NAME>_`, the `.env` key prefix for a `Host`.
 - `HostsError`: every failure above; `problems` lists each problem, and `str()` joins them with newlines.
 - `CAPABILITIES`, `DEPLOYERS`, `HOSTS_FILE`: the known capabilities, the supported deployers, and `"hosts.yaml"`.

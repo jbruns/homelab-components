@@ -3,7 +3,17 @@ import textwrap
 
 import pytest
 
-from homelab_hosts import DocoCd, HostsError, SshSettings, TrueNasSettings, find_repo_root, host_settings, load_hosts
+from homelab_hosts import (
+    DocoCd,
+    HostsError,
+    SshSettings,
+    TrueNasSettings,
+    find_repo_root,
+    host_settings,
+    load_hosts,
+    ssh_settings,
+    truenas_settings,
+)
 from homelab_hosts.__main__ import main
 
 
@@ -269,6 +279,38 @@ def test_missing_settings_are_named_by_key_without_revealing_values(two_hosts):
     assert "HOPS_TRUENAS_TRUENAS_URL" in message
     assert "HOPS_TRUENAS_TRUENAS_INSECURE" in message
     assert "fake-api-key" not in message and "maybe" not in message
+
+
+def test_ssh_settings_of_a_truenas_host_need_no_truenas_keys(two_hosts):
+    env = {"HOPS_TRUENAS_SSH_HOST": "nas.example", "HOPS_TRUENAS_SSH_USER": "ops"}
+
+    assert ssh_settings(env, two_hosts["truenas"]) == SshSettings(host="nas.example", user="ops", key=None)
+
+
+def test_ssh_settings_need_the_ssh_host(two_hosts):
+    with pytest.raises(HostsError, match="HOPS_TRUENAS_SSH_HOST is not set"):
+        ssh_settings({"HOPS_TRUENAS_TRUENAS_URL": "https://nas.example"}, two_hosts["truenas"])
+
+
+def test_truenas_settings_need_only_the_truenas_keys(two_hosts):
+    env = {"HOPS_TRUENAS_TRUENAS_URL": "https://nas.example", "HOPS_TRUENAS_TRUENAS_API_KEY": "fake-api-key"}
+
+    assert truenas_settings(env, two_hosts["truenas"]) == TrueNasSettings(
+        url="https://nas.example", api_key="fake-api-key", insecure=False
+    )
+    with pytest.raises(HostsError) as e:
+        truenas_settings({"HOPS_TRUENAS_TRUENAS_INSECURE": "maybe"}, two_hosts["truenas"])
+    assert e.value.problems == [
+        "HOPS_TRUENAS_TRUENAS_URL is not set (needed for Host 'truenas')",
+        "HOPS_TRUENAS_TRUENAS_API_KEY is not set (needed for Host 'truenas')",
+        "HOPS_TRUENAS_TRUENAS_INSECURE must be 1/0, true/false, yes/no or on/off",
+    ]
+
+
+def test_truenas_settings_of_a_host_without_truenas_are_an_error(two_hosts):
+    other = next(h for h in two_hosts.values() if not h.has("truenas"))
+    with pytest.raises(HostsError, match="does not have the truenas capability"):
+        truenas_settings({}, other)
 
 
 def test_the_cli_validates_and_lists_the_hosts_of_the_current_repo(two_hosts, monkeypatch, capsys):

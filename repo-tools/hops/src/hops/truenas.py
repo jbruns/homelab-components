@@ -54,7 +54,7 @@ def load_config(repo_root: Path, host: Host, env=None) -> TrueNASConfig:
     """The Host's TrueNAS endpoint and API key; Unavailable when the Host lacks the `truenas` capability."""
     if not host.has("truenas"):
         raise Unavailable(f"Host {host.name!r} has no TrueNAS: hosts.yaml does not give it the truenas capability")
-    settings = config.settings(repo_root, host, env).truenas
+    settings = config.truenas_settings(repo_root, host, env)
     url_key = env_prefix(host) + "TRUENAS_URL"
     url = urlsplit(settings.url)
     if url.scheme != "https" or not url.netloc:

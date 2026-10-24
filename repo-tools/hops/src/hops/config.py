@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import homelab_hosts
-from homelab_hosts import Host, Hosts, HostsError, HostSettings
+from homelab_hosts import Host, Hosts, HostsError, TrueNasSettings
 
 from hops.errors import ConfigError
 
@@ -100,18 +100,24 @@ def host_setting(repo_root: Path, host: Host, key: str, env=None) -> str | None:
     return load_values(repo_root, env).get(homelab_hosts.env_prefix(host) + key) or None
 
 
-def settings(repo_root: Path, host: Host, env=None) -> HostSettings:
-    """The Host's connection settings (homelab_hosts.host_settings); a ConfigError names each missing key."""
+def _settings(read, repo_root: Path, host: Host, env):
+    """`read(values, host)` from homelab_hosts; a ConfigError names each missing key and where to set it."""
     try:
-        return homelab_hosts.host_settings(load_values(repo_root, env), host)
+        return read(load_values(repo_root, env), host)
     except HostsError as exc:
         raise ConfigError(f"{'; '.join(exc.problems)}; set it in {where(repo_root)}") from None
 
 
+def truenas_settings(repo_root: Path, host: Host, env=None) -> TrueNasSettings:
+    """The Host's TrueNAS URL and API key. Only a TrueNAS client needs them: SSH commands never ask."""
+    return _settings(homelab_hosts.truenas_settings, repo_root, host, env)
+
+
 def load_host(repo_root: Path, host: Host, env=None) -> HostConfig:
-    """How to reach the Host over SSH. The user is required: hops never guesses which account it acts as."""
+    """How to reach the Host over SSH; needs only the SSH keys, never the TrueNAS ones. The user is required: hops
+    never guesses which account it acts as."""
     values = load_values(repo_root, env)
-    ssh = settings(repo_root, host, env).ssh
+    ssh = _settings(homelab_hosts.ssh_settings, repo_root, host, env)
     if not ssh.user:
         user_key = homelab_hosts.env_prefix(host) + "SSH_USER"
         raise ConfigError(f"{user_key} is not set (needed for Host {host.name!r}); set it in {where(repo_root)}")
