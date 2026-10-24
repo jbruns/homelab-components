@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import CIDRS, commit, configure, write
+from conftest import CIDRS, SOPS_ENV, commit, configure, write
 from registry_fixtures import RECORDINGS, Replay, Response
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -425,6 +425,88 @@ def test_a_legacy_stack_is_held_to_every_other_rule(validate, repo, files, expec
     configure(validate, repo, legacy_stacks={"old"})
     validate.check_secrets()
     assert expected in messages(validate)
+
+
+@pytest.mark.parametrize(
+    "files,expected",
+    [
+        (
+            {
+                "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: nginx:1\n    secrets: [pw]\n"
+                "secrets:\n  pw:\n    file: password.yaml\n",
+                "tn/old/web/password.yaml": "hunter2\n",
+            },
+            "sensitive file tn/old/web/password.yaml must be SOPS-encrypted and named *.sops.*",
+        ),
+        (
+            {
+                "tn/old/docker-compose.yaml": "include:\n  - web/docker-compose.yaml\nservices:\n  db:\n"
+                "    image: postgres:16\n    env_file: foo.txt\n",
+                "tn/old/foo.txt": "PASSWORD=hunter2\n",
+            },
+            "sensitive file tn/old/foo.txt must be SOPS-encrypted and named *.sops.*",
+        ),
+        (
+            {
+                "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: nginx:1\n    volumes:\n"
+                "      - {type: bind, source: ./key.pem, target: /key.pem, x-sops: true}\n",
+                "tn/old/web/key.pem": "plain\n",
+            },
+            "sensitive file tn/old/web/key.pem must be SOPS-encrypted and named *.sops.*",
+        ),
+    ],
+)
+def test_a_legacy_stack_references_sensitive_files_only_encrypted(validate, repo, files, expected):
+    write(repo, {**LEGACY_STACK, **files})
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert expected in messages(validate)
+
+
+@pytest.mark.parametrize("ref,twin", [("web.env", "web.sops.env"), (".env", ".sops.env"), ("web.yml", "web.sops.yml")])
+def test_a_legacy_stack_may_reference_the_decrypted_copy_of_a_tracked_sops_file(validate, repo, ref, twin):
+    write(
+        repo,
+        {
+            **LEGACY_STACK,
+            "tn/old/web/docker-compose.yaml": f"services:\n  web:\n    image: nginx:1\n    env_file: {ref}\n",
+            f"tn/old/web/{twin}": "TOKEN=ENC[x]\n" + SOPS_ENV,
+        },
+    )
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert validate.failures == []
+
+
+def test_a_legacy_stack_fails_on_an_untracked_file_without_a_sops_twin(validate, repo):
+    write(
+        repo,
+        {
+            **LEGACY_STACK,
+            "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: nginx:1\n    env_file: web.env\n",
+        },
+    )
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert "referenced file tn/old/web/web.env is not tracked and no tn/old/web/web.sops.env is" in messages(validate)
+
+
+def test_a_legacy_stack_may_reference_an_encrypted_file(validate, repo):
+    write(
+        repo,
+        {
+            **LEGACY_STACK,
+            "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: nginx:1\n    env_file: web.sops.env\n",
+            "tn/old/web/web.sops.env": "TOKEN=ENC[x]\n" + SOPS_ENV,
+        },
+    )
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_secrets()
+    assert validate.failures == []
 
 
 def test_a_legacy_stack_that_has_been_cut_over_fails(validate, repo):
@@ -1070,3 +1152,26 @@ def test_configure_rejects_unknown_path(validate, repo):
 def test_template_volumes_are_named_for_stack_app(validate):
     # Templates are not Stacks yet, so "app" is not among the Stack names.
     assert validate.volume_problems("app", {"app_config": {"name": "app_config", "external": True}}, {"edge"}) == []
+
+
+@pytest.mark.skipif(not docker_compose_available(), reason="needs docker compose")
+def test_compose_leaves_a_legacy_stack_to_its_cutover(validate, repo, capsys, monkeypatch):
+    """Deliberate: a --legacy-stack gets no Stack-level checks (render, Compose rules, Baseline, env) and its
+    Services are not counted in the Baseline report, until its cutover renames it to compose.yaml."""
+    monkeypatch.setattr(validate, "REGISTRY_HTTP", Replay("dockerhub"))
+    monkeypatch.setattr(validate, "LEGACY_VOLUMES", set())
+    compose_fixture(repo, WEB + '        labels: {startup-order: "2"}\n        tmpfs: [/attach, /config, /plugin]\n')
+    configure(validate, repo)
+    validate.check_compose()
+    before = [line for line in capsys.readouterr().out.splitlines() if line.startswith("Baseline: ")]
+    assert before
+
+    write(repo, {**LEGACY_STACK, "tn/old/web/docker-compose.yaml": "services:\n  web:\n    image: ${UNSET}\n"})
+    commit(repo)
+    configure(validate, repo, legacy_stacks={"old"})
+    validate.check_compose()
+    out = capsys.readouterr().out
+    assert [line for line in out.splitlines() if line.startswith("Baseline: ")] == before
+    assert "old" not in out + messages(validate)
+    validate.check_env()
+    assert "old" not in capsys.readouterr().out + messages(validate)

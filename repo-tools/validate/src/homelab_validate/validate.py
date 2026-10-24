@@ -6,7 +6,8 @@ Checks:
               (doco-cd Stacks, entry file compose.yaml, reference the *.sops.* files directly),
               and no plaintext twin (x.yml beside x.sops.yml) is tracked; every file a Stack includes is
               <stack root>/<stack>/<service>/service.yaml and some Stack includes it (docker-compose.yaml
-              files only in a --legacy-stack, which must still be one), and every doco-cd
+              files only in a --legacy-stack, which must still be one, and whose secret references are
+              checked too: tracked *.sops.* files or the untracked decrypted copy of one), and every doco-cd
               deploy config keeps auto_discovery.depth 1
   env         every ${VAR} a Stack uses exists in its env.template and its encrypted .sops.env
   compose     `docker compose config` succeeds for every Stack and templates/* with placeholder values;
@@ -24,6 +25,8 @@ Checks:
   monitoring  full config checks and behavioral rule tests with the images the Stacks deploy;
               Grafana provisioning boots, dashboard generator parity and PromQL/LogQL checks
   cloudflare  the Cloudflare ranges Traefik trusts are valid and identical everywhere they appear
+
+A --legacy-stack is not a Stack: env, compose and monitoring leave it alone until its cutover.
 """
 
 import argparse
@@ -281,6 +284,7 @@ def check_secrets() -> None:
     for host in HOSTS:
         for stack in stacks(host):
             check_stack_secrets(stack, tracked)
+        check_legacy_secrets(host, tracked)
     print("secrets ok" if not failures else "secrets: problems found")
 
 
@@ -358,13 +362,41 @@ def check_stack_secrets(stack: Path, tracked: set[Path]) -> None:
     if stack / ".sops.env" not in tracked:
         fail(f"{stack.name}: Stack has no tracked .sops.env", entry(stack))
     for compose in compose_files(entry(stack)):
-        for ref in sensitive_refs(compose):
-            if not ref.is_relative_to(ROOT):
-                continue  # Host path outside the repo, e.g. the age key
-            if ref not in tracked:
-                fail(f"referenced file {_rel(ref)} is not tracked", compose)
-            elif ".sops." not in ref.name:
-                fail(f"sensitive file {_rel(ref)} must be SOPS-encrypted and named *.sops.*", compose)
+        check_sensitive_refs(compose, tracked)
+
+
+def check_legacy_secrets(host: Host, tracked: set[Path]) -> None:
+    """A --legacy-stack's docker-compose.yaml files, and what they include, reference sensitive files only
+    SOPS-encrypted, as a Stack's do. Its deploy is not doco-cd's, so it may instead reference the untracked
+    plaintext copy of a tracked SOPS file (x.env for x.sops.env), decrypted on the Host by hand."""
+    legacy = [host_dir(host) / name for name in sorted(LEGACY_STACKS)]
+    seen: set[Path] = set()
+    for f in sorted(tracked):
+        if LEGACY_COMPOSE_RE.fullmatch(f.name) and any(f.is_relative_to(d) for d in legacy):
+            for compose in compose_files(f):
+                if compose not in seen:
+                    seen.add(compose)
+                    check_sensitive_refs(compose, tracked, decrypted_copies=True)
+
+
+def sops_twin(p: Path) -> Path:
+    """The SOPS-encrypted name of a plaintext file: x.env -> x.sops.env, .env -> .sops.env."""
+    if p.name.startswith(".") and p.name.count(".") == 1:
+        return p.with_name(".sops" + p.name)
+    return p.with_name(f"{p.stem}.sops{p.suffix}")
+
+
+def check_sensitive_refs(compose: Path, tracked: set[Path], decrypted_copies: bool = False) -> None:
+    for ref in sensitive_refs(compose):
+        if not ref.is_relative_to(ROOT):
+            continue  # Host path outside the repo, e.g. the age key
+        if ref not in tracked:
+            if decrypted_copies and sops_twin(ref) in tracked:
+                continue
+            hint = f" and no {_rel(sops_twin(ref))} is" if decrypted_copies else ""
+            fail(f"referenced file {_rel(ref)} is not tracked{hint}", compose)
+        elif ".sops." not in ref.name:
+            fail(f"sensitive file {_rel(ref)} must be SOPS-encrypted and named *.sops.*", compose)
 
 
 def stack_vars(stack: Path) -> set[str]:
@@ -1610,7 +1642,11 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="NAME",
-        help="a folder under each stack root still in a pre-layout form (docker-compose.yaml), allowed until cut over",
+        help=(
+            "a folder under each stack root still in a pre-layout form (docker-compose.yaml), allowed until cut over. "
+            "It is exempt from Stack-level checks (Baseline, Compose rules, env) until it is renamed to compose.yaml; "
+            "only repository-wide and secret-reference checks still apply"
+        ),
     )
     parser.add_argument("checks", nargs="*", metavar="check", help=f"{', '.join(CHECKS)} (default: all)")
     args = parser.parse_args(argv)

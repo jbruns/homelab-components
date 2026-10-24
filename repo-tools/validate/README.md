@@ -62,12 +62,22 @@ With no check named, every check runs, including `isolation`. Exit status is 1 i
   shrinks.
 - `--legacy-stack NAME`: a folder under each selected Host's stack root that is still in a pre-layout form
   (`docker-compose.yaml` files deployed by another tool, no `compose.yaml`), allowed until its cutover. Repeat it
-  for several. Under it, `secrets` allows `docker-compose.y(a)ml` files, and every [input](#inputs) whose default
-  lies in it counts as missing, so its check is skipped and says so; an explicit `--path` into it is still
-  checked. Every other rule still holds there: plaintext `.env` and unencrypted `*.sops.*` files, and
-  `service.yaml` files no Stack includes, fail. `secrets` fails while one is given whose folder has a
-  `compose.yaml` (it has been cut over), and a `secrets` run over every Host fails while one is given that no
-  Host has, so the list only shrinks.
+  for several. **`--legacy-stack` exempts the folder from Stack-level checks (Baseline, Compose rules, env) until
+  it is renamed to `compose.yaml`; only repository-wide and secret-reference checks still apply.** In detail:
+  - not a Stack: `compose` does not render it or apply the Compose rules, the Baseline or the volume rules, and
+    its Services are not counted in the Baseline report; `env` does not check its `${VAR}`s; it needs no
+    `.sops.env`;
+  - `secrets` allows its `docker-compose.y(a)ml` files;
+  - every [input](#inputs) whose default lies in it counts as missing, so its check is skipped and says so; an
+    explicit `--path` into it is still checked;
+  - still enforced: plaintext `.env` and unencrypted `*.sops.*` files, `service.yaml` files no Stack includes,
+    and the secret references of its `docker-compose.y(a)ml` files and what they include (`env_file`,
+    `secrets.<x>.file`, `x-sops` bind mounts). Each must be a tracked `*.sops.*` file, or the untracked plaintext
+    copy of one (`x.env` for a tracked `x.sops.env`, `web.yml` for `web.sops.yml`) that the other tool's deploy
+    decrypts on the Host. A tracked plaintext file it references fails.
+
+  `secrets` fails while one is given whose folder has a `compose.yaml` (it has been cut over), and a `secrets` run
+  over every Host fails while one is given that no Host has, so the list only shrinks.
 - `VALIDATE_BASE`: the comparison ref for `isolation`, rule-test freshness and the Grafana upgrade boot (default
   `origin/<default_branch>`, from `hosts.yaml`). In CI, fetch history and set it to the PR base.
 - `GITHUB_ACTIONS`: when set, failures print as GitHub annotations.
