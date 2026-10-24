@@ -124,7 +124,8 @@ without them simply cannot use that command:
   `stop --for` stops the Services without silences and warns on stderr that alerts may fire, and `volume move`
   needs `--image` (see [Renaming a volume](#renaming-a-volume)). `start`, `restart`, `recreate`, `status`,
   `strays`, `deploys` and the rest of `volume move` do not use the monitoring Stack. `status` and `strays` list
-  the legacy monitoring containers as undeclared, as they do for any legacy group. `alerts` and
+  the legacy monitoring containers as undeclared, as they do for any legacy group: `strays --apply` keeps the
+  running ones and removes a stopped one. `alerts` and
   `logs --loki` need the monitoring Stack and keep failing until the cutover. A Host that declares only one of
   `prometheus` and `alertmanager` is misconfigured: `stop --for` fails as before.
 - **Critical Tier:** a Service's `tier: critical` label, which `stop` refuses without `--force`.

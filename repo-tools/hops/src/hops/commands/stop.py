@@ -62,7 +62,7 @@ def run(args, ctx) -> int:
             f"{', '.join(critical)} {'is' if len(critical) == 1 else 'are'} Critical Tier; pass --force to stop anyway"
         )
     found = lifecycle.containers(ctx, services)
-    if alertmanager.declared_on(ctx.declared):
+    if alertmanager.monitoring_declared(ctx.declared):
         silence_alerts(ctx, args, found)
     else:
         ctx.stderr.write(

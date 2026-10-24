@@ -8,7 +8,7 @@ import subprocess
 from datetime import UTC, datetime
 
 import pytest
-from hops_fakes import FakeSnapshots, container, git, rollback, snap, write
+from hops_fakes import FakeSnapshots, container, git, rollback, snap, undeclare_monitoring, write
 
 from hops import snapshots
 
@@ -618,3 +618,15 @@ def test_on_a_host_without_truenas_ix_resources_are_no_truenas_apps(hops, fake_h
     report = json.loads(hops("strays", "--json").out)
     (app,) = [c for c in report["containers"] if c["container"] == "ix-foo-web-1"]
     assert app["kept"] == KEPT_STATE.format("running")
+
+
+def test_strays_with_monitoring_mid_cutover_lists_its_running_legacy_containers_and_keeps_them(hops, host, repo):
+    undeclare_monitoring(repo)
+    commit_and_push(repo)
+    legacy = on_host(container("alertmanager", project="monitoring", service="alertmanager"), image_id=img(1))
+    answer(host, containers=[*CONTAINERS, legacy])
+    outcome = hops("strays", "--apply", "--json")
+    assert outcome.code == 0, outcome.err
+    (row,) = [c for c in json.loads(outcome.out)["containers"] if c["container"] == "alertmanager"]
+    assert (row["stack"], row["kept"], row["removed"]) == ("monitoring", KEPT_STATE.format("running"), None)
+    assert ["rm", legacy["Id"]] not in host.docker_calls

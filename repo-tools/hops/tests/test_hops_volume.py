@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from hops_fakes import FakeSnapshots as Pool
-from hops_fakes import container, rollback
+from hops_fakes import container, rollback, undeclare_monitoring
 
 from hops import snapshots, volumes
 from hops.errors import HostTimeout
@@ -810,11 +810,6 @@ def images_run(fake_host) -> list[str]:
             assert call[call.index("--pull") + 1] == "never"
             found.append(call[call.index("python3") - 1])
     return found
-
-
-def undeclare_monitoring(repo):
-    """Mid-cutover: monitoring is still a legacy docker-compose.yaml group, not a declared Stack."""
-    (repo / "tn" / "monitoring" / "compose.yaml").rename(repo / "tn" / "monitoring" / "docker-compose.yaml")
 
 
 @pytest.mark.usefixtures("plain_host")

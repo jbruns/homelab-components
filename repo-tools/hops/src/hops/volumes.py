@@ -504,9 +504,7 @@ def verify(runner: Runner, image: str, directory: str, old: str, new: str) -> Pr
 def reported(runner: Runner, image: str, directory: str, mode: str, old: str, new: str) -> Probe:
     result = run(runner, image, directory, mode, old, new)
     if not result.stdout.strip():
-        problem = image_problem(result, image)
-        if problem:
-            raise HopsError(problem)
+        raise_image_problem(result, image)
         raise HopsError(
             f"the volume-{mode} container gave no report: {result.stderr.strip() or f'exit code {result.returncode}'}"
         )
@@ -516,9 +514,7 @@ def reported(runner: Runner, image: str, directory: str, mode: str, old: str, ne
 def check(runner: Runner, image: str, directory: str, old: str, new: str) -> Probe:
     result = run(runner, image, directory, "check", old, new)
     if result.returncode != 0:
-        problem = image_problem(result, image)
-        if problem:
-            raise HopsError(problem)
+        raise_image_problem(result, image)
         raise HopsError(
             f"the volume-move container could not read {directory}: "
             f"{result.stderr.strip() or f'exit code {result.returncode}'}"
@@ -550,17 +546,16 @@ def image(declared: Declared, host: str, override: str | None = None) -> str:
     return loki.transport_image(declared, host, "volume move runs its image")
 
 
-def image_problem(result, image: str) -> str | None:
-    """Why `docker run` of `image` could not start the copier, when the image is the reason; else None."""
+def raise_image_problem(result, image: str) -> None:
+    """Raise when `docker run` of `image` could not start the copier because of the image itself."""
     stderr = result.stderr.strip()
     if "no such image" in stderr.lower() or "unable to find image" in stderr.lower():
-        return (
+        raise HopsError(
             f"{image} is not on the Host, and hops never pulls it (docker run --pull never); "
             f"pull it on the Host first: docker pull {image}"
         )
     if result.returncode in (126, 127) and "python3" in stderr:
-        return f"{image} has no python3 for the copier to run: {stderr}"
-    return None
+        raise HopsError(f"{image} has no python3 for the copier to run: {stderr}")
 
 
 def users(runner: Runner, name: str) -> list[Container]:
