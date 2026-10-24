@@ -32,8 +32,12 @@ tools/                    this repo's own Repo Tooling: README check, upstream p
 .github/workflows/        ci, test-component and test-repo-tool (reusable), release, canary
 ```
 
-`repo-tools/hosts` is the `homelab_hosts` package, the one loader and validator for a consuming repo's
-`hosts.yaml`; see [its README](repo-tools/hosts/README.md).
+Shared tools, each documented in its README:
+
+- [`repo-tools/hosts`](repo-tools/hosts/README.md): the `homelab_hosts` package, the one loader and validator for
+  a consuming repo's `hosts.yaml`.
+- [`repo-tools/agent-skills`](repo-tools/agent-skills/README.md): `setup-agent-skills`, which installs and checks
+  the agent skills a consuming repo pins in its `.agent-skills.lock`.
 
 `components/_template` is the copy-from template. CI exercises it end to end (README check, unit tests, a
 Contract Test against a real `traefik/whoami`, image build reaching healthy), and it is never released.
