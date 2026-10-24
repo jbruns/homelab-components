@@ -157,6 +157,27 @@ def test_stop_without_a_declared_monitoring_stack_stops_and_warns_that_nothing_i
     assert "Stopped 1 container" in outcome.out
 
 
+def test_stop_with_a_monitoring_stack_under_other_service_names_still_fails(hops, fake_host, repo):
+    compose = repo / "tn" / "monitoring" / "compose.yaml"
+    compose.write_text(
+        compose.read_text()
+        .replace("  prometheus:", "  prometheus-server:")
+        .replace("  alertmanager:", "  alertmanager-server:")
+    )
+    outcome = hops("stop", "sonarr/sonarr", "--for", "1h")
+    assert outcome.code == 2 and "declares no prometheus in its monitoring Stack" in outcome.err
+    assert [c for c in fake_host.docker_calls if c[0] == "stop"] == []
+
+
+def test_stop_with_prometheus_and_alertmanager_in_another_stack_still_fails(hops, fake_host, repo):
+    monitoring = repo / "tn" / "monitoring"
+    (repo / "tn" / "observability").mkdir()
+    (monitoring / "compose.yaml").rename(repo / "tn" / "observability" / "compose.yaml")
+    outcome = hops("stop", "sonarr/sonarr", "--for", "1h")
+    assert outcome.code == 2 and "declares no prometheus in its monitoring Stack" in outcome.err
+    assert [c for c in fake_host.docker_calls if c[0] == "stop"] == []
+
+
 def test_stop_with_only_one_of_prometheus_and_alertmanager_declared_still_fails(hops, fake_host, repo):
     compose = repo / "tn" / "monitoring" / "compose.yaml"
     compose.write_text(compose.read_text().split("  alertmanager:")[0])

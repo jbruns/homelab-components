@@ -120,14 +120,17 @@ without them simply cannot use that command:
   monitoring Stack`. The exceptions are for a Host whose monitoring is not declared yet (below): `stop` and
   `volume move` still work there.
 - **Hosts mid-cutover.** A Host whose `monitoring` is still a legacy group (a `docker-compose.yaml` that
-  doco-cd does not deploy, with no `compose.yaml`) declares neither `prometheus` nor `alertmanager`. There
+  doco-cd does not deploy, with no `compose.yaml`) declares no `monitoring` Stack. If no other Stack declares
+  a Service named `prometheus` or `alertmanager` either, then
   `stop --for` stops the Services without silences and warns on stderr that alerts may fire, and `volume move`
   needs `--image` (see [Renaming a volume](#renaming-a-volume)). `start`, `restart`, `recreate`, `status`,
   `strays`, `deploys` and the rest of `volume move` do not use the monitoring Stack. `status` and `strays` list
   the legacy monitoring containers as undeclared, as they do for any legacy group: `strays --apply` keeps the
   running ones and removes a stopped one. `alerts` and
-  `logs --loki` need the monitoring Stack and keep failing until the cutover. A Host that declares only one of
-  `prometheus` and `alertmanager` is misconfigured: `stop --for` fails as before.
+  `logs --loki` need the monitoring Stack and keep failing until the cutover. Any other shape fails closed:
+  `stop --for` fails as before (exit 2, `declares no … in its monitoring Stack`) when the `monitoring` Stack
+  lacks `prometheus` or `alertmanager` (renamed Services, only one declared), or when either is declared in
+  another Stack.
 - **Critical Tier:** a Service's `tier: critical` label, which `stop` refuses without `--force`.
 - **`homeops.db.users`:** the label `db --users` compares MariaDB users with.
 - **`startup-order=skip`:** the label on deliberate `docker run`s; `hops` puts it on its own.
@@ -364,7 +367,8 @@ nothing starts the Service again until a reboot, the next Deploy of its Stack, o
 
   `stop` prints each silence with its reason. If a silence fails, nothing is stopped. Other
   fan-out alerts are left to the inhibit rules, because a silenced source alert still inhibits.
-- On a Host whose monitoring Stack declares neither `prometheus` nor `alertmanager` ([mid-cutover](#conventions)),
+- On a Host that declares no `monitoring` Stack and no `prometheus` or `alertmanager` Service in any Stack
+  ([mid-cutover](#conventions)),
   there is no declared Alertmanager to silence through. `stop` still requires `--for`, creates no silences, runs
   no `amtool`, and prints `hops: warning: no silences were created: … so alerts may fire …` on stderr before
   stopping. Silence the legacy Alertmanager by hand if its alerts matter. There is no flag to skip silences on a

@@ -25,10 +25,11 @@ SCRIPT = (
 SERVICES = ("prometheus", "alertmanager")  # the monitoring Stack's Services amtool runs through
 
 
-def monitoring_declared(declared: Declared) -> bool:
-    """Whether the monitoring Stack declares prometheus or alertmanager. False on a Host mid-cutover, whose
-    monitoring is not a declared Stack yet; with only one declared, amtool fails naming the other."""
-    return any(declared.get(MONITORING, name) for name in SERVICES)
+def monitoring_undeclared(declared: Declared) -> bool:
+    """True only on a Host mid-cutover: no Stack is named monitoring and no Stack has a Service named
+    prometheus or alertmanager. Anything else is declared monitoring, misconfigured or not, and amtool fails
+    naming what is missing, so a stop is never left unsilenced by a typo or a renamed Service."""
+    return MONITORING not in declared.stacks and not any(s.name in SERVICES for s in declared.services)
 
 
 def amtool(runner: Runner, declared, host: str, *args: str, check: bool = True) -> Result:

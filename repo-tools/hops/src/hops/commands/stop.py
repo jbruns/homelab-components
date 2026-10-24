@@ -26,9 +26,9 @@ def register(subparsers) -> None:
             "Stack, or hops start. --for creates Alertmanager silences that expire after the duration, one for "
             "each way an alert names the Service (stack and service, container, scrape target, Datastore), the "
             "same for Services in its Stack that depend on it, every Probe if they route through it, and its "
-            "Stack's alerts that name no Service. Each is printed with its reason. On a Host whose monitoring Stack "
-            "declares neither prometheus nor alertmanager yet, it stops without silences and warns that alerts "
-            "may fire."
+            "Stack's alerts that name no Service. Each is printed with its reason. On a Host that declares no "
+            "monitoring Stack and no prometheus or alertmanager Service yet, it stops without silences and warns "
+            "that alerts may fire."
         ),
     )
     lifecycle.add_targets(p)
@@ -62,14 +62,14 @@ def run(args, ctx) -> int:
             f"{', '.join(critical)} {'is' if len(critical) == 1 else 'are'} Critical Tier; pass --force to stop anyway"
         )
     found = lifecycle.containers(ctx, services)
-    if alertmanager.monitoring_declared(ctx.declared):
-        silence_alerts(ctx, args, found)
-    else:
+    if alertmanager.monitoring_undeclared(ctx.declared):
         ctx.stderr.write(
-            f"hops: warning: no silences were created: Host {ctx.host.name!r} declares no prometheus or "
-            f"alertmanager in its {MONITORING} Stack, so alerts may fire while "
+            f"hops: warning: no silences were created: Host {ctx.host.name!r} declares no {MONITORING} Stack "
+            f"and no prometheus or alertmanager Service, so alerts may fire while "
             f"{'it is' if len(found) == 1 else 'they are'} stopped\n"
         )
+    else:
+        silence_alerts(ctx, args, found)
     lifecycle.act(ctx, "stop", "Stopped", found)
     names = " ".join(args.targets)
     ctx.stdout.write(
