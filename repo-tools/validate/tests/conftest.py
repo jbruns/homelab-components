@@ -133,10 +133,20 @@ def validate(repo, monkeypatch, tmp_path):
     """The validate module, pointed at the fixture repository, with no recorded failures, an empty
     image-config cache and no registry access."""
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("HOMELAB_PRIVACY_DENYLIST", raising=False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setattr(validate_module, "REGISTRY_HTTP", no_network)
     monkeypatch.setattr(validate_module, "failures", [])
-    for name in ("ROOT", "HOSTS", "EVERY_HOST", "DEFAULT_BRANCH", "LEGACY_VOLUMES", "LEGACY_STACKS"):
+    for name in (
+        "ROOT",
+        "HOSTS",
+        "EVERY_HOST",
+        "DEFAULT_BRANCH",
+        "LEGACY_VOLUMES",
+        "LEGACY_STACKS",
+        "PRIVACY_MODE",
+        "PRIVACY_ALLOW",
+    ):
         monkeypatch.setattr(validate_module, name, getattr(validate_module, name))
     monkeypatch.setattr(validate_module, "PATHS", dict(validate_module.PATHS))
     monkeypatch.setattr(validate_module, "OVERRIDES", {})

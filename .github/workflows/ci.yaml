@@ -92,6 +92,7 @@ jobs:
     with:
       working-directory: .github/repo-ci-fixture
       extra-args: --host example
+      privacy-mode: fail
 
   repo-declared-containers:
     needs: plan

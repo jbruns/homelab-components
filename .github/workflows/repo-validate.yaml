@@ -4,7 +4,8 @@ name: repo validate
 # stack roots. homelab-validate, and homelab-declared-containers for its monitoring check, are installed from this
 # workflow's own commit unless tool-ref names another, so pinning this workflow pins the tools. Pull requests compare
 # against their base (VALIDATE_BASE); other events against the default branch. Image configs that homelab-validate
-# fetches by digest are cached, keyed on every digest in the repo.
+# fetches by digest are cached, keyed on every digest in the repo. The privacy check reads its denylist from the
+# privacy-denylist secret, so the patterns are never committed; without it the check skips.
 on:
   workflow_call:
     inputs:
@@ -26,6 +27,11 @@ on:
         description: homelab-components ref (tag or commit) to install the tools from; empty means this workflow's commit
         type: string
         default: ""
+      privacy-mode:
+        description: >-
+          warn (report privacy matches as warnings) or fail (fail the job on any); flip to fail once the repo is clean
+        type: string
+        default: warn
       timeout-minutes:
         description: job timeout
         type: number
@@ -35,6 +41,12 @@ on:
         type: string
         # renovate: datasource=github-releases depName=astral-sh/uv
         default: 0.13.5
+    secrets:
+      privacy-denylist:
+        description: >-
+          regexes, one per line, for names that must not appear in prose (the privacy check's
+          HOMELAB_PRIVACY_DENYLIST); unset skips the check
+        required: false
 
 permissions:
   contents: read
@@ -81,10 +93,14 @@ jobs:
         env:
           CHECKS: ${{ inputs.checks }}
           EXTRA_ARGS: ${{ inputs.extra-args }}
+          PRIVACY_MODE: ${{ inputs.privacy-mode }}
+          HOMELAB_PRIVACY_DENYLIST: ${{ secrets.privacy-denylist }}
           VALIDATE_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           read -ra checks <<< "$CHECKS"
           python3 -c 'import os, shlex, sys; sys.stdout.write("".join(a + "\0" for a in shlex.split(os.environ["EXTRA_ARGS"])))' \
             > "$RUNNER_TEMP/extra-args"
           mapfile -d '' -t extra < "$RUNNER_TEMP/extra-args"
+          # Only a non-default mode is passed, so a tool-ref from before the privacy check still runs.
+          [ "$PRIVACY_MODE" = warn ] || extra+=(--privacy-mode "$PRIVACY_MODE")
           homelab-validate "${extra[@]}" "${checks[@]}"

@@ -1,7 +1,7 @@
 [project]
 name = "homelab-validate"
 version = "0"
-description = "Repository checks (secrets, env, compose and the Baseline, monitoring, isolation) for every Host in a consuming repo's hosts.yaml"
+description = "Repository checks (secrets, env, compose and the Baseline, monitoring, isolation, privacy) for every Host in a consuming repo's hosts.yaml"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
