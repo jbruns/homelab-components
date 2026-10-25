@@ -220,14 +220,14 @@ They must be valid CIDRs and identical. The consuming repo keeps its own updater
 never committed: `HOMELAB_PRIVACY_DENYLIST` holds one Python regex per line (blank lines ignored), and in CI it
 comes from a secret (see the `privacy-denylist` secret of `repo-validate.yaml`). Unset or blank, the check prints
 that it skipped and passes, so a local run or pre-commit hook without the denylist is unaffected. An invalid
-pattern fails the check, naming its line number only.
+pattern fails the check, naming its line number only, never the pattern or the regex error.
 
 It scans every tracked file it can read as text, by type:
 
 | Files | Scanned |
 |---|---|
 | Markdown (`*.md`, `*.markdown`, `*.rst`) | every line |
-| Python (`*.py`, `*.pyi`, or no extension with a `python` shebang) | comments and string literals: docstrings, help and output text |
+| Python (`*.py`, `*.pyi`, or no extension with a `python` shebang) | comments and string literals: docstrings, help and output text; from where a file stops tokenizing (a syntax error), every remaining line |
 | `#`-comment files: shell (`*.sh`, `*.bash`, `*.zsh`, or no extension with an `sh` shebang), YAML, TOML, `*.cfg`, `*.ini`, `*.conf`, `*.alloy`, `*.tmpl`, `*.env.example`, `Dockerfile`, `Containerfile`, `Makefile`, `.gitignore`, `.dockerignore`, `.gitattributes` | comments (from a `#` at the start of the line or after whitespace) |
 
 Load-bearing identifiers are exempt, because renaming them would break something:
@@ -244,7 +244,7 @@ Load-bearing identifiers are exempt, because renaming them would break something
 
 Each match is reported as `privacy: denylisted text at <file>:<line>: <excerpt>`, a warning or, with
 `--privacy-mode fail`, an error (in GitHub Actions, an annotation on that line). The excerpt is the scanned prose
-on that line with every denylisted match replaced by `[redacted]`; no report repeats a match or a pattern. Start
+on that line with every denylisted match replaced by `[redacted]`, allowlisted ones included; no report repeats a match or a pattern. Start
 in `warn`, clear the warnings, then switch to `fail` so new prose stays clean.
 
 ## Test

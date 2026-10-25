@@ -66,21 +66,22 @@ def hash_comments(text: str) -> Iterator[tuple[int, str]]:
 
 
 def python_prose(text: str) -> Iterator[tuple[int, str]]:
-    """Comments and string literals (docstrings, help and output text), line by line."""
+    """Comments and string literals (docstrings, help and output text), line by line. Tokens are read one at a
+    time, so a tokenize error keeps what came before it; from the line it stopped on, every line is prose."""
     prose = {tokenize.COMMENT, tokenize.STRING}
     prose |= {
         getattr(tokenize, "FSTRING_MIDDLE", tokenize.STRING),
         getattr(tokenize, "TSTRING_MIDDLE", tokenize.STRING),
     }
+    reached = 1
     try:
-        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            reached = token.end[0]
+            if token.type in prose:
+                for offset, line in enumerate(token.string.splitlines()):
+                    yield token.start[0] + offset, line
     except (tokenize.TokenError, SyntaxError):
-        yield from hash_comments(text)
-        return
-    for token in tokens:
-        if token.type in prose:
-            for offset, line in enumerate(token.string.splitlines()):
-                yield token.start[0] + offset, line
+        yield from list(enumerate(text.splitlines(), 1))[reached - 1 :]
 
 
 def prose(path: str, text: str) -> Iterator[tuple[int, str]]:
@@ -101,22 +102,22 @@ def compile_patterns(text: str) -> list[re.Pattern]:
         if line.strip():
             try:
                 patterns.append(re.compile(line.strip()))
-            except re.error as exc:
-                raise ValueError(f"pattern on line {number} is not a valid regex ({exc.msg})") from None
+            except re.error:
+                raise ValueError(f"pattern on line {number} is not a valid regex") from None
     return patterns
 
 
 def scan(path: str, text: str, deny: list[re.Pattern], allow: list[re.Pattern]) -> list[Match]:
+    """A line is reported when it holds a match no allowlist match covers; its excerpt redacts every match."""
+    lines: dict[int, list[str]] = {}
+    for number, segment in prose(path, text):
+        lines.setdefault(number, []).append(segment)
     out = []
-    for number, line in prose(path, text):
+    for number, segments in sorted(lines.items()):
+        line = " ".join(segments)
         allowed = [m.span() for pattern in allow for m in pattern.finditer(line)]
-        hits = [
-            m.span()
-            for pattern in deny
-            for m in pattern.finditer(line)
-            if m.end() > m.start() and not any(a <= m.start() and m.end() <= b for a, b in allowed)
-        ]
-        if hits:
+        hits = [m.span() for pattern in deny for m in pattern.finditer(line) if m.end() > m.start()]
+        if any(not any(a <= start and stop <= b for a, b in allowed) for start, stop in hits):
             out.append(Match(path, number, redact(line, hits)))
     return out
 

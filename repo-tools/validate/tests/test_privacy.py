@@ -65,13 +65,13 @@ def test_load_bearing_identifiers_and_files_are_exempt(validate, private, monkey
 
 
 def test_an_allowlist_pattern_exempts_the_text_it_covers(validate, repo, monkeypatch, capsys):
-    write(repo, {"README.md": f"Install from git+https://example.invalid/{NAME}/tools; ask {NAME}.\n"})
+    write(repo, {"README.md": f"Install from git+https://example.invalid/{NAME}/tools.\n"})
     commit(repo)
     monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", DENY)
     monkeypatch.setattr(validate, "PRIVACY_ALLOW", [validate.re.compile(r"git\+https://\S+")])
     validate.check_privacy()
     out = capsys.readouterr().out
-    assert f"README.md:1: Install from git+https://example.invalid/{NAME}/tools; ask [redacted]." in out
+    assert "README.md" not in out and "privacy ok" in out
 
 
 def test_fail_mode_fails_with_a_line_annotation(validate, private, monkeypatch, capsys):
@@ -92,12 +92,36 @@ def test_a_blank_denylist_skips(validate, private, monkeypatch, capsys):
 
 
 def test_an_invalid_pattern_fails_without_echoing_it(validate, monkeypatch, capsys):
-    monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", f"{DENY}\nsecret(name")
+    monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", f"{DENY}\n(?P=Secretname)")
     validate.check_privacy()
-    assert validate.failures == [
-        "privacy: HOMELAB_PRIVACY_DENYLIST: pattern on line 2 is not a valid regex (missing ), unterminated subpattern)"
+    assert validate.failures == ["privacy: HOMELAB_PRIVACY_DENYLIST: pattern on line 2 is not a valid regex"]
+    assert "Secretname" not in capsys.readouterr().out
+
+
+def test_an_allowlisted_match_is_still_redacted_when_its_line_is_reported(validate, repo, monkeypatch, capsys):
+    write(repo, {"README.md": f"See example.invalid/{NAME}/tools, or ask {NAME}.\n"})
+    commit(repo)
+    monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", DENY)
+    monkeypatch.setattr(validate, "PRIVACY_ALLOW", [validate.re.compile(r"example\.invalid/\S+")])
+    validate.check_privacy()
+    out = capsys.readouterr().out
+    assert NAME not in out
+    assert "README.md:1: See example.invalid/[redacted]/tools, or ask [redacted]." in out
+
+
+def test_a_python_tokenize_error_keeps_earlier_prose_and_scans_the_rest_as_text(validate, repo, monkeypatch, capsys):
+    write(repo, {"tools/broken.py": f'"""For {NAME}."""\nx = 1\ny = """{NAME} never closed\nz = {NAME}\n'})
+    commit(repo)
+    monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", DENY)
+    monkeypatch.setattr(validate, "PRIVACY_MODE", "fail")
+    validate.check_privacy()
+    out = capsys.readouterr().out
+    assert NAME not in out
+    assert [f.split(": ")[1].removeprefix("denylisted text at ") for f in validate.failures] == [
+        "tools/broken.py:1",
+        "tools/broken.py:3",
+        "tools/broken.py:4",
     ]
-    assert "secret" not in capsys.readouterr().out
 
 
 def test_more_than_one_pattern_and_overlapping_matches(validate, repo, monkeypatch, capsys):
