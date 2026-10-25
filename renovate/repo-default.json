@@ -93,7 +93,7 @@
       "matchPackageNames": [
         "jbruns/homelab-components"
       ],
-      "groupName": "homelab-components repo-ci"
+      "groupName": "Repo Tooling repo-ci"
     }
   ],
   "docker-compose": {

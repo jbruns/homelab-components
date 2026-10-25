@@ -1,12 +1,15 @@
 """Denylisted names in prose (check `privacy`).
 
 Prose is what a reader sees: Markdown in full, Python comments, docstrings and string literals (help text and
-output), and the comments of shell, YAML, TOML and other `#`-comment files. Load-bearing identifiers are left
-alone: code outside comments and strings (so file paths, config keys and `uses:` refs in YAML and shell), files
-that are not prose (LICENSE, lockfiles, Renovate config, SOPS-encrypted files, binaries, unknown file types) and
-any text an allowlist pattern covers. A match is reported by file and line with the matched text redacted.
+output), the comments of shell, YAML, TOML and other `#`-comment files, and the comments and prose fields of
+Renovate config (the text Renovate publishes in PRs and commits). Load-bearing identifiers are left alone: code
+outside comments and strings (so file paths, config keys and `uses:` refs in YAML and shell), every other Renovate
+field (package names, `matchStrings`, `extends`, datasources, registry URLs), files that are not prose (LICENSE,
+lockfiles, SOPS-encrypted files, binaries, unknown file types) and any text an allowlist pattern covers. A match is
+reported by file and line with the matched text redacted.
 """
 
+import bisect
 import io
 import re
 import tokenize
@@ -24,12 +27,14 @@ PYTHON = {".py", ".pyi"}
 HASH_COMMENTS = {".sh", ".bash", ".zsh", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".conf", ".alloy", ".tmpl"}
 HASH_COMMENT_NAMES = {"Dockerfile", "Containerfile", "Makefile", ".gitignore", ".dockerignore", ".gitattributes"}
 EXEMPT_NAMES = re.compile(
-    r"(LICEN[CS]E|COPYING|NOTICE)(\..*)?|.*\.lock|.*-lock\.(json|ya?ml)|go\.sum|"
-    r"renovate\.json5?|\.renovaterc(\.json5?)?|.*\.sops\..*|\.sops\.env",
+    r"(LICEN[CS]E|COPYING|NOTICE)(\..*)?|.*\.lock|.*-lock\.(json|ya?ml)|go\.sum|.*\.sops\..*|\.sops\.env",
     re.IGNORECASE,
 )
-# Renovate presets: renovate/<preset>.json.
-EXEMPT_DIRS = {"renovate"}
+# Renovate config, wherever Renovate looks for it (.github/ and .gitlab/ included), and presets renovate/<preset>.json.
+RENOVATE_NAMES = re.compile(r"renovate\.json5?|\.renovaterc(\.json5?)?")
+RENOVATE_DIRS = {"renovate"}
+# Renovate fields whose strings it publishes as prose; every other field is load-bearing.
+RENOVATE_PROSE = re.compile(r"description|prBodyTemplate|prTitle|groupName|prHeader|prFooter|commitMessage.*|.*Notes")
 # A `uses:` ref is load-bearing wherever it is written, a Markdown example included.
 DEFAULT_ALLOW = (r"uses:\s*\S+",)
 HASH_COMMENT_RE = re.compile(r"(?:^|\s)#+(.*)")
@@ -46,8 +51,12 @@ class Match:
 def kind(path: str, first_line: str) -> str | None:
     """How to read a file's prose: "markdown", "python", "hash", or None when the file holds none."""
     p = PurePosixPath(path)
-    if EXEMPT_NAMES.fullmatch(p.name) or (len(p.parts) > 1 and p.parts[-2] in EXEMPT_DIRS and p.suffix == ".json"):
+    if EXEMPT_NAMES.fullmatch(p.name):
         return None
+    if RENOVATE_NAMES.fullmatch(p.name) or (
+        len(p.parts) > 1 and p.parts[-2] in RENOVATE_DIRS and p.suffix in {".json", ".json5"}
+    ):
+        return "renovate"
     if p.suffix.lower() in MARKDOWN:
         return "markdown"
     if p.suffix in PYTHON:
@@ -84,6 +93,60 @@ def python_prose(text: str) -> Iterator[tuple[int, str]]:
         yield from list(enumerate(text.splitlines(), 1))[reached - 1 :]
 
 
+# JSON5 tokens, which cover JSON: comments, strings in either quote, punctuation, and bare words (unquoted keys,
+# numbers, true/false/null).
+JSON5_TOKEN = re.compile(
+    r"""(?P<space>\s+)|(?P<comment>//[^\n]*|/\*.*?\*/)|(?P<string>"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')"""
+    r"""|(?P<punct>[{}\[\]:,])|(?P<bare>[^\s{}\[\]:,"'/]+)""",
+    re.DOTALL,
+)
+JSON5_ESCAPE = re.compile(r"\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|(\r\n|.))", re.DOTALL)
+JSON5_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", "0": "\0", "\n": "", "\r\n": ""}
+
+
+def json5_string(token: str) -> str:
+    def unescape(m: re.Match) -> str:
+        if m[1] or m[2]:
+            return chr(int(m[1] or m[2], 16))
+        return JSON5_ESCAPES.get(m[3], m[3])
+
+    return JSON5_ESCAPE.sub(unescape, token[1:-1])
+
+
+def renovate_prose(text: str) -> Iterator[tuple[int, str]]:
+    """Comments, and the strings of prose fields (RENOVATE_PROSE) at any depth, packageRules included, each at the
+    line its string starts on. A string belongs to the field that holds it, or the array that holds it. Read as
+    JSON5, which covers JSON; from where the text stops being JSON5, every line is prose."""
+    starts = [0] + [m.end() for m in re.finditer(r"\n", text)]
+    # One entry per open object [its current key, expecting a key next] or array [the key that holds it, None].
+    stack: list[list] = []
+    pos = 0
+    while pos < len(text):
+        token = JSON5_TOKEN.match(text, pos)
+        line = bisect.bisect_right(starts, pos)
+        if not token:
+            yield from list(enumerate(text.splitlines(), 1))[line - 1 :]
+            return
+        pos, value = token.end(), token[0]
+        if token["comment"]:
+            for offset, part in enumerate(value.splitlines()):
+                yield line + offset, part.lstrip("/*").rstrip("*/")
+        elif value in ("{", "["):
+            stack.append([stack[-1][0] if stack and value == "[" else None, True if value == "{" else None])
+        elif value in ("}", "]"):
+            if stack:
+                stack.pop()
+        elif value == ",":
+            if stack and stack[-1][1] is not None:
+                stack[-1][1] = True
+        elif token["string"] or token["bare"]:
+            word = json5_string(value) if token["string"] else value
+            if stack and stack[-1][1]:
+                stack[-1][0], stack[-1][1] = word, False
+            elif token["string"] and stack and stack[-1][0] and RENOVATE_PROSE.fullmatch(stack[-1][0]):
+                yield line, " ".join(word.splitlines())
+
+
 def prose(path: str, text: str) -> Iterator[tuple[int, str]]:
     """(line number, prose on that line) for every line of `text` that holds prose."""
     match kind(path, text.partition("\n")[0]):
@@ -93,6 +156,8 @@ def prose(path: str, text: str) -> Iterator[tuple[int, str]]:
             yield from python_prose(text)
         case "hash":
             yield from hash_comments(text)
+        case "renovate":
+            yield from renovate_prose(text)
 
 
 def compile_patterns(text: str) -> list[re.Pattern]:

@@ -24,6 +24,15 @@ FILES = {
     "LICENSE": f"Copyright {NAME}\n",
     "uv.lock": f'source = "{NAME}"\n',
     "renovate.json": f'{{"extends": ["github>{NAME}/presets"]}}\n',
+    "renovate/preset.json": f"""{{
+  "packageRules": [
+    {{
+      "matchPackageNames": ["{NAME}/app"],
+      "prBodyNotes": ["Ping {NAME} after merging"]
+    }}
+  ]
+}}
+""",
     "notes.json": f'{{"by": "{NAME}"}}\n',
     "docs/use.md": "```yaml\nuses: quuxwell/ci/.github/workflows/x.yaml@abc\n```\n",
 }
@@ -42,10 +51,12 @@ def test_reports_prose_by_file_and_line_with_the_match_redacted(validate, privat
     out = capsys.readouterr().out
     assert NAME not in out
     assert "WARN: privacy: denylisted text at README.md:3: Written by [redacted] for the team." in out
+    assert "WARN: privacy: denylisted text at renovate/preset.json:5: Ping [redacted] after merging" in out
     locations = [line.split(" at ", 1)[1].split(": ", 1)[0] for line in out.splitlines() if " at " in line]
     assert locations == [
         ".github/workflows/ci.yaml:1",
         "README.md:3",
+        "renovate/preset.json:5",
         "tools/hook:2",
         "tools/run.py:1",
         "tools/run.py:3",
@@ -55,13 +66,64 @@ def test_reports_prose_by_file_and_line_with_the_match_redacted(validate, privat
 
 
 def test_load_bearing_identifiers_and_files_are_exempt(validate, private, monkeypatch, capsys):
-    """Code (identifiers, YAML values, commands), uses: refs, LICENSE, lockfiles, Renovate config and file types
-    that hold no prose are never scanned."""
+    """Code (identifiers, YAML values, commands), uses: refs, LICENSE, lockfiles, Renovate's load-bearing fields
+    and file types that hold no prose are never scanned."""
     monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", DENY)
     validate.check_privacy()
     out = capsys.readouterr().out
-    for exempt in ("LICENSE", "uv.lock", "renovate.json", "notes.json", "docs/use.md", "ci.yaml:4", "hook:3"):
+    for exempt in (
+        "LICENSE",
+        "uv.lock",
+        "renovate.json",
+        "notes.json",
+        "docs/use.md",
+        "ci.yaml:4",
+        "hook:3",
+        "preset.json:4",
+    ):
         assert f" {exempt}" not in out and f"/{exempt}" not in out
+
+
+def test_renovate_prose_fields_are_scanned_at_any_depth_and_load_bearing_ones_are_not(
+    validate, repo, monkeypatch, capsys
+):
+    """JSON5 too: comments, unquoted keys, single quotes, escapes and trailing commas."""
+    write(
+        repo,
+        {
+            ".github/renovate.json5": f"""{{
+  // kept by {NAME}
+  extends: ['github>{NAME}/presets'],
+  packageRules: [{{
+    description: 'For \\'{NAME}\\'',
+    matchDepNames: ['{NAME}'],
+    commitMessageTopic: "{NAME}\\u0027s app",
+    customManagers: [{{matchStrings: ['{NAME}'], depNameTemplate: '{NAME}', registryUrls: ['https://{NAME}.example.com']}}],
+  }},],
+  groupName: 'fine',
+}}
+""",
+        },
+    )
+    commit(repo)
+    monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", DENY)
+    validate.check_privacy()
+    out = capsys.readouterr().out
+    assert NAME not in out
+    assert [line.split(" at ", 1)[1] for line in out.splitlines() if " at " in line] == [
+        ".github/renovate.json5:2: kept by [redacted]",
+        ".github/renovate.json5:5: For '[redacted]'",
+        ".github/renovate.json5:7: [redacted]'s app",
+    ]
+
+
+def test_renovate_config_scans_every_line_from_where_it_stops_parsing(validate, repo, monkeypatch, capsys):
+    write(repo, {"renovate.json": f'{{"extends": ["{NAME}"],\n"description": "unterminated\n"{NAME}"}}\n'})
+    commit(repo)
+    monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", DENY)
+    monkeypatch.setattr(validate, "PRIVACY_MODE", "fail")
+    validate.check_privacy()
+    assert [f.split(" at ")[1] for f in validate.failures] == ['renovate.json:3: "[redacted]"}']
 
 
 def test_an_allowlist_pattern_exempts_the_text_it_covers(validate, repo, monkeypatch, capsys):
@@ -80,7 +142,7 @@ def test_fail_mode_fails_with_a_line_annotation(validate, private, monkeypatch, 
     monkeypatch.setattr(validate, "PRIVACY_MODE", "fail")
     validate.check_privacy()
     out = capsys.readouterr().out
-    assert len(validate.failures) == 6
+    assert len(validate.failures) == 7
     assert "::error file=README.md,line=3::privacy: denylisted text at README.md:3: " in out
 
 
