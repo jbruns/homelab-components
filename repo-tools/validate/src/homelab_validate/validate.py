@@ -26,8 +26,9 @@ Checks:
   monitoring  full config checks and behavioral rule tests with the images the Stacks deploy;
               Grafana provisioning boots, dashboard generator parity and PromQL/LogQL checks
   cloudflare  the Cloudflare ranges Traefik trusts are valid and identical everywhere they appear
-  privacy     no prose (Markdown, comments, docstrings, help and output strings) matches a pattern of
-              HOMELAB_PRIVACY_DENYLIST; warn-only unless --privacy-mode fail, skipped when it is unset
+  privacy     no prose (Markdown, comments, docstrings, help and output strings, Renovate's
+              description, PR and commit text fields) matches a pattern of HOMELAB_PRIVACY_DENYLIST;
+              warn-only unless --privacy-mode fail, skipped when it is unset
 
 A --legacy-stack is not a Stack: env, compose and monitoring leave it alone until its cutover.
 """
