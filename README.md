@@ -63,14 +63,16 @@ Contract Test against a real `traefik/whoami`, image build reaching healthy), an
 
 The required status check is `ci`.
 
-A gitleaks pre-commit hook (`.pre-commit-config.yaml`) catches secrets before they reach a commit. Install it
-once per clone:
+A gitleaks pre-commit hook (`.pre-commit-config.yaml`) scans each commit's staged changes and stops a secret
+before it is committed. Install it once per clone:
 
 ```sh
 pip install pre-commit && pre-commit install
+pre-commit run gitleaks --all-files   # scans staged changes only, not the whole tree
 ```
 
-`pre-commit run gitleaks --all-files` scans the whole tree.
+For a whole-tree scan, install the gitleaks binary and run `gitleaks dir --redact .`. CI's `repo-gitleaks` job
+scans the PR's commits.
 
 ### Contract Tests
 
