@@ -63,6 +63,15 @@ Contract Test against a real `traefik/whoami`, image build reaching healthy), an
 
 The required status check is `ci`.
 
+A gitleaks pre-commit hook (`.pre-commit-config.yaml`) catches secrets before they reach a commit. Install it
+once per clone:
+
+```sh
+pip install pre-commit && pre-commit install
+```
+
+`pre-commit run gitleaks --all-files` scans the whole tree.
+
 ### Contract Tests
 
 A Contract Test runs the Component against each upstream at the version this repo pins in its
@@ -191,7 +200,8 @@ major ones against their release notes.
 
 `renovate.json` pins and updates base image digests in each `Dockerfile`, action digests in workflows, the
 upstream pins in every `upstreams.yaml` (custom regex manager), the Python dev tools in `requirements-dev.txt`,
-and tool versions annotated `# renovate:` in workflows.
+the pre-commit hook revisions in `.pre-commit-config.yaml`, and tool versions annotated `# renovate:` in
+workflows.
 
 ## License
 
