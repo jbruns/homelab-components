@@ -21,7 +21,7 @@ ALERTS = [
 SILENCES = [
     {
         "id": "s1",
-        "createdBy": "jbruns",
+        "createdBy": "operator",
         "comment": "#543 window",
         "startsAt": "2026-10-21T20:00:00Z",
         "endsAt": "2026-10-22T02:00:00Z",
@@ -87,7 +87,7 @@ def test_alerts_json_lists_alerts_and_silences(hops, fake_host):
                 "matchers": ['stack=~"plex|emby"', 'alertname!="Watchdog"'],
                 "starts_at": "2026-10-21T20:00:00Z",
                 "ends_at": "2026-10-22T02:00:00Z",
-                "created_by": "jbruns",
+                "created_by": "operator",
                 "comment": "#543 window",
             }
         ],

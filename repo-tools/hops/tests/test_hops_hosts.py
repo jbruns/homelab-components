@@ -45,13 +45,13 @@ def test_the_host_whose_stack_root_holds_the_working_directory_is_picked(run, tw
 def test_with_several_hosts_and_none_picked_it_lists_them(run, fake_host):
     code, _, err, _ = run("restart", "web")
     assert code == 2
-    assert "pick one of: truenas, nas-2 (e.g. --host)" in err
+    assert "pick one of: host-a, nas-2 (e.g. --host)" in err
     assert fake_host.calls == []
 
 
 def test_an_unknown_host_is_refused(run, fake_host):
     code, _, err, _ = run("--host", "nas-3", "restart", "web")
-    assert code == 2 and "no Host 'nas-3' in hosts.yaml; Hosts: truenas, nas-2" in err
+    assert code == 2 and "no Host 'nas-3' in hosts.yaml; Hosts: host-a, nas-2" in err
     assert fake_host.calls == []
 
 

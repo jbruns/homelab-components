@@ -191,8 +191,8 @@ backup_coverage_snapshot_timestamp{{{PG}}} 0
 LAST_SUCCESS = re.compile(r"backup_coverage_last_success_timestamp \d+\.\d+\n\Z")
 
 
-# home-ops runs stack-back with these two on; the characterized script assumed both.
-HOME_OPS = Settings.from_env({"EXCLUDE_BIND_MOUNTS": "true", "INCLUDE_ALL_COMPOSE_PROJECTS": "true"})
+# A consumer repo runs stack-back with these two on; the characterized script assumed both.
+CONSUMER = Settings.from_env({"EXCLUDE_BIND_MOUNTS": "true", "INCLUDE_ALL_COMPOSE_PROJECTS": "true"})
 
 
 class FakeDocker:
@@ -265,7 +265,7 @@ def restic(tmp_path):
 
 
 def config(docker, restic, **overrides):
-    values = {"restic_repository": "/backups", "docker_host": docker.host, "stack_back": HOME_OPS, **overrides}
+    values = {"restic_repository": "/backups", "docker_host": docker.host, "stack_back": CONSUMER, **overrides}
     return Config(**values, restic_command=restic.command)
 
 

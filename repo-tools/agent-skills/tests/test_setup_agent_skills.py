@@ -1,4 +1,4 @@
-"""Ported from jbruns/home-ops tools/agent-skills/test-setup-agent-skills: one test per scenario."""
+"""Ported from a consumer repo's tools/agent-skills/test-setup-agent-skills: one test per scenario."""
 
 import os
 

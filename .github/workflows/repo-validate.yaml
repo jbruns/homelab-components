@@ -24,7 +24,7 @@ on:
         type: string
         default: .
       tool-ref:
-        description: homelab-components ref (tag or commit) to install the tools from; empty means this workflow's commit
+        description: Repo Tooling repo ref (tag or commit) to install the tools from; empty means this workflow's commit
         type: string
         default: ""
       privacy-mode:
@@ -77,7 +77,7 @@ jobs:
           repo=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
           ref=${TOOL_REF:-$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")}
           if [ -z "$repo" ] || [ -z "$ref" ]; then
-            echo "::error::cannot tell which homelab-components commit to install the tools from; set tool-ref"; exit 1
+            echo "::error::cannot tell which Repo Tooling repo commit to install the tools from; set tool-ref"; exit 1
           fi
           for tool in validate declared-containers; do
             uv tool install "git+$GITHUB_SERVER_URL/$repo@$ref#subdirectory=repo-tools/$tool"

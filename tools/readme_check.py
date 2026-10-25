@@ -1,4 +1,4 @@
-"""The README rule every Component must meet (ADR 0008).
+"""The README rule every Component must meet.
 
 A Component README needs a non-empty `## Why` (the gap no upstream or community option covers), a non-empty
 `## Retire when` (its Retirement Condition), and a `## Configuration` table listing exactly the environment

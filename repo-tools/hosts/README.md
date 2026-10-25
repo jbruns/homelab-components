@@ -2,7 +2,7 @@
 
 Shared Repo Tooling: the `homelab_hosts` package is the one loader and validator for a consuming repo's
 `hosts.yaml`. Every tool that needs to know a repo's Hosts depends on it. Never parse `hosts.yaml` anywhere
-else. Background: [ADR 0012 in jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shared-repo-tooling.md).
+else.
 
 Python 3.11 or newer. Its only dependency is PyYAML.
 
@@ -35,8 +35,8 @@ default_branch: main            # optional, default main
 validate: [python3, tools/validate/validate.py]   # optional: the repo's check, run from the repo root before
                                 # a tool (e.g. hops bump) commits a change
 hosts:                          # required; at least one Host
-  nc8kg1101:                    # Host name: [a-z0-9][a-z0-9-]*; used for --host and .env keys
-    stack_root: nc8kg1101       # required; dir relative to repo root holding <stack>/compose.yaml
+  host-a:                       # Host name: [a-z0-9][a-z0-9-]*; used for --host and .env keys
+    stack_root: host-a          # required; dir relative to repo root holding <stack>/compose.yaml
     deployer: doco-cd           # required; only doco-cd is supported
     capabilities: []            # required; a subset of [truenas, zfs], possibly empty
     doco_cd:                    # optional overrides; defaults shown
@@ -80,7 +80,7 @@ Tools gate Host-specific features on these, never assume them.
 ## .env keys
 
 Connection details stay in the consuming repo's gitignored `.env`, keyed by Host. `NAME` is the Host name
-uppercased with `-` turned into `_` (`nc8kg1101` → `NC8KG1101`, `my-nas` → `MY_NAS`).
+uppercased with `-` turned into `_` (`host-a` → `HOST_A`, `my-nas` → `MY_NAS`).
 
 | Key | Required | Meaning |
 |---|---|---|

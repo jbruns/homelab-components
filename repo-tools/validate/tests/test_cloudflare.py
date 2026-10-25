@@ -1,4 +1,4 @@
-"""Tests for the Cloudflare range checker (ported from home-ops tools/cloudflare-ips)."""
+"""Tests for the Cloudflare range checker (ported from a consumer repo's tools/cloudflare-ips)."""
 
 import pytest
 

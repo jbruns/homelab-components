@@ -20,7 +20,7 @@ hops --help
 
 Python 3.11 or later. It brings PyYAML, websocket-client (for TrueNAS) and `homelab-hosts` from the same ref
 (`[tool.uv.sources]` points at `../hosts`), so install it with uv, not pip. To work on hops itself:
-`uv tool install -e repo-tools/hops` from a homelab-components checkout.
+`uv tool install -e repo-tools/hops` from a checkout of this repo.
 
 ## Configuration
 
@@ -782,7 +782,7 @@ several Services, `container` is the `container_name` (else `null`), and all thr
   "runs": [
     {
       "job_id": "01a160a4-3901-7c7d-b694-0570e23af5f6", "trigger": "poll", "status": "failed",
-      "repository": "github.com/jbruns/home-ops", "revision": "main",
+      "repository": "github.com/example/consumer", "revision": "main",
       "stacks": ["navidrome", "ownfoil"],
       "message": "deployment failed: failed to deploy stack ownfoil: …",
       "created_at": "2026-10-21T15:45:37.666093522-07:00",
@@ -980,7 +980,7 @@ merges.
 
 - **Tag:** `<tag>` as given, or the newest tag shaped like the current one: same `v` prefix,
   number of version parts and variant suffix (`-alpine`). Pre-releases (`-rc.1`) never qualify.
-  This is the rule homelab-components' Canary uses. A tag that is not a version (`latest`,
+  This is the rule this repo's Canary uses. A tag that is not a version (`latest`,
   `supervised-1.4.27`) has no candidates; name the tag. A candidate more than one major version
   ahead of the pin is refused before anything is created: registries carry stray tags (one image
   has a 2021 `20.04.1` beside `5.2.4`). `bump` names the rejected tag and the newest acceptable
@@ -1057,7 +1057,7 @@ answers with canned `docker` output. The `hops` fixture runs the CLI against a f
 `truenas.Client(..., connect=)` and its `methods` answer each JSON-RPC call.
 `hops_fakes.FakeSnapshots` builds on it with an in-memory set of snapshots; pass its `client` as
 `hops(..., truenas=)`. Tests fix today's date by patching `hops.snapshots.now`. The fixture repo declares
-one Host, `truenas` (stack root `tn`, capabilities `truenas` and `zfs`); `hops_fakes.hosts_yaml()` and the
+one Host, `host-a` (stack root `tn`, capabilities `truenas` and `zfs`); `hops_fakes.hosts_yaml()` and the
 `plain_host` fixture give other `hosts.yaml`s, e.g. a Host with no capabilities or two Hosts. `test_hops_consumer_silences.py` derives `stop`'s silences from a
 consuming repo's monitoring config: `tests/fixtures/consumer` by default, or `HOPS_CONSUMER_REPO`. The `live`
 suite is skipped unless selected with `-m live`; it reaches the Host of `HOPS_CONSUMER_REPO` (Host

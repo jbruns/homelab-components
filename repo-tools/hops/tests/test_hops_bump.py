@@ -19,7 +19,7 @@ TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 RENOVATE_PR = {
     "number": 42,
     "title": "chore(deps): update ghcr.io/home-operations/sonarr docker tag to v5.0.0.2742",
-    "url": "https://github.com/jbruns/home-ops/pull/42",
+    "url": "https://github.com/example/consumer/pull/42",
     "body": "| Package | Update | Change |\n|---|---|---|\n"
     "| [ghcr.io/home-operations/sonarr](https://redirect.github.com/Sonarr/Sonarr) | major |"
     " `4.0.20.3012` → `5.0.0.2742` |\n",
@@ -46,7 +46,7 @@ with open(os.environ["FAKE_LOG"], "a") as f:
 if sys.argv[1:3] == ["pr", "list"]:
     print(os.environ.get("FAKE_GH_PRS", "[]"))
 elif sys.argv[1:3] == ["pr", "create"]:
-    print("https://github.com/jbruns/home-ops/pull/999")
+    print("https://github.com/example/consumer/pull/999")
 """
 
 
@@ -274,7 +274,7 @@ def test_pr_pushes_the_branch_and_opens_a_pr_that_supersedes_renovates(hops, che
     assert argv[argv.index("--title") + 1] == "chore(deps): bump ghcr.io/home-operations/sonarr to 5.0.0.2742"
     assert "Supersedes #42" in create["stdin"]
     assert f"ghcr.io/home-operations/sonarr:5.0.0.2742@{DIGEST_5}" in create["stdin"]
-    assert "https://github.com/jbruns/home-ops/pull/999" in outcome.out
+    assert "https://github.com/example/consumer/pull/999" in outcome.out
 
 
 def test_a_stray_tag_more_than_one_major_ahead_is_refused_before_any_worktree(hops, checkout, registry):

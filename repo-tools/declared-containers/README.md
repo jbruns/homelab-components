@@ -2,8 +2,7 @@
 
 Shared Repo Tooling: generates, for **each Host** a consuming repo's `hosts.yaml` declares, the desired state its
 ContainerDown alert compares with cAdvisor. It reads the Hosts and their stack roots through
-[`homelab_hosts`](../hosts/README.md) and never runs on a Host. Background: [ADR 0012 in
-jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shared-repo-tooling.md).
+[`homelab_hosts`](../hosts/README.md) and never runs on a Host.
 
 Each Host gets its own file, `<stack root>/monitoring/node-exporter/declared_containers.prom`, which node-exporter
 serves through its textfile collector. Every Service in `<stack root>/<stack>/compose.yaml` and its `include:`

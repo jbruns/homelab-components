@@ -10,7 +10,7 @@ from hops.errors import ConfigError
 
 
 def truenas_host(root: Path):
-    return config.load_hosts(root).hosts["truenas"]
+    return config.load_hosts(root).hosts["host-a"]
 
 
 def test_host_config_reads_the_hosts_keys_from_dotenv(repo):
@@ -19,11 +19,11 @@ def test_host_config_reads_the_hosts_keys_from_dotenv(repo):
         {
             ".env": """
         # Host access
-        HOPS_TRUENAS_TRUENAS_URL=https://tn.example
-        HOPS_TRUENAS_TRUENAS_API_KEY=fake-key
-        export HOPS_TRUENAS_SSH_HOST="tn.example"
-        HOPS_TRUENAS_SSH_USER=agent
-        HOPS_TRUENAS_SSH_KEY=~/.ssh/agent_ed25519
+        HOPS_HOST_A_TRUENAS_URL=https://tn.example
+        HOPS_HOST_A_TRUENAS_API_KEY=fake-key
+        export HOPS_HOST_A_SSH_HOST="tn.example"
+        HOPS_HOST_A_SSH_USER=agent
+        HOPS_HOST_A_SSH_KEY=~/.ssh/agent_ed25519
     """
         },
     )
@@ -32,36 +32,36 @@ def test_host_config_reads_the_hosts_keys_from_dotenv(repo):
 
 
 def test_environment_overrides_dotenv(plain_host):
-    write(plain_host, {".env": "HOPS_TRUENAS_SSH_HOST=tn.example\nHOPS_TRUENAS_SSH_USER=someone\n"})
+    write(plain_host, {".env": "HOPS_HOST_A_SSH_HOST=tn.example\nHOPS_HOST_A_SSH_USER=someone\n"})
     host = config.load_host(
         plain_host,
         truenas_host(plain_host),
         env={
             "HOME": "/home/me",
-            "HOPS_TRUENAS_SSH_HOST": "other.example",
-            "HOPS_TRUENAS_SSH_KEY": "~/.ssh/k",
+            "HOPS_HOST_A_SSH_HOST": "other.example",
+            "HOPS_HOST_A_SSH_KEY": "~/.ssh/k",
         },
     )
     assert (host.host, host.user, host.key) == ("other.example", "someone", Path("/home/me/.ssh/k"))
 
 
 def test_without_a_key_ssh_picks_one(plain_host):
-    env = {"HOME": "/h", "HOPS_TRUENAS_SSH_HOST": "h", "HOPS_TRUENAS_SSH_USER": "u"}
+    env = {"HOME": "/h", "HOPS_HOST_A_SSH_HOST": "h", "HOPS_HOST_A_SSH_USER": "u"}
     assert config.load_host(plain_host, truenas_host(plain_host), env=env).key is None
 
 
 def test_missing_host_names_the_key_and_where_it_looked(plain_host):
-    with pytest.raises(ConfigError, match=r"HOPS_TRUENAS_SSH_HOST is not set \(needed for Host 'truenas'\).*\.env"):
+    with pytest.raises(ConfigError, match=r"HOPS_HOST_A_SSH_HOST is not set \(needed for Host 'host-a'\).*\.env"):
         config.load_host(plain_host, truenas_host(plain_host), env={"HOME": "/home/me"})
 
 
 def test_the_ssh_user_is_required(plain_host):
-    with pytest.raises(ConfigError, match=r"HOPS_TRUENAS_SSH_USER is not set \(needed for Host 'truenas'\).*\.env"):
-        config.load_host(plain_host, truenas_host(plain_host), env={"HOME": "/h", "HOPS_TRUENAS_SSH_HOST": "h"})
+    with pytest.raises(ConfigError, match=r"HOPS_HOST_A_SSH_USER is not set \(needed for Host 'host-a'\).*\.env"):
+        config.load_host(plain_host, truenas_host(plain_host), env={"HOME": "/h", "HOPS_HOST_A_SSH_HOST": "h"})
 
 
 def test_control_socket_lives_in_the_user_cache_dir(plain_host):
-    env = {"HOME": "/home/me", "HOPS_TRUENAS_SSH_HOST": "h", "HOPS_TRUENAS_SSH_USER": "u"}
+    env = {"HOME": "/home/me", "HOPS_HOST_A_SSH_HOST": "h", "HOPS_HOST_A_SSH_USER": "u"}
     host = truenas_host(plain_host)
     assert config.load_host(plain_host, host, env={**env, "XDG_CACHE_HOME": "/c"}).control_dir == Path("/c/hops")
     assert config.load_host(plain_host, host, env=env).control_dir == Path("/home/me/.cache/hops")
@@ -76,7 +76,7 @@ def test_dotenv_falls_back_to_the_main_worktree(tmp_path):
         {
             "hosts.yaml": hosts_yaml(capabilities="[]"),
             "tn/edge/compose.yaml": "services: {}\n",
-            ".env": "HOPS_TRUENAS_SSH_HOST=tn.example\nHOPS_TRUENAS_SSH_USER=u\n",
+            ".env": "HOPS_HOST_A_SSH_HOST=tn.example\nHOPS_HOST_A_SSH_USER=u\n",
         },
     )
     git(main, "add", "hosts.yaml", "tn")
@@ -102,15 +102,15 @@ def test_host_is_the_named_one_else_the_one_holding_cwd_else_the_only_one(repo):
     hosts = config.load_hosts(repo)
     assert config.pick_host(hosts, "nas-2", repo / "tn").name == "nas-2"
     assert config.pick_host(hosts, None, repo / "hosts" / "nas-2" / "web").name == "nas-2"
-    assert config.pick_host(hosts, None, repo / "tn" / "edge").name == "truenas"
-    with pytest.raises(ConfigError, match="pick one of: truenas, nas-2 \\(e.g. --host\\)"):
+    assert config.pick_host(hosts, None, repo / "tn" / "edge").name == "host-a"
+    with pytest.raises(ConfigError, match="pick one of: host-a, nas-2 \\(e.g. --host\\)"):
         config.pick_host(hosts, None, repo)
-    with pytest.raises(ConfigError, match="no Host 'nas-3' in hosts.yaml; Hosts: truenas, nas-2"):
+    with pytest.raises(ConfigError, match="no Host 'nas-3' in hosts.yaml; Hosts: host-a, nas-2"):
         config.pick_host(hosts, "nas-3", repo)
 
 
 # SSH-only commands must not need a truenas Host's TrueNAS keys: the Context builds the real Runner from .env.
-SSH_ONLY = {"HOPS_TRUENAS_SSH_HOST": "tn.example", "HOPS_TRUENAS_SSH_USER": "agent"}
+SSH_ONLY = {"HOPS_HOST_A_SSH_HOST": "tn.example", "HOPS_HOST_A_SSH_USER": "agent"}
 
 
 @pytest.fixture
@@ -159,17 +159,17 @@ def test_host_without_truenas_keys_shows_docker_and_names_the_missing_keys(real_
     assert (code, err) == (0, "")
     report = json.loads(out)
     assert report["docker"] == [] and report["pools"] is None
-    assert any("HOPS_TRUENAS_TRUENAS_URL is not set" in n for n in report["notes"])
+    assert any("HOPS_HOST_A_TRUENAS_URL is not set" in n for n in report["notes"])
 
 
 def test_truenas_call_still_requires_the_truenas_keys(real_cli, fake_host):
     code, _, err = real_cli("truenas", "call", "system.info")
     assert code == 2
-    assert "HOPS_TRUENAS_TRUENAS_URL is not set" in err and "HOPS_TRUENAS_TRUENAS_API_KEY is not set" in err
+    assert "HOPS_HOST_A_TRUENAS_URL is not set" in err and "HOPS_HOST_A_TRUENAS_API_KEY is not set" in err
     assert fake_host.calls == []
 
 
 def test_ssh_still_requires_the_ssh_keys_on_a_truenas_host(real_cli):
-    env = {"HOPS_TRUENAS_TRUENAS_URL": "https://tn.example", "HOPS_TRUENAS_TRUENAS_API_KEY": "fake"}
+    env = {"HOPS_HOST_A_TRUENAS_URL": "https://tn.example", "HOPS_HOST_A_TRUENAS_API_KEY": "fake"}
     code, _, err = real_cli("status", env=env)
-    assert code == 2 and "HOPS_TRUENAS_SSH_HOST is not set" in err
+    assert code == 2 and "HOPS_HOST_A_SSH_HOST is not set" in err

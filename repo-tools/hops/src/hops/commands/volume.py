@@ -1,9 +1,9 @@
-"""hops volume move <old> <new> --issue <n>: the runtime half of a volume rename (ADR 0010).
+"""hops volume move <old> <new> --issue <n>: the runtime half of a volume rename.
 
 The declared half is the PR changing the volume's `name:`. This creates <new>, renames every entry of
 <old>/_data into it from one container that mounts Docker's volumes directory once, removes the
 stopped containers that still reference <old> (the Deploy after merge recreates them under the new
-name), and removes <old>. On a Host with the truenas and zfs capabilities a Rollback Snapshot (ADR 0011)
+name), and removes <old>. On a Host with the truenas and zfs capabilities a Rollback Snapshot
 of the dataset holding the volumes is required; on any other Host the move first copies <old> into a
 Rollback Volume (hops/rollback_volumes.py). doco-cd must be stopped: on each poll it Deploys every
 Stack that differs from declared state, a Stack stopped for the move included. If anything fails

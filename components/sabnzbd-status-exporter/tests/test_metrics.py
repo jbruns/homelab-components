@@ -1,7 +1,7 @@
 """The /metrics a running exporter serves for what SABnzbd's status API returns.
 
-These pin the behaviour of the exporter as it ran in jbruns/home-ops (metric names, labels, values, errors), so
-home-ops alerts and dashboards keep working. They drive the real process over HTTP against a stand-in SABnzbd.
+These pin the behaviour of the exporter as it ran in a consumer repo (metric names, labels, values, errors), so
+that repo's alerts and dashboards keep working. They drive the real process over HTTP against a stand-in SABnzbd.
 """
 
 import re

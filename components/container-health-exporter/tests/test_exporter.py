@@ -219,7 +219,7 @@ def test_escapes_label_values(docker, start_exporter):
     assert healthy_lines(metrics) == ['container_healthy{container="web",stack="a\\"b\\\\c d"} 1']
 
 
-def test_keeps_the_home_ops_exposition_when_configured_like_home_ops(docker, start_exporter):
+def test_keeps_the_legacy_exposition_when_configured_like_its_consumer(docker, start_exporter):
     labels = {"com.docker.compose.project": "media", "com.docker.compose.service": "sonarr", "tier": "info"}
     docker.containers = [container("a", "0123456789ab_sonarr", "Up 1 minute (healthy)", **labels)]
     env = {"DOCKER_HOST": docker.address, "CONTAINER_LABELS": "tier", "IGNORE_LABEL": "startup-order=skip"}

@@ -23,7 +23,7 @@ def test_a_missing_monitoring_service_is_named_before_the_host_is_touched(hops, 
     write(repo, {"tn/monitoring/compose.yaml": PROMETHEUS_ONLY})
     outcome = hops(*argv)
     assert outcome.code == 2
-    assert f"Host 'truenas' declares no {service} in its monitoring Stack" in outcome.err
+    assert f"Host 'host-a' declares no {service} in its monitoring Stack" in outcome.err
     assert "Traceback" not in outcome.err
     assert fake_host.calls == []
 
@@ -32,7 +32,7 @@ def test_a_host_without_a_monitoring_stack_names_the_service(hops, repo, fake_ho
     (repo / "tn" / "monitoring" / "compose.yaml").unlink()
     outcome = hops("alerts")
     assert outcome.code == 2
-    assert "Host 'truenas' declares no prometheus in its monitoring Stack" in outcome.err
+    assert "Host 'host-a' declares no prometheus in its monitoring Stack" in outcome.err
     assert fake_host.calls == []
 
 
@@ -40,5 +40,5 @@ def test_dependencies_render_without_a_pinned_image_is_named(hops, repo, fake_ho
     write(repo, {"tn/monitoring/compose.yaml": PROMETHEUS_ONLY + "  dependencies-render:\n    build: .\n"})
     outcome = hops("logs", "traefik", "--loki")
     assert outcome.code == 2
-    assert "Host 'truenas' declares dependencies-render in its monitoring Stack without a pinned image" in outcome.err
+    assert "Host 'host-a' declares dependencies-render in its monitoring Stack without a pinned image" in outcome.err
     assert fake_host.calls == []

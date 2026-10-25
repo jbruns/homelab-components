@@ -23,12 +23,12 @@ def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
 
 
-# hosts.yaml as home-ops declares it: one Host, `truenas`, whose stack root is tn/.
+# hosts.yaml as a consumer repo declares it: one Host, `host-a`, whose stack root is tn/.
 HOSTS_YAML = """
     version: 1
     validate: [python3, tools/validate/validate.py, secrets, env, compose]
     hosts:
-      truenas:
+      host-a:
         stack_root: tn
         deployer: doco-cd
         capabilities: [truenas, zfs]
@@ -42,7 +42,7 @@ def undeclare_monitoring(repo: Path) -> None:
 
 
 def hosts_yaml(*, capabilities="[truenas, zfs]", extra="") -> str:
-    """HOSTS_YAML with Host truenas's capabilities replaced and `extra` (indented YAML) appended."""
+    """HOSTS_YAML with Host host-a's capabilities replaced and `extra` (indented YAML) appended."""
     return HOSTS_YAML.replace("[truenas, zfs]", capabilities) + extra
 
 

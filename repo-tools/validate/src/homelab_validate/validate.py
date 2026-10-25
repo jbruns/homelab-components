@@ -15,12 +15,13 @@ Checks:
               no env_file sets format (doco-cd supports only the default),
               and every Exposed Service (https router) a probe.url. A Service that extends its Host's
               <stack root>/_baseline.yaml meets the Baseline or carries a baseline.exempt.<item> reason, and
-              its routers follow ADR 0006 (names, health and Client Paths, Protected Probes). Every image
+              its Traefik routers meet the router rules (names that carry their kind, health and Client
+              Path rules, Protected Probes). Every image
               VOLUME path (read from the registry by digest, cached) has a mount at that exact path
               (Baseline item anonymous-volumes; no digest or a platform other than linux/amd64 needs
               its Exemption, and volumes_from fails); Services behind any profile are checked. Every
               top-level volume has a name of its Stack (or a --legacy-volume) and is external or
-              labelled homeops.regenerable (ADR 0010)
+              labelled homeops.regenerable
   isolation   each Host's doco-cd Stack and _baseline.yaml changes ship in their own PR
   monitoring  full config checks and behavioral rule tests with the images the Stacks deploy;
               Grafana provisioning boots, dashboard generator parity and PromQL/LogQL checks
@@ -509,7 +510,7 @@ STARTUP_LEVELS = {"0", "1", "2", "3"}
 LOGGING = {"driver": "json-file", "max-size": "10m", "max-file": "3"}
 HTTPS_RULE_RE = re.compile(r"^traefik\.http\.routers\..+-https\.rule$")
 
-# The Baseline (ADR 0007). The tool owns its items; each Host's stack root holds the values in
+# The Baseline: settings every Service carries. The tool owns its items; each Host's stack root holds the values in
 # _baseline.yaml. Every Service `extends` its Host's file, except doco-cd's, which carry the same items
 # inline (extending would race doco-cd's own self-update); both are held to it.
 BASELINE_NAME = "_baseline.yaml"
@@ -531,7 +532,7 @@ BASELINE_ITEMS = {
 # not in BASELINE_ITEMS (see uncovered_volumes).
 ANONYMOUS_VOLUMES = "anonymous-volumes"
 EXEMPT_ITEMS = [*BASELINE_ITEMS, ANONYMOUS_VOLUMES]
-# Router names carry their kind, so recording rules can tell UI, health and Client Path apart (ADR 0006).
+# Router names carry their kind, so recording rules can tell UI, health and Client Path apart.
 ROUTER_LABEL_RE = re.compile(r"^traefik\.http\.routers\.([^.]+)\.")
 SERVICE_LABEL_RE = re.compile(r"^traefik\.http\.services\.([^.]+)\.")
 PROTECTED_CHAIN = "protected"
@@ -622,9 +623,9 @@ def uncovered_volumes(svc: dict, image_paths: list[str]) -> list[str]:
     return sorted(p for p in image_paths if posixpath.normpath(p) not in targets)
 
 
-# Volume names (ADR 0010): <stack>_[<service>_]<purpose>, explicit, and external unless regenerable.
+# Volume names: <stack>_[<service>_]<purpose>, explicit, and external unless regenerable.
 REGENERABLE_LABEL = "homeops.regenerable"
-# Names from before ADR 0010, until each Stack's rename moves them; set with --legacy-volume. The list only
+# Names from before that naming rule, until each Stack's rename moves them; set with --legacy-volume. The list only
 # shrinks: an entry no Stack declares fails.
 LEGACY_VOLUMES: set[str] = set()
 # Templates are copied to <stack root>/<stack>/ with `app` renamed, so their volumes are named for Stack `app`.
@@ -654,7 +655,7 @@ def volume_problems(stack: str, volumes: dict, stack_names: set[str]) -> list[st
         # An external volume may be another Stack's, borrowed under its owner's name.
         owners = (stack_names | {stack}) if volume.get("external") else {stack}
         if name and name not in LEGACY_VOLUMES and not any(name.startswith(f"{s}_") for s in owners):
-            problems.append(f"{stack}: volume name {name} must start with {stack}_ (ADR 0010)")
+            problems.append(f"{stack}: volume name {name} must start with {stack}_")
     return problems
 
 
@@ -792,7 +793,7 @@ def check_compose() -> None:
             declared_volumes |= check_host_compose(host, work, registry, read_images)
     # Another Host may declare a legacy name, so only a run over every Host can tell one is gone.
     for name in sorted(LEGACY_VOLUMES - declared_volumes) if EVERY_HOST else []:
-        fail(f"volumes (ADR 0010): legacy name {name} is no longer declared; drop its --legacy-volume")
+        fail(f"volumes: legacy name {name} is no longer declared; drop its --legacy-volume")
 
 
 def check_host_compose(host: Host, work: Path, registry: Registry, read_images: dict) -> set[str]:
@@ -851,7 +852,11 @@ def check_host_compose(host: Host, work: Path, registry: Registry, read_images: 
             fail(f"{stack.name}: every template Service must extend {baseline}", src)
         doco_cd = stack.name == host.doco_cd.stack
         if doco_cd and on_baseline:
-            fail(f"{stack.name} must not extend {baseline} (ADR 0007); keep its settings inline", src)
+            fail(
+                f"{stack.name} must not extend {baseline}; keep its settings inline "
+                "(extending would race doco-cd's self-update)",
+                src,
+            )
         inline = set(services) if doco_cd else set()
         base_problems = [f"{name}: must extend {baseline}" for name in sorted(set(services) - on_baseline - inline)]
         for name in sorted((on_baseline | inline) & set(services)):
@@ -864,8 +869,7 @@ def check_host_compose(host: Host, work: Path, registry: Registry, read_images: 
             counts["total"] += len(services)
         if bad:
             fail(
-                f"{stack.name}: services without a valid {STARTUP_LABEL} label (0-3, ADR-0003): "
-                f"{', '.join(sorted(bad))}",
+                f"{stack.name}: services without a valid {STARTUP_LABEL} label (0-3): {', '.join(sorted(bad))}",
                 src,
             )
         if probes:
@@ -885,9 +889,9 @@ def check_host_compose(host: Host, work: Path, registry: Registry, read_images: 
                 src,
             )
         if base_problems:
-            fail(f"{stack.name}: Baseline (ADR 0007): " + "; ".join(base_problems), src)
+            fail(f"{stack.name}: Baseline: " + "; ".join(base_problems), src)
         if vol_problems:
-            fail(f"{stack.name}: volumes (ADR 0010): " + "; ".join(vol_problems), src)
+            fail(f"{stack.name}: volumes: " + "; ".join(vol_problems), src)
         if (
             not bad
             and not probes
@@ -898,7 +902,7 @@ def check_host_compose(host: Host, work: Path, registry: Registry, read_images: 
             and not vol_problems
         ):
             print(f"compose ok: {stack.name}")
-    print(f"Baseline: {counts['baseline']} of {counts['total']} Services on {host.name} meet it (ADR 0007)")
+    print(f"Baseline: {counts['baseline']} of {counts['total']} Services on {host.name} meet it")
     for x in exemptions:
         print(f"  Exemption {x}")
     return declared_volumes
@@ -922,7 +926,7 @@ def anonymous_volume_check(
             read[image] = None
             fail(
                 f"{stack}: {name}: cannot read the image config of {image} for its VOLUME paths "
-                f"(anonymous volumes, ADR 0007): {exc}",
+                f"(anonymous volumes): {exc}",
                 src,
             )
     return None if read[image] is None else uncovered_volumes(svc, read[image])
@@ -1605,7 +1609,7 @@ def check_isolation() -> None:
     """A change to a Host's doco-cd Stack ships alone: doco-cd self-updates mid-Deploy, so other
     Stacks of that Host in the same commit deploy across the handover. A change to a Host's Baseline
     ships without Stack changes: it recreates every Service that extends it, so its Deploy should be
-    about it alone (ADR 0007). Compares against VALIDATE_BASE (CI sets the PR base) or the default branch."""
+    about it alone. Compares against VALIDATE_BASE (CI sets the PR base) or the default branch."""
     base = base_ref()
     r = subprocess.run(["git", "diff", "--name-only", f"{base}...HEAD"], cwd=ROOT, capture_output=True, text=True)
     if r.returncode != 0:
@@ -1693,7 +1697,7 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="NAME",
-        help="a volume name from before ADR 0010 that is allowed until renamed",
+        help="a volume name from before the <stack>_[<service>_]<purpose> naming rule, allowed until renamed",
     )
     parser.add_argument(
         "--legacy-stack",

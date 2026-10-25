@@ -54,7 +54,7 @@ sabnzbd_usenet_server_error == 1 and on (server) sabnzbd_usenet_server_active ==
 ## Healthcheck
 
 `healthcheck` exits 0 when the exporter answers on its own `/healthz`, which never calls SABnzbd. The image
-declares it as its `HEALTHCHECK`; Compose should declare the same one (home-ops Baseline):
+declares it as its `HEALTHCHECK`; Compose should declare the same one (the Baseline):
 
 ```yaml
 healthcheck:

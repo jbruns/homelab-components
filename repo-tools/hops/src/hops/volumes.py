@@ -1,4 +1,4 @@
-"""Moving a volume's contents into a new volume, for a rename (ADR 0010). Docker cannot rename a volume.
+"""Moving a volume's contents into a new volume, for a rename. Docker cannot rename a volume.
 
 One throwaway container bind-mounts Docker's volumes directory once, so each top-level entry of
 <old>/_data moves to <new>/_data with rename(2) within one filesystem: instant, and ownership,
@@ -413,7 +413,7 @@ def check_name(name: str) -> None:
 
 
 def convention(declared: Declared, name: str) -> str | None:
-    """A warning when `name` does not read <stack>_[<service>_]<purpose> for a declared Stack (ADR 0010)."""
+    """A warning when `name` does not read <stack>_[<service>_]<purpose> for a declared Stack."""
     stack, sep, rest = name.partition("_")
     if sep and rest and stack in declared.stacks:
         return None

@@ -1,4 +1,4 @@
-"""Rollback Snapshots (GLOSSARY, ADR 0011): ZFS snapshots taken before a risky change, carrying the
+"""Rollback Snapshots (GLOSSARY): ZFS snapshots taken before a risky change, carrying the
 user properties `homeops:issue` and `homeops:expires`, and released once the change is verified.
 
 Usable without the CLI: `rollback_snapshots(client)` lists them for any `hops.truenas.Client`.

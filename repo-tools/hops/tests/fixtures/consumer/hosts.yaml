@@ -1,7 +1,7 @@
 # A consuming repo cut down to what `hops stop`'s silences read (tests/test_hops_consumer_silences.py).
 version: 1
 hosts:
-  truenas:
+  host-a:
     stack_root: tn
     deployer: doco-cd
     capabilities: [truenas, zfs]

@@ -670,7 +670,7 @@ def test_without_zfs_take_snapshot_is_refused_before_the_host_is_touched(hops, f
     assert outcome.code == 2
     assert (
         "--take-snapshot (a Rollback Snapshot) needs a Host with the truenas and zfs capabilities; "
-        "Host 'truenas' has none"
+        "Host 'host-a' has none"
     ) in outcome.err
     assert fake_host.calls == []
 

@@ -88,7 +88,7 @@ An alert on `backup_coverage_due == 1 and backup_coverage_present == 0` finds mi
 ## Healthcheck
 
 `healthcheck` exits 0 when the exporter answers on its own `/healthz`, which never calls Docker or restic. The image
-declares it as its `HEALTHCHECK`; Compose should declare the same one (home-ops Baseline):
+declares it as its `HEALTHCHECK`; Compose should declare the same one (the Baseline):
 
 ```yaml
 healthcheck:

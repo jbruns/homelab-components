@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Shared Renovate rules for homelab repos with Stacks in <stack_root>/<stack>/compose.yaml and <service>/service.yaml; see jbruns/homelab-components README",
+  "description": "Shared Renovate rules for homelab repos with Stacks in <stack_root>/<stack>/compose.yaml and <service>/service.yaml; see the README of the Repo Tooling repo that ships this preset",
   "extends": [
     "config:recommended",
     "docker:pinDigests",
@@ -66,7 +66,7 @@
       "automerge": false
     },
     {
-      "description": "The custom manager below pins homelab-components reusable workflows, because only it knows their repo-ci-vX.Y.Z tags",
+      "description": "The custom manager below pins the Repo Tooling repo's reusable workflows, because only it knows their repo-ci-vX.Y.Z tags",
       "matchManagers": [
         "github-actions"
       ],
@@ -115,7 +115,7 @@
     },
     {
       "customType": "regex",
-      "description": "homelab-components reusable workflows: uses: jbruns/homelab-components/.github/workflows/repo-<name>.yaml@<sha> # repo-ci-vX.Y.Z",
+      "description": "The Repo Tooling repo's reusable workflows: uses: jbruns/homelab-components/.github/workflows/repo-<name>.yaml@<sha> # repo-ci-vX.Y.Z",
       "managerFilePatterns": [
         "/^\\.github/workflows/.+\\.ya?ml$/"
       ],

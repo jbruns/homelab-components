@@ -3,12 +3,14 @@
 Custom Components: code that runs on a homelab Host because no upstream or community option covers the need.
 Each Component states **Why** it exists and when to retire it (**Retire when**, its Retirement Condition), takes
 every site-specific value from its environment so any host can adopt it, and ships as an image
-`ghcr.io/jbruns/<component>` consumed by digest. Background: [ADR 0008 in
-jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0008-custom-components-in-shared-repo.md).
+`ghcr.io/jbruns/<component>` consumed by digest.
 
-It also holds **shared Repo Tooling** (`repo-tools/`): tools that several homelab repos (jbruns/home-ops,
-asotbz/ops) run against their own Hosts, consumed by pinned tag like a Component. Background: [ADR 0012 in
-jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shared-repo-tooling.md).
+It also holds **shared Repo Tooling** (`repo-tools/`): tools that several consumer repos run against their own
+Hosts, consumed by pinned tag like a Component.
+
+This repo stays agnostic of its consumers: it names no consumer repo, Host, person or login, and states the rules
+it enforces instead of citing a consumer's ADRs ([ADR 0001](docs/adr/0001-agnostic-of-consumers.md),
+[ADR 0002](docs/adr/0002-no-names-in-prose-or-output.md)).
 
 To add or change a Component or a shared tool, read [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -132,7 +134,7 @@ calling the reusable workflows, pinned to a `repo-ci-vX.Y.Z` release by its comm
 `extra-args` passes the tool's options, split like a shell command line but never run by a shell: for example
 `--path dashboards=tools/dashboards/dashboards.py --legacy-volume media_config` for a repo that keeps an input
 outside its stack roots, `--legacy-stack common` for a Stack folder not yet cut over to `compose.yaml`, or
-`--host truenas`. `repo-validate` and `repo-declared-containers` install their tools
+`--host host-a`. `repo-validate` and `repo-declared-containers` install their tools
 (`repo-validate` both, for the `monitoring` check) from the workflow's own commit, so the one pin on `uses:` pins
 the tools too. Set `tool-ref` (a `<tool>-vX.Y.Z` tag or a commit) only to run a different tool
 version than the workflow's; Renovate does not bump it. Each workflow is one job; keep the repo's own
