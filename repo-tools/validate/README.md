@@ -15,6 +15,7 @@ named in messages (0003, 0006, 0007, 0010) are jbruns/home-ops ADRs.
 | `monitoring` | Full Prometheus config and rule checks, behavioral rule suites, amtool/Loki/Alloy config checks, dashboard generation and query checks, declared-containers freshness, and Grafana provisioning boots, using the images the Host deploys; see [Monitoring checks](#monitoring-checks) |
 | `cloudflare` | Traefik's trusted Cloudflare ranges are valid and identical (see [Cloudflare ranges](#cloudflare-ranges)) |
 | `isolation` | A change to the Host's doco-cd Stack, or to its `_baseline.yaml`, ships in its own PR |
+| `privacy` | Repository-wide, not per Host: no prose matches a pattern of the denylist the environment supplies; warn-only by default, skipped without a denylist (see [Privacy](#privacy)) |
 
 No check depends on a Host capability: the only Host-specific inputs are its stack root, its doco-cd Stack name
 (`doco_cd.stack` in `hosts.yaml`) and the files found under its stack root. An input a Host does not have by
@@ -79,6 +80,11 @@ With no check named, every check runs, including `isolation`. Exit status is 1 i
 
   `secrets` fails while one is given whose folder has a `compose.yaml` (it has been cut over), and a `secrets` run
   over every Host fails while one is given that no Host has, so the list only shrinks.
+- `--privacy-mode warn|fail`: whether a [privacy](#privacy) match prints a warning (default; exit status
+  unaffected) or fails the run.
+- `--privacy-allow REGEX`: text a privacy match may lie within and still pass, such as a load-bearing identifier
+  in prose (`git\+https://\S+` for install commands). Repeat it for several.
+- `HOMELAB_PRIVACY_DENYLIST`: the [privacy](#privacy) denylist; unset or blank skips the check.
 - `VALIDATE_BASE`: the comparison ref for `isolation`, rule-test freshness and the Grafana upgrade boot (default
   `origin/<default_branch>`, from `hosts.yaml`). In CI, fetch history and set it to the PR base.
 - `GITHUB_ACTIONS`: when set, failures print as GitHub annotations.
@@ -207,6 +213,39 @@ Plugin downloads and Grafana update and telemetry checks are disabled.
 The Cloudflare edge ranges Traefik trusts for `X-Forwarded-For` appear three times in the Host's Traefik Compose
 file: `forwardedHeaders.trustedIPs=` on both entrypoints and the CrowdSec bouncer's `forwardedHeadersTrustedIPs:`.
 They must be valid CIDRs and identical. The consuming repo keeps its own updater.
+
+## Privacy
+
+`privacy` keeps names (people, logins, Hosts, other repos) out of the prose a public repo shows. The denylist is
+never committed: `HOMELAB_PRIVACY_DENYLIST` holds one Python regex per line (blank lines ignored), and in CI it
+comes from a secret (see the `privacy-denylist` secret of `repo-validate.yaml`). Unset or blank, the check prints
+that it skipped and passes, so a local run or pre-commit hook without the denylist is unaffected. An invalid
+pattern fails the check, naming its line number only.
+
+It scans every tracked file it can read as text, by type:
+
+| Files | Scanned |
+|---|---|
+| Markdown (`*.md`, `*.markdown`, `*.rst`) | every line |
+| Python (`*.py`, `*.pyi`, or no extension with a `python` shebang) | comments and string literals: docstrings, help and output text |
+| `#`-comment files: shell (`*.sh`, `*.bash`, `*.zsh`, or no extension with an `sh` shebang), YAML, TOML, `*.cfg`, `*.ini`, `*.conf`, `*.alloy`, `*.tmpl`, `*.env.example`, `Dockerfile`, `Containerfile`, `Makefile`, `.gitignore`, `.dockerignore`, `.gitattributes` | comments (from a `#` at the start of the line or after whitespace) |
+
+Load-bearing identifiers are exempt, because renaming them would break something:
+
+- code outside comments and strings: file paths, config keys and values, commands, Python identifiers, and
+  `uses:` refs in workflows;
+- a `uses: <ref>` anywhere, Markdown examples included;
+- files that hold no prose: `LICENSE`, `COPYING` and `NOTICE` (any extension), lockfiles (`*.lock`,
+  `*-lock.json`, `*-lock.yaml`, `go.sum`), Renovate config (`renovate.json`, `renovate.json5`, `.renovaterc*`,
+  and presets `renovate/*.json`), SOPS-encrypted files (`*.sops.*`, `.sops.env`), binary files and every other
+  type (JSON, for one);
+- any text a `--privacy-allow` pattern covers: a match is exempt when it lies wholly inside an allowlist match
+  on the same line.
+
+Each match is reported as `privacy: denylisted text at <file>:<line>: <excerpt>`, a warning or, with
+`--privacy-mode fail`, an error (in GitHub Actions, an annotation on that line). The excerpt is the scanned prose
+on that line with every denylisted match replaced by `[redacted]`; no report repeats a match or a pattern. Start
+in `warn`, clear the warnings, then switch to `fail` so new prose stays clean.
 
 ## Test
 

@@ -43,7 +43,7 @@ Shared tools, each documented in its README:
 - [`repo-tools/agent-skills`](repo-tools/agent-skills/README.md): `setup-agent-skills`, which installs and checks
   the agent skills a consuming repo pins in its `.agent-skills.lock`.
 - [`repo-tools/validate`](repo-tools/validate/README.md): `homelab-validate`, the repository checks (secrets, env,
-  compose and the Baseline, monitoring, cloudflare, isolation) for every Host.
+  compose and the Baseline, monitoring, cloudflare, isolation, privacy) for every Host.
 - [`repo-tools/declared-containers`](repo-tools/declared-containers/README.md): `homelab-declared-containers`, each
   Host's declared Services as a node-exporter textfile for ContainerDown.
 
@@ -115,7 +115,7 @@ calling the reusable workflows, pinned to a `repo-ci-vX.Y.Z` release by its comm
 |---|---|---|
 | `repo-gitleaks.yaml` | gitleaks on the PR's commits, a push's commits, or (another event) every commit; the repo's `.gitleaks.toml` and `.gitleaksignore` apply | `full-history` (`false`), `gitleaks-version` |
 | `repo-lint.yaml` | actionlint on the repo's workflows; `renovate-config-validator --strict` | `renovate-configs` (`renovate.json`; empty skips), `actionlint-version`, `renovate-version` |
-| `repo-validate.yaml` | [`homelab-validate [checks…]`](repo-tools/validate/README.md) (Docker for `compose` and `monitoring`, including promtool rule tests); pull requests compare against their base; the image-config cache is kept between runs | `checks` (every check), `extra-args`, `working-directory` (`.`), `tool-ref`, `timeout-minutes` (`30`), `uv-version` |
+| `repo-validate.yaml` | [`homelab-validate [checks…]`](repo-tools/validate/README.md) (Docker for `compose` and `monitoring`, including promtool rule tests); pull requests compare against their base; the image-config cache is kept between runs | `checks` (every check), `extra-args`, `working-directory` (`.`), `tool-ref`, `privacy-mode` (`warn`; `fail` fails on a [privacy](repo-tools/validate/README.md#privacy) match), `timeout-minutes` (`30`), `uv-version`; secret `privacy-denylist` (optional: the privacy check's regexes, one per line; unset skips it) |
 | `repo-declared-containers.yaml` | [`homelab-declared-containers --check`](repo-tools/declared-containers/README.md) | `extra-args`, `working-directory` (`.`), `tool-ref`, `uv-version` |
 
 `extra-args` passes the tool's options, split like a shell command line but never run by a shell: for example
@@ -145,7 +145,10 @@ jobs:
   validate:
     uses: jbruns/homelab-components/.github/workflows/repo-validate.yaml@<sha> # repo-ci-v1.0.0
     with:
-      checks: secrets env compose isolation
+      checks: secrets env compose isolation privacy
+      privacy-mode: warn # fail once the repo's prose is clean
+    secrets:
+      privacy-denylist: ${{ secrets.PRIVACY_DENYLIST }}
   monitoring:
     uses: jbruns/homelab-components/.github/workflows/repo-validate.yaml@<sha> # repo-ci-v1.0.0
     with:

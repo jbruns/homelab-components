@@ -25,6 +25,8 @@ Checks:
   monitoring  full config checks and behavioral rule tests with the images the Stacks deploy;
               Grafana provisioning boots, dashboard generator parity and PromQL/LogQL checks
   cloudflare  the Cloudflare ranges Traefik trusts are valid and identical everywhere they appear
+  privacy     no prose (Markdown, comments, docstrings, help and output strings) matches a pattern of
+              HOMELAB_PRIVACY_DENYLIST; warn-only unless --privacy-mode fail, skipped when it is unset
 
 A --legacy-stack is not a Stack: env, compose and monitoring leave it alone until its cutover.
 """
@@ -53,7 +55,7 @@ from string import Template
 import yaml
 from homelab_hosts import Host, HostsError, find_repo_root, load_hosts
 
-from homelab_validate import cloudflare
+from homelab_validate import cloudflare, privacy
 from homelab_validate.registry import Registry, RegistryError, Response, urllib_http
 
 # The repository being checked and the Hosts selected in it (configure()).
@@ -85,6 +87,10 @@ OVERRIDES: dict[str, str] = {}
 VAR_RE = re.compile(r"(?<!\$)\$\{([A-Za-z_][A-Za-z0-9_]*)")
 SOPS_MARKERS = ("sops_version=", '"sops":', "sops:")
 
+# check `privacy`: warn or fail on a match, and the patterns whose matches are exempt (--privacy-allow).
+PRIVACY_MODE = "warn"
+PRIVACY_ALLOW: list[re.Pattern] = []
+
 failures: list[str] = []
 
 
@@ -95,11 +101,14 @@ def _rel(p: Path) -> str:
         return str(p)
 
 
-def fail(msg: str, file: Path | None = None) -> None:
+def _loc(file: Path | None, line: int | None) -> str:
+    return (f" file={_rel(file)}" + (f",line={line}" if line else "")) if file else ""
+
+
+def fail(msg: str, file: Path | None = None, line: int | None = None) -> None:
     failures.append(msg)
     if os.environ.get("GITHUB_ACTIONS"):
-        loc = f" file={_rel(file)}" if file else ""
-        print(f"::error{loc}::{msg}".replace("\n", "%0A"))
+        print(f"::error{_loc(file, line)}::{msg}".replace("\n", "%0A"))
     else:
         print(f"ERROR: {msg}")
 
@@ -110,8 +119,8 @@ def fail_once(msg: str, file: Path | None = None) -> None:
         fail(msg, file)
 
 
-def warn(msg: str) -> None:
-    print(f"::warning::{msg}" if os.environ.get("GITHUB_ACTIONS") else f"WARN: {msg}")
+def warn(msg: str, file: Path | None = None, line: int | None = None) -> None:
+    print(f"::warning{_loc(file, line)}::{msg}" if os.environ.get("GITHUB_ACTIONS") else f"WARN: {msg}")
 
 
 def tracked_files() -> set[Path]:
@@ -1623,6 +1632,37 @@ def check_isolation() -> None:
         print("isolation ok")
 
 
+def check_privacy() -> None:
+    """Denylisted names in prose (privacy.py). The denylist comes from the environment, never from the repo, and
+    no report repeats a match or a pattern."""
+    denylist = os.environ.get(privacy.DENYLIST_ENV, "")
+    if not denylist.strip():
+        print(f"privacy: {privacy.DENYLIST_ENV} is not set; skipped")
+        return
+    try:
+        deny = privacy.compile_patterns(denylist)
+    except ValueError as exc:
+        fail(f"privacy: {privacy.DENYLIST_ENV}: {exc}")
+        return
+    allow = [re.compile(p) for p in privacy.DEFAULT_ALLOW] + PRIVACY_ALLOW
+    matches = []
+    for f in sorted(tracked_files()):
+        try:
+            text = f.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        matches += privacy.scan(_rel(f), text, deny, allow)
+    report = fail if PRIVACY_MODE == "fail" else warn
+    for m in matches:
+        report(f"privacy: denylisted text at {m.path}:{m.line}: {m.excerpt}", ROOT / m.path, m.line)
+    if not matches:
+        print("privacy ok")
+    elif PRIVACY_MODE == "warn":
+        print(f"privacy: {len(matches)} lines with denylisted text (warn-only; --privacy-mode fail enforces it)")
+    else:
+        print("privacy: problems found")
+
+
 CHECKS = {
     "secrets": check_secrets,
     "env": check_env,
@@ -1630,10 +1670,12 @@ CHECKS = {
     "monitoring": check_monitoring,
     "cloudflare": check_cloudflare,
     "isolation": check_isolation,
+    "privacy": check_privacy,
 }
 
 
 def main(argv: list[str] | None = None) -> int:
+    global PRIVACY_MODE, PRIVACY_ALLOW
     parser = argparse.ArgumentParser(
         prog="homelab-validate", description="Repository validation for every Host in hosts.yaml."
     )
@@ -1664,6 +1706,19 @@ def main(argv: list[str] | None = None) -> int:
             "only repository-wide and secret-reference checks still apply"
         ),
     )
+    parser.add_argument(
+        "--privacy-mode",
+        choices=privacy.MODES,
+        default="warn",
+        help="whether a privacy match warns (default) or fails",
+    )
+    parser.add_argument(
+        "--privacy-allow",
+        action="append",
+        default=[],
+        metavar="REGEX",
+        help="text in prose that a denylist match may lie within, such as a load-bearing identifier; repeatable",
+    )
     parser.add_argument("checks", nargs="*", metavar="check", help=f"{', '.join(CHECKS)} (default: all)")
     args = parser.parse_args(argv)
     overrides = dict(p.split("=", 1) for p in args.path if "=" in p)
@@ -1671,6 +1726,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"--path takes NAME=PATH with NAME one of {', '.join(PATHS)}")
     if bad := [name for name in args.legacy_stack if not STACK_NAME_RE.fullmatch(name)]:
         parser.error(f"--legacy-stack takes a Stack folder name ([a-z0-9][a-z0-9-]*), not {bad[0]!r}")
+    try:
+        allow = [re.compile(p) for p in args.privacy_allow]
+    except re.error as exc:
+        parser.error(f"--privacy-allow takes a regex: {exc}")
     if unknown := [name for name in args.checks if name not in CHECKS]:
         sys.exit(f"unknown check {unknown[0]!r}; choose from {', '.join(CHECKS)}")
     try:
@@ -1678,6 +1737,7 @@ def main(argv: list[str] | None = None) -> int:
     except HostsError as exc:
         print(exc, file=sys.stderr)
         return 1
+    PRIVACY_MODE, PRIVACY_ALLOW = args.privacy_mode, allow
     for name in args.checks or list(CHECKS):
         CHECKS[name]()
     return 1 if failures else 0
