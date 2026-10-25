@@ -55,7 +55,7 @@ Loading fails, listing every problem with its file and key path, when:
 - `version` is missing or not `1`;
 - `hosts` is missing or empty;
 - `validate` is not a non-empty list of non-empty strings;
-- a Host name does not match `[a-z0-9][a-z0-9-]*` (YAML reads an unquoted `no` or `1101` as a boolean or
+- a Host name does not match `[a-z0-9][a-z0-9-]*` (YAML reads an unquoted `no` or `123` as a boolean or
   number, so quote such a name);
 - `stack_root` is missing, is absolute or uses `..`, resolves (following symlinks, including in intermediate
   directories) to the repo root itself or outside it, is not an existing directory, or is the same directory as

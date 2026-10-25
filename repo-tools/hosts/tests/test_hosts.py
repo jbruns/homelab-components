@@ -96,7 +96,7 @@ def host_entry(**overrides):
             "hosts.host-b.doco_cd.port: unknown key",
         ),
         ("version: 1\nhosts:\n  HOST-B:\n" + host_entry(), "hosts.HOST-B: bad Host name"),
-        ("version: 1\nhosts:\n  nc8kg_1101:\n" + host_entry(), "hosts.nc8kg_1101: bad Host name"),
+        ("version: 1\nhosts:\n  host_b:\n" + host_entry(), "hosts.host_b: bad Host name"),
         (
             "version: 1\nhosts:\n  host-b:\n" + host_entry(capabilities="[truenas, zfs, gpu]"),
             "unknown capability 'gpu'",

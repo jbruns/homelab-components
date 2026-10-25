@@ -76,7 +76,7 @@
       "enabled": false
     },
     {
-      "description": "This preset's own pin: extends github>jbruns/homelab-components//renovate/<preset>#repo-ci-vX.Y.Z",
+      "description": "This preset's own pin: a consumer's extends of a preset from the Repo Tooling repo, pinned to a repo-ci-vX.Y.Z tag",
       "matchManagers": [
         "renovate-config"
       ],
@@ -115,7 +115,7 @@
     },
     {
       "customType": "regex",
-      "description": "The Repo Tooling repo's reusable workflows: uses: jbruns/homelab-components/.github/workflows/repo-<name>.yaml@<sha> # repo-ci-vX.Y.Z",
+      "description": "The Repo Tooling repo's reusable workflows: a uses: ref to one of its repo-<name>.yaml workflows, pinned by commit with its repo-ci-vX.Y.Z tag in a trailing comment",
       "managerFilePatterns": [
         "/^\\.github/workflows/.+\\.ya?ml$/"
       ],
