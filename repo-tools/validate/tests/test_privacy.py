@@ -117,6 +117,49 @@ def test_renovate_prose_fields_are_scanned_at_any_depth_and_load_bearing_ones_ar
     ]
 
 
+def test_renovate_prose_maps_and_commit_body_are_scanned_but_their_keys_and_columns_are_not(
+    validate, repo, monkeypatch, capsys
+):
+    write(
+        repo,
+        {
+            "renovate.json5": f"""{{
+  commitBody: 'Signed-off-by: {NAME}',
+  prBodyColumns: ['{NAME}'],
+  prBodyDefinitions: {{'{NAME}': 'Package'}},
+  prBodyHeadingDefinitions: {{Col: ['Asked by {NAME}']}},
+}}
+""",
+        },
+    )
+    commit(repo)
+    monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", DENY)
+    monkeypatch.setattr(validate, "PRIVACY_MODE", "fail")
+    validate.check_privacy()
+    assert [f.split(" at ")[1] for f in validate.failures] == [
+        "renovate.json5:2: Signed-off-by: [redacted]",
+        "renovate.json5:5: Asked by [redacted]",
+    ]
+
+
+def test_an_escaped_unquoted_renovate_key_is_decoded_before_it_is_classified(validate, repo, monkeypatch):
+    write(repo, {"renovate.json5": f"{{prBody\\u004eotes: ['Ping {NAME}']}}\n"})
+    commit(repo)
+    monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", DENY)
+    monkeypatch.setattr(validate, "PRIVACY_MODE", "fail")
+    validate.check_privacy()
+    assert [f.split(" at ")[1] for f in validate.failures] == ["renovate.json5:1: Ping [redacted]"]
+
+
+def test_renovate_surrogate_escapes_are_combined_and_a_lone_one_still_prints(repo):
+    write(repo, {"renovate.json": f'{{"description": [\n"\\ud83d\\ude80 launch",\n"\\ud83d lone {NAME}"]}}\n'})
+    commit(repo)
+    r = privacy_cli(repo, "--privacy-mode", "fail", denylist=f"{DENY}\n\U0001f680")
+    assert r.returncode == 1 and "Traceback" not in r.stderr, r.stderr
+    assert "renovate.json:2: [redacted] launch" in r.stdout
+    assert "renovate.json:3: \ufffd lone [redacted]" in r.stdout
+
+
 def test_renovate_config_scans_every_line_from_where_it_stops_parsing(validate, repo, monkeypatch, capsys):
     write(repo, {"renovate.json": f'{{"extends": ["{NAME}"],\n"description": "unterminated\n"{NAME}"}}\n'})
     commit(repo)

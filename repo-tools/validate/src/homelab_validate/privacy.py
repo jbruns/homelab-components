@@ -34,7 +34,11 @@ EXEMPT_NAMES = re.compile(
 RENOVATE_NAMES = re.compile(r"renovate\.json5?|\.renovaterc(\.json5?)?")
 RENOVATE_DIRS = {"renovate"}
 # Renovate fields whose strings it publishes as prose; every other field is load-bearing.
-RENOVATE_PROSE = re.compile(r"description|prBodyTemplate|prTitle|groupName|prHeader|prFooter|commitMessage.*|.*Notes")
+RENOVATE_PROSE = re.compile(
+    r"description|prBodyTemplate|prTitle|groupName|prHeader|prFooter|commitBody|commitMessage.*|.*Notes"
+)
+# Renovate mappings whose values are prose and whose keys (column names, which prBodyColumns refers to) are not.
+RENOVATE_PROSE_MAPS = {"prBodyDefinitions", "prBodyHeadingDefinitions"}
 # A `uses:` ref is load-bearing wherever it is written, a Markdown example included.
 DEFAULT_ALLOW = (r"uses:\s*\S+",)
 HASH_COMMENT_RE = re.compile(r"(?:^|\s)#+(.*)")
@@ -104,22 +108,32 @@ JSON5_ESCAPE = re.compile(r"\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|(\r\n|.))",
 JSON5_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", "0": "\0", "\n": "", "\r\n": ""}
 
 
-def json5_string(token: str) -> str:
+def json5_unescape(text: str) -> str:
+    """Escapes decoded, a `\\uXXXX` surrogate pair combined into its character and a lone surrogate replaced by
+    U+FFFD, so the result always encodes."""
+
     def unescape(m: re.Match) -> str:
         if m[1] or m[2]:
             return chr(int(m[1] or m[2], 16))
         return JSON5_ESCAPES.get(m[3], m[3])
 
-    return JSON5_ESCAPE.sub(unescape, token[1:-1])
+    decoded = JSON5_ESCAPE.sub(unescape, text)
+    return decoded.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
 
 
 def renovate_prose(text: str) -> Iterator[tuple[int, str]]:
     """Comments, and the strings of prose fields (RENOVATE_PROSE) at any depth, packageRules included, each at the
-    line its string starts on. A string belongs to the field that holds it, or the array that holds it. Read as
-    JSON5, which covers JSON; from where the text stops being JSON5, every line is prose."""
+    line its string starts on. A string belongs to the field that holds it, or the array that holds it; every value
+    of a RENOVATE_PROSE_MAPS mapping is prose. Read as JSON5, which covers JSON; from where the text stops being
+    JSON5, every line is prose."""
     starts = [0] + [m.end() for m in re.finditer(r"\n", text)]
-    # One entry per open object [its current key, expecting a key next] or array [the key that holds it, None].
+    # One entry per open object [its current key, expecting a key next, its values are prose] or array [the key
+    # that holds it, None, its values are prose].
     stack: list[list] = []
+
+    def holds_prose() -> bool:
+        return bool(stack) and (stack[-1][2] or bool(stack[-1][0] and RENOVATE_PROSE.fullmatch(stack[-1][0])))
+
     pos = 0
     while pos < len(text):
         token = JSON5_TOKEN.match(text, pos)
@@ -131,8 +145,10 @@ def renovate_prose(text: str) -> Iterator[tuple[int, str]]:
         if token["comment"]:
             for offset, part in enumerate(value.splitlines()):
                 yield line + offset, part.lstrip("/*").rstrip("*/")
-        elif value in ("{", "["):
-            stack.append([stack[-1][0] if stack and value == "[" else None, True if value == "{" else None])
+        elif value == "{":
+            stack.append([None, True, bool(stack) and stack[-1][0] in RENOVATE_PROSE_MAPS])
+        elif value == "[":
+            stack.append([stack[-1][0] if stack else None, None, holds_prose()])
         elif value in ("}", "]"):
             if stack:
                 stack.pop()
@@ -140,10 +156,10 @@ def renovate_prose(text: str) -> Iterator[tuple[int, str]]:
             if stack and stack[-1][1] is not None:
                 stack[-1][1] = True
         elif token["string"] or token["bare"]:
-            word = json5_string(value) if token["string"] else value
+            word = json5_unescape(value[1:-1] if token["string"] else value)
             if stack and stack[-1][1]:
                 stack[-1][0], stack[-1][1] = word, False
-            elif token["string"] and stack and stack[-1][0] and RENOVATE_PROSE.fullmatch(stack[-1][0]):
+            elif token["string"] and holds_prose():
                 yield line, " ".join(word.splitlines())
 
 

@@ -227,7 +227,7 @@ It scans every tracked file it can read as text, by type:
 | Markdown (`*.md`, `*.markdown`, `*.rst`) | every line |
 | Python (`*.py`, `*.pyi`, or no extension with a `python` shebang) | comments and string literals: docstrings, help and output text; from where a file stops tokenizing (a syntax error), every remaining line |
 | `#`-comment files: shell (`*.sh`, `*.bash`, `*.zsh`, or no extension with an `sh` shebang), YAML, TOML, `*.cfg`, `*.ini`, `*.conf`, `*.alloy`, `*.tmpl`, `*.env.example`, `Dockerfile`, `Containerfile`, `Makefile`, `.gitignore`, `.dockerignore`, `.gitattributes` | comments (from a `#` at the start of the line or after whitespace) |
-| Renovate config: `renovate.json`, `renovate.json5`, `.renovaterc`, `.renovaterc.json(5)` in any folder (`.github/` included), and presets `renovate/*.json(5)` | comments, and the strings of the fields Renovate publishes in PRs and commits, at any depth (inside `packageRules` too): `description`, `prBodyNotes`, `prBodyTemplate`, `prTitle`, `groupName`, `prHeader`, `prFooter`, `commitMessage*` and any `*Notes` |
+| Renovate config: `renovate.json`, `renovate.json5`, `.renovaterc`, `.renovaterc.json(5)` in any folder (`.github/` included), and presets `renovate/*.json(5)` | comments, and the strings of the fields Renovate publishes in PRs and commits, at any depth (inside `packageRules` too): `description`, `prBodyNotes`, `prBodyTemplate`, `prTitle`, `groupName`, `prHeader`, `prFooter`, `commitBody`, `commitMessage*` and any `*Notes`, and the values (not the keys) of `prBodyDefinitions` and `prBodyHeadingDefinitions` |
 
 Load-bearing identifiers are exempt, because renaming them would break something:
 
@@ -238,13 +238,14 @@ Load-bearing identifiers are exempt, because renaming them would break something
   `*-lock.json`, `*-lock.yaml`, `go.sum`), SOPS-encrypted files (`*.sops.*`, `.sops.env`), binary files and
   every other type (JSON other than Renovate config, for one);
 - every other Renovate config field, such as `extends`, `matchPackageNames`, `matchDepNames`, `matchStrings`,
-  `depNameTemplate`, `datasourceTemplate` and `registryUrls`;
+  `depNameTemplate`, `datasourceTemplate`, `registryUrls` and `prBodyColumns`;
 - any text a `--privacy-allow` pattern covers: a match is exempt when it lies wholly inside an allowlist match
   on the same line.
 
 Renovate config is read as JSON5, which covers JSON (comments, unquoted keys, single quotes, trailing commas),
 with no extra dependency. A field's string is reported at the line it starts on, and an array's strings belong to
-the field that holds the array. From where a file stops being valid JSON5 (an unterminated string, say), every
+the field that holds the array. Escapes are decoded first, in unquoted keys too, and a surrogate pair becomes its
+character (a lone surrogate prints as U+FFFD). From where a file stops being valid JSON5 (an unterminated string, say), every
 remaining line is scanned.
 
 Each match is reported as `privacy: denylisted text at <file>:<line>: <excerpt>`, a warning or, with
