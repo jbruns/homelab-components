@@ -105,7 +105,9 @@ JSON5_TOKEN = re.compile(
     re.DOTALL,
 )
 JSON5_ESCAPE = re.compile(r"\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|(\r\n|.))", re.DOTALL)
-JSON5_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", "0": "\0", "\n": "", "\r\n": ""}
+JSON5_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", "0": "\0"}
+# A backslash before a line terminator is a line continuation, which decodes to nothing.
+JSON5_ESCAPES |= dict.fromkeys(("\n", "\r\n", "\r", "\u2028", "\u2029"), "")
 
 
 def json5_unescape(text: str) -> str:

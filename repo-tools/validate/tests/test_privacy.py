@@ -160,6 +160,18 @@ def test_renovate_surrogate_escapes_are_combined_and_a_lone_one_still_prints(rep
     assert "renovate.json:3: \ufffd lone [redacted]" in r.stdout
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_a_renovate_line_continuation_before_a_unicode_separator_decodes_to_nothing(
+    validate, repo, monkeypatch, separator
+):
+    write(repo, {"renovate.json5": f"{{description: 'ask quux\\{separator}well'}}\n"})
+    commit(repo)
+    monkeypatch.setenv("HOMELAB_PRIVACY_DENYLIST", DENY)
+    monkeypatch.setattr(validate, "PRIVACY_MODE", "fail")
+    validate.check_privacy()
+    assert [f.split(" at ")[1] for f in validate.failures] == ["renovate.json5:1: ask [redacted]"]
+
+
 def test_renovate_config_scans_every_line_from_where_it_stops_parsing(validate, repo, monkeypatch, capsys):
     write(repo, {"renovate.json": f'{{"extends": ["{NAME}"],\n"description": "unterminated\n"{NAME}"}}\n'})
     commit(repo)
