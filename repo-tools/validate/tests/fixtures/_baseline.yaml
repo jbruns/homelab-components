@@ -1,4 +1,4 @@
-# The Baseline (GLOSSARY.md, ADR 0007): settings every Service carries. A Service pulls them in with
+# The Baseline (GLOSSARY.md): settings every Service carries. A Service pulls them in with
 #
 #   extends:
 #     file: ../_baseline.yaml   # relative to the file that declares the Service

@@ -93,7 +93,7 @@ print(json.dumps(paths))
 
 SETTINGS = {
     "stack-back defaults": {},
-    "home-ops": {"EXCLUDE_BIND_MOUNTS": "true", "INCLUDE_ALL_COMPOSE_PROJECTS": "true"},
+    "consumer": {"EXCLUDE_BIND_MOUNTS": "true", "INCLUDE_ALL_COMPOSE_PROJECTS": "true"},
     "project names, auto backup": {"INCLUDE_PROJECT_NAME": "true", "AUTO_BACKUP_ALL": "true"},
 }
 
@@ -204,12 +204,12 @@ def test_reports_coverage_from_a_real_repository(engine_with_containers, upstrea
     dump = "/databases/ops/db/all_databases.sql"
     restic_run(restic, repo, "backup", "--stdin", "--stdin-filename", dump, stdin="-- dump\n")
 
-    home_ops = Settings.from_env(SETTINGS["home-ops"])
+    consumer = Settings.from_env(SETTINGS["consumer"])
     command = tuple(restic_command(restic, repo, "--env", "RESTIC_REPOSITORY"))  # passed on from the check
     config = Config(
         restic_repository="/repo",
         docker_host=docker.url.replace("http://", "tcp://"),
-        stack_back=home_ops,
+        stack_back=consumer,
         restic_command=command,
     )
     metrics = collect(config)
@@ -244,7 +244,7 @@ def test_a_malformed_repository_url_never_reaches_the_log(engine_with_containers
     config = Config(
         restic_repository=repository,
         docker_host=docker.url.replace("http://", "tcp://"),
-        stack_back=Settings.from_env(SETTINGS["home-ops"]),
+        stack_back=Settings.from_env(SETTINGS["consumer"]),
         restic_command=tuple(command),
     )
     Exporter(config).refresh()

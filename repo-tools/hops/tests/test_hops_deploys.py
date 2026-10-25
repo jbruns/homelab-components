@@ -90,7 +90,7 @@ def test_json_lists_each_run_with_its_stacks_and_message(hops, doco_cd):
         "job_id": FAILED,
         "trigger": "poll",
         "status": "failed",
-        "repository": "github.com/jbruns/home-ops",
+        "repository": "github.com/example/consumer",
         "revision": "main",
         "stacks": ["navidrome", "ownfoil"],
         "message": "deployment failed: failed to deploy stack ownfoil: failed to deploy stack: "

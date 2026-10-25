@@ -1,6 +1,6 @@
 """Image tag shapes: which tags count as newer releases of a pinned tag.
 
-The same rule as homelab-components' Canary: a candidate has the pinned tag's `v` prefix, number
+The same rule as this repo's Canary: a candidate has the pinned tag's `v` prefix, number
 of version parts and variant suffix (`-alpine`), so a pre-release (`-rc.1`) or another variant
 never qualifies. A candidate more than one major version ahead of the pin is rejected: registries
 carry stray tags (lscr.io's qbittorrent has a 2021 `20.04.1` beside `5.2.4`).

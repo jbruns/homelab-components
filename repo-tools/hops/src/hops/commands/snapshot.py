@@ -1,4 +1,4 @@
-"""hops snapshot take|list|release: Rollback Snapshots (GLOSSARY, ADR 0011) through TrueNAS."""
+"""hops snapshot take|list|release: Rollback Snapshots (GLOSSARY) through TrueNAS."""
 
 from hops import hygiene, output, snapshots, volumes
 from hops.errors import UsageError

@@ -563,8 +563,8 @@ def test_strays_without_truenas_keys_says_snapshots_were_not_checked(hops, fake_
     assert outcome.code == 0, outcome.err
     report = json.loads(outcome.out)
     assert report["snapshots"] is None
-    assert "HOPS_TRUENAS_TRUENAS_URL is not set" in report["snapshots_unchecked"]
-    assert "Rollback Snapshots not checked: HOPS_TRUENAS_TRUENAS_URL is not set" in hops("strays").out
+    assert "HOPS_HOST_A_TRUENAS_URL is not set" in report["snapshots_unchecked"]
+    assert "Rollback Snapshots not checked: HOPS_HOST_A_TRUENAS_URL is not set" in hops("strays").out
     assert "SSH_HOST" not in report["snapshots_unchecked"]
 
 
@@ -577,7 +577,7 @@ def test_strays_on_a_host_without_zfs_has_no_rollback_snapshots_to_check(hops, f
     assert report["snapshots"] is None
     assert (
         report["snapshots_unchecked"]
-        == "Host 'truenas' has no truenas and zfs capabilities, so it has no Rollback Snapshots"
+        == "Host 'host-a' has no truenas and zfs capabilities, so it has no Rollback Snapshots"
     )
     assert "Rollback Snapshots" not in hops("strays").out
 

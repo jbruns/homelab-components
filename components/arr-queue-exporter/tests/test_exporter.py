@@ -1,7 +1,7 @@
 """The exporter through its public interface: the /metrics and /healthz it serves, its healthcheck and config.
 
-LEGACY_METRICS is what the exporter served in jbruns/home-ops, where one process watched Sonarr and Radarr; the
-home-ops alerts and dashboards rely on those series. One instance now watches one app, and two instances must
+LEGACY_METRICS is what the exporter served in a consumer repo, where one process watched Sonarr and Radarr; that
+repo's alerts and dashboards rely on those series. One instance now watches one app, and two instances must
 serve the same series.
 """
 
@@ -133,7 +133,7 @@ def test_reports_queue_counts_and_each_stuck_item(fake_arr):
     )
 
 
-def test_two_instances_serve_the_series_the_combined_home_ops_exporter_did(fake_arr):
+def test_two_instances_serve_the_series_the_combined_legacy_exporter_did(fake_arr):
     with (
         exporter(fake_arr(SONARR_RECORDS), app="sonarr") as sonarr,
         exporter(fake_arr(RADARR_RECORDS), app="radarr") as radarr,

@@ -18,7 +18,7 @@ SOPS_ENV = "sops_version=3.9.0\n"
 HOSTS_YAML = """
     version: 1
     hosts:
-      truenas:
+      host-a:
         stack_root: tn
         deployer: doco-cd
         capabilities: [truenas, zfs]
@@ -154,7 +154,7 @@ def validate(repo, monkeypatch, tmp_path):
     return validate_module
 
 
-# home-ops' generators are scripts in the repo; the fixture repo stands in for them.
+# A consumer repo's generators are scripts in the repo; the fixture repo stands in for them.
 GENERATORS = {
     "dashboards": "tools/dashboards/dashboards.py",
     "declared-containers": "tools/declared-containers/declared_containers.py",

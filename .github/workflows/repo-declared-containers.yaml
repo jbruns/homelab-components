@@ -13,11 +13,11 @@ on:
       extra-args:
         description: >-
           more homelab-declared-containers arguments, split like a shell command line but never run through a shell,
-          e.g. --host truenas
+          e.g. --host host-a
         type: string
         default: ""
       tool-ref:
-        description: homelab-components ref (tag or commit) to install declared-containers from; empty means this workflow's commit
+        description: Repo Tooling repo ref (tag or commit) to install declared-containers from; empty means this workflow's commit
         type: string
         default: ""
       uv-version:
@@ -52,7 +52,7 @@ jobs:
           repo=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
           ref=${TOOL_REF:-$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")}
           if [ -z "$repo" ] || [ -z "$ref" ]; then
-            echo "::error::cannot tell which homelab-components commit to install declared-containers from; set tool-ref"
+            echo "::error::cannot tell which Repo Tooling repo commit to install declared-containers from; set tool-ref"
             exit 1
           fi
           uv tool install "git+$GITHUB_SERVER_URL/$repo@$ref#subdirectory=repo-tools/declared-containers"

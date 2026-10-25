@@ -97,7 +97,7 @@ def run_host(repo, runner, host, server, capsys):
 
 
 def test_json_reports_pools_datasets_docker_and_tasks(run_host):
-    code, out, err = run_host("--json", env={"HOPS_TRUENAS_HOST_DATASETS": "luna"})
+    code, out, err = run_host("--json", env={"HOPS_HOST_A_HOST_DATASETS": "luna"})
     assert (code, err) == (0, "")
     report = json.loads(out)
 
@@ -230,7 +230,7 @@ def test_configured_dataset_that_does_not_exist_is_a_note(run_host, server):
         return resource_query(options)
 
     server.methods["zfs.resource.query"] = query
-    code, out, _ = run_host("--json", env={"HOPS_TRUENAS_HOST_DATASETS": "tank/gone, luna/ix-apps/docker"})
+    code, out, _ = run_host("--json", env={"HOPS_HOST_A_HOST_DATASETS": "tank/gone, luna/ix-apps/docker"})
     report = json.loads(out)
     assert code == 0
     assert [(d["name"], d["roles"]) for d in report["datasets"]] == [
@@ -246,7 +246,7 @@ def test_without_the_truenas_capability_only_docker_is_shown(run_host, plain_hos
     report = json.loads(out)
     assert (report["pools"], report["datasets"], report["rollback_snapshots"], report["tasks"]) == (None,) * 4
     assert len(report["docker"]) == 4
-    assert report["notes"] == ["Host 'truenas' has no TrueNAS: hosts.yaml does not give it the truenas capability"]
+    assert report["notes"] == ["Host 'host-a' has no TrueNAS: hosts.yaml does not give it the truenas capability"]
     assert server.requests == []
     assert host.docker_calls == [["system", "df", "--format", "json"]]
 
@@ -260,7 +260,7 @@ def test_without_truenas_keys_only_docker_is_shown_with_the_missing_keys(run_hos
     report = json.loads(out)
     assert report["pools"] is None and len(report["docker"]) == 4
     (note,) = report["notes"]
-    assert "HOPS_TRUENAS_TRUENAS_URL is not set" in note and "HOPS_TRUENAS_TRUENAS_API_KEY is not set" in note
+    assert "HOPS_HOST_A_TRUENAS_URL is not set" in note and "HOPS_HOST_A_TRUENAS_API_KEY is not set" in note
     assert server.requests == []
 
 
@@ -297,7 +297,7 @@ def test_dataset_errors_are_noted_without_their_text(run_host, server):
 
     server.methods["filesystem.statfs"] = failing
     server.methods["zfs.resource.query"] = failing
-    code, out, err = run_host("--json", env={"HOPS_TRUENAS_HOST_DATASETS": "luna"})
+    code, out, err = run_host("--json", env={"HOPS_HOST_A_HOST_DATASETS": "luna"})
     assert code == 0 and SECRET not in out + err
     assert json.loads(out)["notes"] == [
         "docker dataset unknown: TrueNAS read failed (filesystem.statfs)",

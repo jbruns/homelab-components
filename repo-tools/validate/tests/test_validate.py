@@ -222,11 +222,11 @@ VOLUME_STACKS = {"app", "edge", "monitoring"}
         ),
         (
             {"data": {"name": "web_data", "external": True}},
-            ["app: volume name web_data must start with app_ (ADR 0010)"],
+            ["app: volume name web_data must start with app_"],
         ),
         (
             {"log": {"name": "edge_log", "labels": {"homeops.regenerable": "x"}}},
-            ["app: volume name edge_log must start with app_ (ADR 0010)"],
+            ["app: volume name edge_log must start with app_"],
         ),
     ],
 )
@@ -792,7 +792,7 @@ def test_compose_reports_every_rule(validate, repo, capsys, monkeypatch):
     )
     validate.check_compose()
     out = messages(validate)
-    assert "app: services without a valid startup-order label (0-3, ADR-0003): bare" in out
+    assert "app: services without a valid startup-order label (0-3): bare" in out
     assert "app: web: has an https router but no probe.url label" in out
     assert "app: services without json-file logging at max-size 10m, max-file 3: bare" in out
     assert "app: services without restart: unless-stopped: bare" in out
@@ -800,14 +800,14 @@ def test_compose_reports_every_rule(validate, repo, capsys, monkeypatch):
         "app: env_file format is unsupported by doco-cd (use the default and single-quote values containing $): web"
         in out
     )
-    assert "app: Baseline (ADR 0007): bare: must extend tn/_baseline.yaml" in out
+    assert "app: Baseline: bare: must extend tn/_baseline.yaml" in out
     assert (
         "web: misses Baseline item 'anonymous-volumes' without a baseline.exempt.anonymous-volumes reason "
         "(image VOLUME paths with no mount: /plugin)"
     ) in out
     assert "web: volume at /scratch has no source (an anonymous volume)" in out
-    assert "app: volumes (ADR 0010): app: volume app_config must be external: true" in out
-    assert "volumes (ADR 0010): legacy name media_gone is no longer declared; drop its --legacy-volume" in out
+    assert "app: volumes: app: volume app_config must be external: true" in out
+    assert "volumes: legacy name media_gone is no longer declared; drop its --legacy-volume" in out
     assert "media_web_config" not in out
     assert "compose ok: monitoring" not in out
     assert "Baseline: " in capsys.readouterr().out
@@ -866,10 +866,10 @@ def test_compose_fails_clearly_when_the_registry_is_down(validate, repo, monkeyp
     )
     validate.check_compose()
     assert messages(validate).startswith(
-        f"app: web: cannot read the image config of {APPRISE} for its VOLUME paths (anonymous volumes, ADR 0007): "
+        f"app: web: cannot read the image config of {APPRISE} for its VOLUME paths (anonymous volumes): "
         "registry request failed: GET http://127.0.0.1:9/unreachable"
     )
-    assert "anonymous-volumes" not in messages(validate).split("ADR 0007): ", 1)[1]
+    assert "anonymous-volumes" not in messages(validate).split("(anonymous volumes): ", 1)[1]
 
 
 def test_registry_requests_retry_rate_limits_and_server_errors(validate):
@@ -1001,7 +1001,7 @@ def test_monitoring_reports_stale_declared_containers_under_root(validate, repo,
         },
     )
     validate.check_monitoring()
-    assert messages(validate) == f"stale --check --root {repo} --host truenas"
+    assert messages(validate) == f"stale --check --root {repo} --host host-a"
 
 
 # --- dependency rendering ---------------------------------------------------------------------

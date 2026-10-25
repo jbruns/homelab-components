@@ -3,9 +3,7 @@
 Shared Repo Tooling: the repository checks a consuming repo runs in CI on every PR and in its pre-commit hook,
 for **every Host** its `hosts.yaml` declares. It reads the Hosts and their stack roots through
 [`homelab_hosts`](../hosts/README.md), never runs on a Host, and needs no decryption key, production credential
-or Host access. Background: [ADR 0012 in
-jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shared-repo-tooling.md); the ADRs
-named in messages (0003, 0006, 0007, 0010) are jbruns/home-ops ADRs.
+or Host access. Its messages state the rule each check enforces.
 
 | Check | What it enforces, for each Host |
 |---|---|
@@ -44,7 +42,7 @@ Prerequisites, by check:
 ```sh
 homelab-validate                                  # every check, every Host
 homelab-validate secrets env                      # just these
-homelab-validate --host truenas monitoring        # one Host
+homelab-validate --host host-a monitoring        # one Host
 ```
 
 With no check named, every check runs, including `isolation`. Exit status is 1 if any check failed, or if
@@ -58,7 +56,7 @@ With no check named, every check runs, including `isolation`. Exit status is 1 i
 - `--path NAME=PATH`: move one [input](#inputs), relative to `--root` or absolute, for every selected Host. It must
   exist (a directory or file, as the input needs) for every selected Host, or each check that reads it fails. Repeat
   it for several. To move an input differently per Host, run once per Host with `--host`.
-- `--legacy-volume NAME`: a volume name from before ADR 0010, allowed until its Stack renames it. Repeat it for
+- `--legacy-volume NAME`: a volume name from before the [naming rule](#volumes), allowed until its Stack renames it. Repeat it for
   several. A `compose` run over every Host fails while one is given that no Stack declares, so the list only
   shrinks.
 - `--legacy-stack NAME`: a folder under each selected Host's stack root that is still in a pre-layout form
@@ -135,7 +133,7 @@ is current. A script path is run with the Python running validate; `dashboards` 
 
 ## The Baseline
 
-The Baseline (ADR 0007) is the settings every Service carries. This tool owns its items:
+The Baseline is the settings every Service carries. This tool owns its items:
 
 | Item | Met when |
 |---|---|
@@ -156,8 +154,8 @@ A Service that cannot meet an item records an **Exemption** as a label, `baselin
 An Exemption naming no item, or one the Service no longer needs, fails. `compose` prints, per Host, how many
 Services meet the Baseline and lists every Exemption.
 
-Each Service held to the Baseline must also follow ADR 0006 for its Traefik routers: names that carry their
-kind (UI, health, Client Path), health and Client Path rules, and Protected Probes.
+Each Service held to the Baseline must also meet the rules for its Traefik routers: names that carry
+their kind (UI, health, Client Path), health and Client Path rules, and Protected Probes.
 
 ## Volumes
 

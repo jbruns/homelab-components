@@ -13,7 +13,7 @@ import homelab_declared_containers as declared_containers
 HOSTS_YAML = """
     version: 1
     hosts:
-      truenas:
+      host-a:
         stack_root: tn
         deployer: doco-cd
         capabilities: [truenas, zfs]
@@ -87,7 +87,7 @@ def root(tmp_path):
     return tmp_path
 
 
-def host(root: Path, name: str = "truenas"):
+def host(root: Path, name: str = "host-a"):
     return load_hosts(root)[name]
 
 
@@ -149,9 +149,9 @@ def two_hosts(root):
         root,
         {
             "hosts.yaml": HOSTS_YAML
-            + "      nc8kg1101:\n        stack_root: sites/nc8kg1101\n        deployer: doco-cd\n"
+            + "      host-b:\n        stack_root: sites/host-b\n        deployer: doco-cd\n"
             + "        capabilities: []\n",
-            "sites/nc8kg1101/ops/compose.yaml": """
+            "sites/host-b/ops/compose.yaml": """
                 services:
                   apprise:
                     container_name: apprise
@@ -164,8 +164,8 @@ def two_hosts(root):
 
 def test_each_host_declares_only_its_own_stacks(two_hosts):
     assert declared_containers.render(host(two_hosts)) == EXPECTED
-    other = declared_containers.render(host(two_hosts, "nc8kg1101"))
-    assert "A Service that sites/nc8kg1101/ declares" in other
+    other = declared_containers.render(host(two_hosts, "host-b"))
+    assert "A Service that sites/host-b/ declares" in other
     assert other.splitlines()[2:] == [
         'homeops_container_declared{stack="ops",service="apprise",name="apprise",tier="warning"} 1'
     ]
@@ -174,22 +174,22 @@ def test_each_host_declares_only_its_own_stacks(two_hosts):
 def test_writes_and_checks_one_file_per_host(two_hosts):
     r = run("--root", str(two_hosts), "--check")
     assert r.returncode == 1
-    assert f"tn/{OUT}: stale" in r.stdout and f"sites/nc8kg1101/{OUT}: stale" in r.stdout
+    assert f"tn/{OUT}: stale" in r.stdout and f"sites/host-b/{OUT}: stale" in r.stdout
     assert run("--root", str(two_hosts)).returncode == 0
     assert (two_hosts / "tn" / OUT).read_text() == EXPECTED
-    assert 'stack="ops"' in (two_hosts / "sites/nc8kg1101" / OUT).read_text()
+    assert 'stack="ops"' in (two_hosts / "sites/host-b" / OUT).read_text()
     assert run("--root", str(two_hosts), "--check").returncode == 0
 
 
 def test_host_picks_one_host(two_hosts):
-    assert run("--root", str(two_hosts), "--host", "nc8kg1101").returncode == 0
-    assert (two_hosts / "sites/nc8kg1101" / OUT).exists() and not (two_hosts / "tn" / OUT).exists()
+    assert run("--root", str(two_hosts), "--host", "host-b").returncode == 0
+    assert (two_hosts / "sites/host-b" / OUT).exists() and not (two_hosts / "tn" / OUT).exists()
 
 
 def test_out_needs_a_single_host(two_hosts):
     r = run("--root", str(two_hosts), "--out", "x.prom")
     assert r.returncode == 2 and "--out needs --host" in r.stderr
-    assert run("--root", str(two_hosts), "--host", "truenas", "--out", str(two_hosts / "x.prom")).returncode == 0
+    assert run("--root", str(two_hosts), "--host", "host-a", "--out", str(two_hosts / "x.prom")).returncode == 0
 
 
 def test_reports_an_invalid_hosts_file(root):

@@ -4,7 +4,7 @@
       "job_id": "01a1693c-5d48-709e-92f3-d5fbed5edfc0",
       "trigger": "poll",
       "status": "succeeded",
-      "repository": "github.com/jbruns/home-ops",
+      "repository": "github.com/example/consumer",
       "revision": "main",
       "deployments": [
         {
@@ -106,7 +106,7 @@
       "job_id": "01a16935-0b6e-7c1e-9a51-2f6b0d1c8e40",
       "trigger": "poll",
       "status": "skipped",
-      "repository": "github.com/jbruns/home-ops",
+      "repository": "github.com/example/consumer",
       "revision": "main",
       "deployments": [
         {
@@ -124,7 +124,7 @@
       "job_id": "01a160c2-5f1a-7b33-8d0e-4c2a9e7b6f11",
       "trigger": "poll",
       "status": "skipped",
-      "repository": "github.com/jbruns/home-ops",
+      "repository": "github.com/example/consumer",
       "revision": "main",
       "deployments": [
         {
@@ -142,7 +142,7 @@
       "job_id": "01a160a4-3901-7c7d-b694-0570e23af5f6",
       "trigger": "poll",
       "status": "failed",
-      "repository": "github.com/jbruns/home-ops",
+      "repository": "github.com/example/consumer",
       "revision": "main",
       "deployments": [
         {

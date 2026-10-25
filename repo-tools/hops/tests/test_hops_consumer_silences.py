@@ -2,9 +2,9 @@
 
 These read a consuming repo's Stacks and its monitoring Stack (Prometheus's alerting-rules.yml and
 prometheus.yml, Alertmanager's config.yml): by default tests/fixtures/consumer, a cut-down copy of
-home-ops's. To check a real one, whose Stacks and Services must include the ones named below:
+a consumer repo's. To check a real one, whose Stacks and Services must include the ones named below:
 
-    HOPS_CONSUMER_REPO=~/src/home-ops pytest tests/test_hops_consumer_silences.py
+    HOPS_CONSUMER_REPO=~/src/<consumer> pytest tests/test_hops_consumer_silences.py
 
 The Host is HOPS_CONSUMER_HOST, else the consuming repo's only Host.
 """

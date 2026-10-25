@@ -1,7 +1,10 @@
 # Contributing
 
-For humans and agents. Vocabulary (Custom Component, Retirement Condition, Contract Test, Canary) follows
-[jbruns/home-ops GLOSSARY.md](https://github.com/jbruns/home-ops/blob/main/GLOSSARY.md).
+For humans and agents. Vocabulary (Custom Component, Retirement Condition, Contract Test, Canary) follows the
+consumer repos' GLOSSARY.md. Keep this repo agnostic of its consumers: name no consumer repo, Host, person or login,
+and state a rule rather than cite a consumer's ADR ([ADR 0001](docs/adr/0001-agnostic-of-consumers.md),
+[ADR 0002](docs/adr/0002-no-names-in-prose-or-output.md)). Test fixtures use placeholder Hosts (`host-a`,
+`host-b`) and domains (`example.com`).
 
 ## Set up
 
@@ -43,7 +46,7 @@ Python 3.13 matches the distroless base image. Test dependencies live in `requir
    disagree.
 6. **Ship a healthcheck.** The image runs `python3 -m <package> healthcheck`, which exits 0 only when the
    process answers on its own `/healthz` (which never calls an upstream, so a slow upstream cannot mark it
-   unhealthy), and declares it as the Dockerfile `HEALTHCHECK`, so a Compose Service meets the home-ops
+   unhealthy), and declares it as the Dockerfile `HEALTHCHECK`, so a Compose Service meets the
    Baseline without `wget` or a shell. If the image cannot start without some env (an API key, say),
    put dummy values in `tests/smoke.env`; CI starts the image with them and waits for healthy.
 7. **Keep the image minimal.** Stdlib-only Python on `gcr.io/distroless/python3-debian13:nonroot`, pinned by
@@ -64,9 +67,8 @@ Python 3.13 matches the distroless base image. Test dependencies live in `requir
 
 ## Shared Repo Tooling
 
-Repo Tooling that more than one homelab repo runs (jbruns/home-ops, asotbz/ops) lives here under `repo-tools/`,
-so a fix lands once and every repo picks it up through a pin ([ADR 0012 in
-jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shared-repo-tooling.md)).
+Repo Tooling that more than one consumer repo runs lives here under `repo-tools/`, so a fix lands once and every
+repo picks it up through a pin.
 
 - **Here or in the consuming repo?** A tool belongs here when a second repo needs it, or when it takes everything
   repo-specific from the repo it runs in (its `hosts.yaml`, its `.env`, its stack roots). Tooling that only makes

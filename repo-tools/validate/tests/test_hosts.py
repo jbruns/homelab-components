@@ -10,11 +10,11 @@ from conftest import HOSTS_YAML, SOPS_ENV, commit, configure, git, write
 from test_validate import FIXTURES, docker_compose_available, messages, run_cli
 
 # A second Host: nested stack root, a renamed doco-cd Stack, no capabilities, no monitoring or Traefik.
-SITE = "sites/nc8kg1101"
+SITE = "sites/host-b"
 MULTI_HOSTS_YAML = (
     HOSTS_YAML
     + f"""
-      nc8kg1101:
+      host-b:
         stack_root: {SITE}
         deployer: doco-cd
         capabilities: []
@@ -48,7 +48,7 @@ def test_every_host_is_checked(multi, capsys):
     out = capsys.readouterr().out
     assert messages(multi) == ""
     assert "env checked: web" in out and "env checked: app" in out
-    assert f"cloudflare: nc8kg1101 has no {SITE}/edge/traefik/service.yaml; skipped" in out
+    assert f"cloudflare: host-b has no {SITE}/edge/traefik/service.yaml; skipped" in out
 
 
 def test_env_reports_the_second_hosts_stack(multi, repo):
@@ -65,24 +65,24 @@ def test_layout_holds_for_every_host(multi, repo):
 
 
 def test_host_option_selects_one_host(multi, repo, capsys):
-    configure(multi, repo, host="nc8kg1101")
+    configure(multi, repo, host="host-b")
     multi.check_env()
     out = capsys.readouterr().out
     assert "env checked: web" in out and "env checked: app" not in out
 
 
 def test_monitoring_skips_a_host_without_prometheus(multi, repo, runtime, capsys):
-    configure(multi, repo, host="nc8kg1101")
+    configure(multi, repo, host="host-b")
     multi.check_monitoring()
     assert runtime.runs == [] and messages(multi) == ""
-    assert f"monitoring: nc8kg1101 has no {SITE}/monitoring/prometheus; skipped" in capsys.readouterr().out
+    assert f"monitoring: host-b has no {SITE}/monitoring/prometheus; skipped" in capsys.readouterr().out
 
 
 def test_monitoring_checks_declared_containers_per_host(multi, repo, runtime):
     write(repo, {"tools/declared-containers/declared_containers.py": "import sys; print(*sys.argv[1:]); exit(1)\n"})
     write(repo, {f"{SITE}/monitoring/prometheus/service.yaml": "services:\n  prometheus:\n    image: prom/p:2\n"})
     multi.check_monitoring()
-    assert multi.failures == [f"--check --root {repo} --host truenas", f"--check --root {repo} --host nc8kg1101"]
+    assert multi.failures == [f"--check --root {repo} --host host-a", f"--check --root {repo} --host host-b"]
     assert "prom/p:2" in [r.image for r in runtime.runs]
 
 
@@ -140,16 +140,16 @@ def test_compose_holds_each_host_to_its_own_baseline(multi, repo, capsys):
     commit(repo)
     multi.check_compose()
     out = messages(multi)
-    assert f"web: Baseline (ADR 0007): nginx: must extend {SITE}/_baseline.yaml" in out
+    assert f"web: Baseline: nginx: must extend {SITE}/_baseline.yaml" in out
     # The doco-cd Stack carries the Baseline inline instead of extending it.
     assert "deployer: must extend" not in out
     printed = capsys.readouterr().out
-    assert "Services on truenas meet it" in printed and "Services on nc8kg1101 meet it" in printed
+    assert "Services on host-a meet it" in printed and "Services on host-b meet it" in printed
 
 
 @pytest.mark.skipif(not docker_compose_available(), reason="needs docker compose")
 def test_a_legacy_volume_of_an_unselected_host_is_not_reported_gone(multi, repo, monkeypatch):
-    configure(multi, repo, host="nc8kg1101", legacy_volumes={"media_config"})
+    configure(multi, repo, host="host-b", legacy_volumes={"media_config"})
     multi.check_compose()
     assert "legacy name" not in messages(multi)
 
@@ -157,7 +157,7 @@ def test_a_legacy_volume_of_an_unselected_host_is_not_reported_gone(multi, repo,
 def test_a_legacy_stack_of_an_unselected_host_is_not_reported_gone(multi, repo):
     write(repo, {"tn/old/docker-compose.yaml": "services: {}\n"})
     commit(repo)
-    configure(multi, repo, host="nc8kg1101", legacy_stacks={"old"})
+    configure(multi, repo, host="host-b", legacy_stacks={"old"})
     multi.check_secrets()
     assert multi.failures == []
     configure(multi, repo, legacy_stacks={"old"})

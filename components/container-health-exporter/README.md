@@ -52,7 +52,7 @@ Scrape with `honor_labels: true` so each series keeps its own `container` and `s
 ## Healthcheck
 
 `healthcheck` exits 0 when the exporter answers on its own `/healthz`, which never calls Docker. The image
-declares it as its `HEALTHCHECK`; Compose should declare the same one (home-ops Baseline):
+declares it as its `HEALTHCHECK`; Compose should declare the same one (the Baseline):
 
 ```yaml
 healthcheck:

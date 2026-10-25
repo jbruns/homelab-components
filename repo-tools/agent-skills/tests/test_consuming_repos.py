@@ -14,9 +14,9 @@ def test_two_repos_pin_different_sources_and_skill_sets(make_source, make_projec
     other.publish("ops/runbook", "ops/triage")
     other_revision = other.publish("ops/runbook")
 
-    first = make_project("home-ops", home)
+    first = make_project("consumer-a", home)
     first.write_lock(home_revision, "exclude grill", "include misc/wizard")
-    second = make_project("ops", other)
+    second = make_project("consumer-b", other)
     second.write_lock(other_revision, "include ops/triage", "target .claude/skills", ref="main")
 
     monkeypatch.chdir(first.path)

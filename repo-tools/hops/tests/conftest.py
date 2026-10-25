@@ -26,7 +26,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def repo(tmp_path) -> Path:
-    """A consuming repo with the STACKS fixture: hosts.yaml with Host `truenas` (stack root tn) (not a git
+    """A consuming repo with the STACKS fixture: hosts.yaml with Host `host-a` (stack root tn) (not a git
     repository)."""
     root = tmp_path / "repo"
     write(root, STACKS)
@@ -35,7 +35,7 @@ def repo(tmp_path) -> Path:
 
 @pytest.fixture
 def plain_host(repo) -> Path:
-    """The fixture repo with Host truenas declared without capabilities: a plain doco-cd Host."""
+    """The fixture repo with Host host-a declared without capabilities: a plain doco-cd Host."""
     write(repo, {"hosts.yaml": hosts_yaml(capabilities="[]")})
     return repo
 

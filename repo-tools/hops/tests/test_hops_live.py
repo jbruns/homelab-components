@@ -1,10 +1,10 @@
 """Read-only checks against a real Host. Skipped unless selected, and run from a consuming repo's checkout:
 
-    HOPS_CONSUMER_REPO=~/src/home-ops .venv/bin/pytest -m live
+    HOPS_CONSUMER_REPO=~/src/<consumer> .venv/bin/pytest -m live
 
 The Host is HOPS_CONSUMER_HOST, else the consuming repo's only Host; its HOPS_<NAME>_* keys come from that
-repo's .env. The Services named below are home-ops's; the TrueNAS and host tests need a Host with the
-truenas and zfs capabilities. Never add a command here that changes anything on the Host.
+repo's .env. The consuming repo must declare the Services named below; the TrueNAS and host tests need a Host
+with the truenas and zfs capabilities. Never add a command here that changes anything on the Host.
 """
 
 import json

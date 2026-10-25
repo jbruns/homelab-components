@@ -4,8 +4,7 @@ Shared Repo Tooling: `setup-agent-skills` installs the agent skills a consuming 
 `.agent-skills.lock`, and checks offline that the installed skills still match it. Every repo-specific value (the
 skills source, its pin, the skill set and where the skills install) comes from that file, so each repo pins its own
 set. It is local development tooling: it never runs on a Host, needs no Host access, Docker or secrets, and deploys
-nothing. Background: [ADR 0012 in
-jbruns/home-ops](https://github.com/jbruns/home-ops/blob/main/docs/adr/0012-shared-repo-tooling.md).
+nothing.
 
 Needs Git 2.25+ (sparse checkout) and Python 3.11+ (uv provides one). It has no Python dependencies.
 
@@ -16,7 +15,7 @@ uv caches, so `check` keeps working offline after the first run; the tag beside 
 
 ```bash
 #!/usr/bin/env bash
-# setup-agent-skills from jbruns/homelab-components (shared Repo Tooling), pinned by commit.
+# setup-agent-skills from the Repo Tooling repo, pinned by commit.
 # Usage and the .agent-skills.lock format: https://github.com/jbruns/homelab-components/tree/main/repo-tools/agent-skills
 set -euo pipefail
 tag=agent-skills-v1.0.0
@@ -145,7 +144,7 @@ about to copy before copying them, so an interrupted install stays managed: `che
 finishes the job. `clean` removes only the skills listed in each target's state; with a missing or invalid lock it
 cleans `.agents/skills`. If a state file is lost, move the conflicting skill directories aside before reinstalling.
 
-The state format is unchanged from jbruns/home-ops' original `tools/agent-skills`, so an install made by either
+The state format is unchanged from the original `tools/agent-skills` in a consumer repo, so an install made by either
 passes the other's `check`.
 
 ## Develop

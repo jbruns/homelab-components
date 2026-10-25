@@ -3,7 +3,7 @@
     "job_id": "01a160a4-3901-7c7d-b694-0570e23af5f6",
     "trigger": "poll",
     "status": "failed",
-    "repository": "github.com/jbruns/home-ops",
+    "repository": "github.com/example/consumer",
     "revision": "main",
     "deployments": [
       {
