@@ -3,7 +3,8 @@
   "extends": [
     "config:recommended",
     "docker:pinDigests",
-    "helpers:pinGitHubActionDigests"
+    "helpers:pinGitHubActionDigests",
+    ":enablePreCommit"
   ],
   "timezone": "America/Los_Angeles",
   "packageRules": [
