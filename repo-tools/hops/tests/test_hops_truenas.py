@@ -244,6 +244,34 @@ def test_bad_json_param_is_a_usage_error(hops_tn, server):
         "alert.list",
         "system.info",
         "system.version",
+        "sharing.smb.query",
+        "sharing.nfs.query",
+        "smb.config",
+        "nfs.config",
+        "ssh.config",
+        "user.query",
+        "group.query",
+        "certificate.query",
+        "api_key.query",
+        "system.general.config",
+        "system.advanced.config",
+        "network.configuration.config",
+        "staticroute.query",
+        "docker.config",
+        "docker.status",
+        "catalog.config",
+        "pool.resilver.config",
+        "update.config",
+        "system.ntpserver.query",
+        "audit.config",
+        "system.security.config",
+        "auth.twofactor.config",
+        "ups.config",
+        "tunable.query",
+        "initshutdownscript.query",
+        "cronjob.query",
+        "filesystem.stat",
+        "filesystem.getacl",
     ],
 )
 def test_call_accepts_reads_in_allowed_namespaces(hops_tn, server, method):
@@ -280,17 +308,15 @@ def test_call_refuses_anything_but_a_read(hops_tn, server, method):
     [
         "alertservice.query",
         "snmp.config",
-        "tunable.query",
-        "user.query",
-        "group.query",
-        "api_key.query",
-        "cronjob.query",
-        "ssh.config",
+        "keychaincredential.query",
         "cloudsync.credentials.query",
         "app.query",
         "vm.query",
+        "virt.instance.query",
         "mail.config",
-        "network.configuration.config",
+        "directoryservices.config",
+        "kerberos.config",
+        "reporting.exporters.query",
         "replication.config.config",
         "alert.query",
     ],
@@ -385,6 +411,80 @@ def test_call_on_a_host_without_the_truenas_capability_is_refused(plain_host, ca
 )
 def test_redact_secrets_with_terse_names(method, result, shown):
     assert truenas.redact(result, method) == shown
+
+
+@pytest.mark.parametrize(
+    "method, result, shown",
+    [
+        (
+            "user.query",
+            [{"username": "a", "unixhash": "$6$x", "smbhash": "*", "sshpubkey": None, "password_disabled": False}],
+            [
+                {
+                    "username": "a",
+                    "unixhash": "[REDACTED]",
+                    "smbhash": "[REDACTED]",
+                    "sshpubkey": None,
+                    "password_disabled": False,
+                }
+            ],
+        ),
+        (
+            "ssh.config",
+            {"passwordauth": True, "privatekey": "k", "host_ed25519_key": "k", "host_ed25519_key_pub": "p"},
+            {
+                "passwordauth": True,
+                "privatekey": "[REDACTED]",
+                "host_ed25519_key": "[REDACTED]",
+                "host_ed25519_key_pub": "[REDACTED]",
+            },
+        ),
+        (
+            "api_key.query",
+            [{"name": "ci", "key": "k", "expires_at": None}],
+            [{"name": "ci", "key": "[REDACTED]", "expires_at": None}],
+        ),
+        (
+            "system.advanced.config",
+            {"sed_passwd": "pw", "anonstats_token": "t", "motd": "hi"},
+            {"sed_passwd": "[REDACTED]", "anonstats_token": "[REDACTED]", "motd": "hi"},
+        ),
+        (
+            "system.general.config",
+            {"ui_certificate": {"name": "ui", "certificate": "PEM", "privatekey": "PEM"}},
+            {"ui_certificate": {"name": "ui", "certificate": "PEM", "privatekey": "[REDACTED]"}},
+        ),
+        (
+            "ups.config",
+            {"monuser": "upsmon", "extrausers": "[admin]\npassword = pw"},
+            {"monuser": "upsmon", "extrausers": "[REDACTED]"},
+        ),
+    ],
+)
+def test_redact_secrets_in_host_configuration_reads(method, result, shown):
+    assert truenas.redact(result, method) == shown
+
+
+def test_redact_udev_tunables_but_not_sysctl_or_zfs():
+    assert truenas.redact(
+        [
+            {"type": "UDEV", "var": "10-x", "value": "ACTION==add, RUN+=/x", "orig_value": ""},
+            {"type": "SYSCTL", "var": "vm.swappiness", "value": "10", "orig_value": "60"},
+            {"type": "ZFS", "var": "zfs_arc_max", "value": "0", "orig_value": "0"},
+        ],
+        "tunable.query",
+    ) == [
+        {"type": "UDEV", "var": "10-x", "value": "[REDACTED]", "orig_value": "[REDACTED]"},
+        {"type": "SYSCTL", "var": "vm.swappiness", "value": "10", "orig_value": "60"},
+        {"type": "ZFS", "var": "zfs_arc_max", "value": "0", "orig_value": "0"},
+    ]
+
+
+@pytest.mark.parametrize("method", ["initshutdownscript.query", "cronjob.query"])
+def test_call_shows_init_and_cron_commands_but_not_scripts(hops_tn, server, method):
+    server.methods[method] = lambda: [{"id": 1, "type": "COMMAND", "command": "zfs mount -a", "script": "/mnt/a.sh"}]
+    _, out, _ = hops_tn("truenas", "call", method)
+    assert json.loads(out) == [{"id": 1, "type": "COMMAND", "command": "zfs mount -a", "script": "[REDACTED]"}]
 
 
 def test_redact_userinfo_in_any_url():

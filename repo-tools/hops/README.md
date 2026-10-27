@@ -14,7 +14,7 @@ doco-cd deploys after merge. `hops` never runs `docker compose`.
 ## Install
 
 ```sh
-uv tool install "git+https://github.com/jbruns/homelab-components@hops-v1.1.0#subdirectory=repo-tools/hops"
+uv tool install "git+https://github.com/jbruns/homelab-components@hops-v1.2.0#subdirectory=repo-tools/hops"
 hops --help
 ```
 
@@ -243,34 +243,57 @@ unchanged.
 
 ### truenas call
 
-On a `truenas` Host only. A passthrough for Host-hygiene reads that no other command covers, e.g.
+On a `truenas` Host only. A passthrough for Host-hygiene reads and for auditing the Host's
+configuration where no other command covers it, e.g.
 `hops truenas call pool.query '[["name","=","tank"]]' '{"order_by":["name"]}'`. Each
 `json-param` is one JSON value, passed as one positional parameter of the method. It fails
 closed: anything not listed here is refused (exit 2) before connecting.
 
 - **Read methods only:** `*.query`, `*.get_instance`, `*.config`, plus `system.info`,
-  `system.version`, `pool.dataset.details` and `alert.list`. The scoped key can create and delete
-  its own API keys, so `api_key.*` writes are refused like any other write.
+  `system.version`, `pool.dataset.details`, `alert.list`, `docker.status`, `filesystem.stat` and
+  `filesystem.getacl`. The scoped key can create and delete its own API keys, so `api_key.*` writes
+  are refused like any other write.
 - **Allowed namespaces only.** The `*.query`/`*.get_instance`/`*.config` reads must be in one of:
-  `pool`, `pool.dataset`, `pool.snapshot`, `pool.snapshottask`, `pool.scrub`, `disk`, `boot`,
-  `boot.environment`, `replication`, `cloudsync` (tasks; `cloudsync.credentials` is refused),
-  `service` and `interface` (TrueNAS's API name for network interfaces). Each was checked against
-  TrueNAS 25.10's API schema for secret-bearing fields. Everything else is refused, for example
-  `alertservice` (webhook URLs), `snmp` (community strings), `tunable`, `user`, `group`,
-  `api_key`, `cronjob`, `ssh`, `app`, `virt` and `vm`. Widen the list here and in
-  `hops/commands/truenas.py` together, after checking the namespace's schema.
+  - storage: `pool`, `pool.dataset`, `pool.snapshot`, `pool.snapshottask`, `pool.scrub`,
+    `pool.resilver`, `disk`, `boot`, `boot.environment`;
+  - data protection: `replication`, `cloudsync` (tasks; `cloudsync.credentials` is refused);
+  - network: `interface` (TrueNAS's API name for network interfaces), `network.configuration`,
+    `staticroute`;
+  - sharing and services: `service`, `sharing.smb`, `sharing.nfs`, `smb`, `nfs`, `ssh`, `ups`;
+  - accounts and access: `user`, `group`, `certificate`, `api_key`, `auth.twofactor`;
+  - system: `system.general`, `system.advanced`, `system.security`, `system.ntpserver`, `audit`,
+    `update`, `tunable`, `initshutdownscript`, `cronjob`;
+  - apps platform: `docker`, `catalog` (not `app`).
+
+  Each was checked against TrueNAS 25.10's API schema for secret-bearing fields, which the
+  redaction below masks. Everything else is refused, for example `app` (app configs hold the
+  apps' secrets), `keychaincredential` (SSH keypairs), `alertservice` (webhook URLs), `snmp`
+  (community strings), `directoryservices` and `kerberos` (bind credentials, keytabs), `mail`,
+  `reporting.exporters`, `virt` and `vm`. Widen the list here and in `hops/commands/truenas.py`
+  together, after checking the namespace's schema. TrueNAS 25.10 has no `smart.test` namespace.
 - **Query options:** `order_by`, `count`, `get`, `offset` and `limit` only. `select` is refused: a
   projection can drop the fields TrueNAS's own masking depends on (e.g. an alert service's `type`)
   or rename a secret. Filter the output locally instead. `extra` is refused: it switches on
-  per-method data, such as `disk.query`'s SED passwords.
+  per-method data, such as `disk.query`'s SED passwords. So is any other key in a dict parameter
+  (e.g. `audit.query`'s `services`), so `audit.query` reads only its default middleware events.
 - **Redaction**, as defense in depth behind the allowlist. A field whose name contains
-  `credential`, `key`, `pass`, `pwd`, `bindpw`, `secret`, `token`, `salt`, `hash` or `community` prints as `"[REDACTED]"` (`null` stays `null`). For
-  `cloudsync.credentials.*`, every field of `attributes`/`provider` except `type` is redacted too,
-  and for `kerberos.keytab.*` the keytab `file`. In every string, a URL's user name and password
-  print as `scheme://[REDACTED]@host…`. Fields holding user-written scripts, commands and
-  auxiliary config are redacted too, at any depth, when they hold a string or list: `command`,
-  `script`, `pre_script`, `post_script`, `args`, `extra`, `shutdowncmd`, `options`, `optionsupsd`,
-  `sudo_commands`, `sudo_commands_nopasswd`, `smb_options`, `auxsmbconf` and `cmdline`.
+  `credential`, `key`, `pass`, `pwd`, `bindpw`, `secret`, `token`, `salt`, `hash` or `community`
+  prints as `"[REDACTED]"` (`null` stays `null`, and a boolean such as `ssh.config`'s
+  `passwordauth` stays visible, as it holds no secret). So `user.query`'s `unixhash`, `smbhash`
+  and `sshpubkey`, `ssh.config`'s host keys, `certificate.query`'s `privatekey`, `api_key.query`'s
+  `key` and `system.advanced.config`'s `sed_passwd` print as `"[REDACTED]"` when set and `null`
+  when not. For `cloudsync.credentials.*`, every field of `attributes`/`provider` except `type` is
+  redacted too, for `kerberos.keytab.*` the keytab `file`, and for `tunable.*` a `UDEV` tunable's
+  `value` and `orig_value` (a udev rule; `SYSCTL` and `ZFS` values stay visible). In every string,
+  a URL's user name and password print as `scheme://[REDACTED]@host…`. Fields holding user-written
+  scripts, commands and auxiliary config are redacted too, at any depth, when they hold a string or
+  list: `command`, `script`, `pre_script`, `post_script`, `args`, `extra`, `shutdowncmd`, `options`,
+  `optionsupsd`, `extrausers`, `sudo_commands`, `sudo_commands_nopasswd`, `smb_options`,
+  `auxsmbconf` and `cmdline`.
+- **Cron and init/shutdown commands are shown.** For `cronjob.*` and `initshutdownscript.*` only,
+  `command` stays visible, so an audit can compare it with what the consuming repo declares; their
+  `script` is still redacted. A cron job's or init/shutdown task's command must therefore never carry a
+  secret: put it in a file the command reads, or in a script.
 - **Embedded jobs.** A task's `job` object (any dict under a `job` key, at any depth, e.g. in
   `cloudsync.query` or `replication.query`) keeps only `id`, `method`, `state`,
   `progress.percent`, `time_started` and `time_finished`; its other keys (`logs_excerpt`, `error`,
