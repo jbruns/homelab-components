@@ -16,6 +16,7 @@ on the Host.
 - `redact(data, method)` masks credential-looking fields in a method's result before it is printed.
 """
 
+import hashlib
 import itertools
 import json
 import re
@@ -233,13 +234,21 @@ FREE_TEXT = {
     "extra",  # cloudsync rclone arguments, rsynctask rsync arguments
     "shutdowncmd",
     "options",
-    "optionsupsd",  # ups (also ssh, snmp, ftp `options`)
+    "optionsupsd",
+    "extrausers",  # ups (also ssh, snmp, ftp `options`)
     "sudo_commands",
     "sudo_commands_nopasswd",  # user, group
     "smb_options",
     "auxsmbconf",
     "cmdline",  # smb, sharing.smb, process command lines
+    "httpproxy",  # network.configuration: a proxy's credentials need no scheme to be there
 }
+# Reads whose `command` (a string) is masked with a fingerprint, so an audit can check it against the
+# command a consuming repo declares without seeing it: [REDACTED sha256:<first 12 hex digits>].
+FINGERPRINTED_COMMANDS = ("cronjob.", "initshutdownscript.")
+# A UDEV tunable's value is a udev rule, free text; SYSCTL and ZFS values are plain settings.
+TUNABLE_TEXT = ("value", "orig_value")
+
 # A task's embedded `job` keeps only its status. Its logs, error, result and arguments can echo
 # whatever a script printed, credentials included; the other keys are dropped.
 JOB_FIELDS = ("id", "method", "state", "time_started", "time_finished")
@@ -260,9 +269,12 @@ PROVIDER_FIELDS = ("attributes", "provider")
 
 def redact(data, method: str = ""):
     """A copy of `method`'s result with credential-looking values, user-written scripts and commands,
-    and URL userinfo in any string, replaced by [REDACTED], and embedded jobs reduced to their status."""
+    and URL userinfo in any string, replaced by [REDACTED], and embedded jobs reduced to their status.
+    A boolean is never masked: it holds no secret, and says whether e.g. password login is on."""
     provider = method.startswith("cloudsync.credentials.")
+    tunable = method.startswith("tunable.")
     secret = SECRET_NAMES + (("file",) if method.startswith("kerberos.keytab.") else ())
+    fingerprint = method.startswith(FINGERPRINTED_COMMANDS)
 
     def walk(x):
         if isinstance(x, str):
@@ -272,12 +284,17 @@ def redact(data, method: str = ""):
         if not isinstance(x, dict):
             return x
         out = {}
+        udev = tunable and x.get("type") == "UDEV"
         for k, v in x.items():
             name = str(k).lower()
             if name == "job" and isinstance(v, dict):
                 out[k] = walk(job_status(v))
-            elif v is not None and any(s in name for s in secret):
+            elif v is not None and not isinstance(v, bool) and any(s in name for s in secret):
                 out[k] = REDACTED
+            elif udev and name in TUNABLE_TEXT:
+                out[k] = REDACTED
+            elif fingerprint and name == "command" and isinstance(v, str):
+                out[k] = f"[REDACTED sha256:{hashlib.sha256(v.encode()).hexdigest()[:12]}]"
             elif name in FREE_TEXT and isinstance(v, (str, list)):
                 out[k] = REDACTED
             elif provider and name in PROVIDER_FIELDS and isinstance(v, dict):

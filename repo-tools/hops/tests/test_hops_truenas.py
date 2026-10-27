@@ -1,5 +1,6 @@
 """TrueNAS: the JSON-RPC client (hops.truenas) and `hops truenas call`, against FakeTrueNAS."""
 
+import hashlib
 import json
 
 import pytest
@@ -244,6 +245,34 @@ def test_bad_json_param_is_a_usage_error(hops_tn, server):
         "alert.list",
         "system.info",
         "system.version",
+        "sharing.smb.query",
+        "sharing.nfs.query",
+        "smb.config",
+        "nfs.config",
+        "ssh.config",
+        "user.query",
+        "group.query",
+        "certificate.query",
+        "api_key.query",
+        "system.general.config",
+        "system.advanced.config",
+        "network.configuration.config",
+        "staticroute.query",
+        "docker.config",
+        "docker.status",
+        "catalog.config",
+        "pool.resilver.config",
+        "update.config",
+        "system.ntpserver.query",
+        "audit.config",
+        "system.security.config",
+        "auth.twofactor.config",
+        "ups.config",
+        "tunable.query",
+        "initshutdownscript.query",
+        "cronjob.query",
+        "filesystem.stat",
+        "filesystem.getacl",
     ],
 )
 def test_call_accepts_reads_in_allowed_namespaces(hops_tn, server, method):
@@ -280,17 +309,15 @@ def test_call_refuses_anything_but_a_read(hops_tn, server, method):
     [
         "alertservice.query",
         "snmp.config",
-        "tunable.query",
-        "user.query",
-        "group.query",
-        "api_key.query",
-        "cronjob.query",
-        "ssh.config",
+        "keychaincredential.query",
         "cloudsync.credentials.query",
         "app.query",
         "vm.query",
+        "virt.instance.query",
         "mail.config",
-        "network.configuration.config",
+        "directoryservices.config",
+        "kerberos.config",
+        "reporting.exporters.query",
         "replication.config.config",
         "alert.query",
     ],
@@ -387,15 +414,102 @@ def test_redact_secrets_with_terse_names(method, result, shown):
     assert truenas.redact(result, method) == shown
 
 
+@pytest.mark.parametrize(
+    "method, result, shown",
+    [
+        (
+            "user.query",
+            [{"username": "a", "unixhash": "$6$x", "smbhash": "*", "sshpubkey": None, "password_disabled": False}],
+            [
+                {
+                    "username": "a",
+                    "unixhash": "[REDACTED]",
+                    "smbhash": "[REDACTED]",
+                    "sshpubkey": None,
+                    "password_disabled": False,
+                }
+            ],
+        ),
+        (
+            "ssh.config",
+            {"passwordauth": True, "privatekey": "k", "host_ed25519_key": "k", "host_ed25519_key_pub": "p"},
+            {
+                "passwordauth": True,
+                "privatekey": "[REDACTED]",
+                "host_ed25519_key": "[REDACTED]",
+                "host_ed25519_key_pub": "[REDACTED]",
+            },
+        ),
+        (
+            "api_key.query",
+            [{"name": "ci", "key": "k", "expires_at": None}],
+            [{"name": "ci", "key": "[REDACTED]", "expires_at": None}],
+        ),
+        (
+            "system.advanced.config",
+            {"sed_passwd": "pw", "anonstats_token": "t", "motd": "hi"},
+            {"sed_passwd": "[REDACTED]", "anonstats_token": "[REDACTED]", "motd": "hi"},
+        ),
+        (
+            "system.general.config",
+            {"ui_certificate": {"name": "ui", "certificate": "PEM", "privatekey": "PEM"}},
+            {"ui_certificate": {"name": "ui", "certificate": "PEM", "privatekey": "[REDACTED]"}},
+        ),
+        (
+            "ups.config",
+            {"monuser": "upsmon", "extrausers": "[admin]\npassword = pw"},
+            {"monuser": "upsmon", "extrausers": "[REDACTED]"},
+        ),
+    ],
+)
+def test_redact_secrets_in_host_configuration_reads(method, result, shown):
+    assert truenas.redact(result, method) == shown
+
+
+def test_redact_udev_tunables_but_not_sysctl_or_zfs():
+    assert truenas.redact(
+        [
+            {"type": "UDEV", "var": "10-x", "value": "ACTION==add, RUN+=/x", "orig_value": ""},
+            {"type": "SYSCTL", "var": "vm.swappiness", "value": "10", "orig_value": "60"},
+            {"type": "ZFS", "var": "zfs_arc_max", "value": "0", "orig_value": "0"},
+        ],
+        "tunable.query",
+    ) == [
+        {"type": "UDEV", "var": "10-x", "value": "[REDACTED]", "orig_value": "[REDACTED]"},
+        {"type": "SYSCTL", "var": "vm.swappiness", "value": "10", "orig_value": "60"},
+        {"type": "ZFS", "var": "zfs_arc_max", "value": "0", "orig_value": "0"},
+    ]
+
+
+@pytest.mark.parametrize("method", ["initshutdownscript.query", "cronjob.query"])
+def test_call_fingerprints_init_and_cron_commands_and_masks_scripts(hops_tn, server, method):
+    command = 'curl -H "Authorization: Bearer s3cr3t" https://x.example'
+    server.methods[method] = lambda: [{"id": 1, "type": "COMMAND", "command": command, "script": "/mnt/a.sh"}]
+    _, out, _ = hops_tn("truenas", "call", method)
+    assert "s3cr3t" not in out
+    fingerprint = hashlib.sha256(command.encode()).hexdigest()[:12]
+    assert json.loads(out) == [
+        {"id": 1, "type": "COMMAND", "command": f"[REDACTED sha256:{fingerprint}]", "script": "[REDACTED]"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "proxy", ["//user:pw@proxy.lan:3128", "user:pw@proxy.lan:3128", "http://user:pw@proxy.lan:3128"]
+)
+def test_redact_http_proxy_with_or_without_a_scheme(proxy):
+    shown = truenas.redact({"httpproxy": proxy, "hostname": "nas"}, "network.configuration.config")
+    assert shown == {"httpproxy": "[REDACTED]", "hostname": "nas"}
+
+
 def test_redact_userinfo_in_any_url():
     assert truenas.redact(
         {
-            "httpproxy": "http://user:p%40ss@proxy.lan:3128",
+            "proxy": "http://user:p%40ss@proxy.lan:3128",
             "nested": [{"mirrors": ["https://bob:pw@reg.example/v2", "https://reg.example/v2"]}],
             "note": "see https://a@b.example and ftp://x:y@z/",
         }
     ) == {
-        "httpproxy": "http://[REDACTED]@proxy.lan:3128",
+        "proxy": "http://[REDACTED]@proxy.lan:3128",
         "nested": [{"mirrors": ["https://[REDACTED]@reg.example/v2", "https://reg.example/v2"]}],
         "note": "see https://[REDACTED]@b.example and ftp://[REDACTED]@z/",
     }
