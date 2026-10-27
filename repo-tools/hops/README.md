@@ -289,11 +289,11 @@ closed: anything not listed here is refused (exit 2) before connecting.
   scripts, commands and auxiliary config are redacted too, at any depth, when they hold a string or
   list: `command`, `script`, `pre_script`, `post_script`, `args`, `extra`, `shutdowncmd`, `options`,
   `optionsupsd`, `extrausers`, `sudo_commands`, `sudo_commands_nopasswd`, `smb_options`,
-  `auxsmbconf` and `cmdline`.
-- **Cron and init/shutdown commands are shown.** For `cronjob.*` and `initshutdownscript.*` only,
-  `command` stays visible, so an audit can compare it with what the consuming repo declares; their
-  `script` is still redacted. A cron job's or init/shutdown task's command must therefore never carry a
-  secret: put it in a file the command reads, or in a script.
+  `auxsmbconf`, `cmdline` and `httpproxy` (a proxy URL may carry credentials without a scheme).
+- **Cron and init/shutdown commands are fingerprinted.** For `cronjob.*` and `initshutdownscript.*`,
+  `command` prints as `"[REDACTED sha256:<12 hex digits>]"`, the first 12 hex digits of the SHA-256 of
+  the command, so an audit can check it against the command the consuming repo declares
+  (`printf %s "$command" | sha256sum | cut -c1-12`) without printing it. Their `script` is redacted.
 - **Embedded jobs.** A task's `job` object (any dict under a `job` key, at any depth, e.g. in
   `cloudsync.query` or `replication.query`) keeps only `id`, `method`, `state`,
   `progress.percent`, `time_started` and `time_finished`; its other keys (`logs_excerpt`, `error`,

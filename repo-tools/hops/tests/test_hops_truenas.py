@@ -1,5 +1,6 @@
 """TrueNAS: the JSON-RPC client (hops.truenas) and `hops truenas call`, against FakeTrueNAS."""
 
+import hashlib
 import json
 
 import pytest
@@ -481,21 +482,34 @@ def test_redact_udev_tunables_but_not_sysctl_or_zfs():
 
 
 @pytest.mark.parametrize("method", ["initshutdownscript.query", "cronjob.query"])
-def test_call_shows_init_and_cron_commands_but_not_scripts(hops_tn, server, method):
-    server.methods[method] = lambda: [{"id": 1, "type": "COMMAND", "command": "zfs mount -a", "script": "/mnt/a.sh"}]
+def test_call_fingerprints_init_and_cron_commands_and_masks_scripts(hops_tn, server, method):
+    command = 'curl -H "Authorization: Bearer s3cr3t" https://x.example'
+    server.methods[method] = lambda: [{"id": 1, "type": "COMMAND", "command": command, "script": "/mnt/a.sh"}]
     _, out, _ = hops_tn("truenas", "call", method)
-    assert json.loads(out) == [{"id": 1, "type": "COMMAND", "command": "zfs mount -a", "script": "[REDACTED]"}]
+    assert "s3cr3t" not in out
+    fingerprint = hashlib.sha256(command.encode()).hexdigest()[:12]
+    assert json.loads(out) == [
+        {"id": 1, "type": "COMMAND", "command": f"[REDACTED sha256:{fingerprint}]", "script": "[REDACTED]"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "proxy", ["//user:pw@proxy.lan:3128", "user:pw@proxy.lan:3128", "http://user:pw@proxy.lan:3128"]
+)
+def test_redact_http_proxy_with_or_without_a_scheme(proxy):
+    shown = truenas.redact({"httpproxy": proxy, "hostname": "nas"}, "network.configuration.config")
+    assert shown == {"httpproxy": "[REDACTED]", "hostname": "nas"}
 
 
 def test_redact_userinfo_in_any_url():
     assert truenas.redact(
         {
-            "httpproxy": "http://user:p%40ss@proxy.lan:3128",
+            "proxy": "http://user:p%40ss@proxy.lan:3128",
             "nested": [{"mirrors": ["https://bob:pw@reg.example/v2", "https://reg.example/v2"]}],
             "note": "see https://a@b.example and ftp://x:y@z/",
         }
     ) == {
-        "httpproxy": "http://[REDACTED]@proxy.lan:3128",
+        "proxy": "http://[REDACTED]@proxy.lan:3128",
         "nested": [{"mirrors": ["https://[REDACTED]@reg.example/v2", "https://reg.example/v2"]}],
         "note": "see https://[REDACTED]@b.example and ftp://[REDACTED]@z/",
     }
