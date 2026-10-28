@@ -46,8 +46,9 @@ the mark moves past it. A Hardcover error comes before any write, so it leaves t
 **Ranking.** The first step on which two files differ decides which one stays:
 
 1. Format: EPUB, then AZW3, MOBI, AZW, FB2, LIT, TXT, RTF, DOCX, and PDF last.
-2. A retail EPUB beats one that calibre converted. Conversion leaves markers in the file: calibre as `bkp`
-   contributor, `page_styles.css`, `index_split_*`, and `calibre` classes.
+2. A retail EPUB beats one that calibre converted. Conversion leaves markers in the content: `page_styles.css`,
+   `index_split_*`, and `calibre` classes. Calibre named as `bkp` contributor alone doesn't count, because editing
+   a file's metadata in calibre adds it too.
 3. A table of contents with more than one entry.
 4. The larger file.
 5. The file already in the Library.

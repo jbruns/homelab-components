@@ -11,10 +11,11 @@ OPF = """<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
 <dc:title>{title}</dc:title><dc:creator opf:role="aut">{author}</dc:creator><dc:language>{lang}</dc:language>
-<dc:identifier id="id">urn:uuid:{title}</dc:identifier></metadata>
+<dc:identifier id="id">urn:uuid:{title}</dc:identifier>{meta}</metadata>
 <manifest><item id="t" href="text.xhtml" media-type="application/xhtml+xml"/>
 <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>{extra}</manifest>
 <spine toc="ncx"><itemref idref="t"/></spine></package>"""
+PRODUCER = '<dc:contributor opf:role="bkp">calibre (4.99.5) [https://calibre-ebook.com]</dc:contributor>'
 NCX = """<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head/>
 <docTitle><text>x</text></docTitle><navMap>{points}</navMap></ncx>"""
 POINT = (
@@ -22,13 +23,14 @@ POINT = (
 )
 
 
-def epub(path, title, author="Andy Weir", lang="en", converted=False):
-    """A valid EPUB; a converted one carries calibre's page_styles.css."""
+def epub(path, title, author="Andy Weir", lang="en", converted=False, producer=False):
+    """A valid EPUB; a converted one carries calibre's page_styles.css, and producer names calibre as `bkp`."""
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         z.writestr("META-INF/container.xml", CONTAINER)
         extra = '<item id="css" href="page_styles.css" media-type="text/css"/>' if converted else ""
-        z.writestr("content.opf", OPF.format(title=title, author=author, lang=lang, extra=extra))
+        meta = PRODUCER if producer else ""
+        z.writestr("content.opf", OPF.format(title=title, author=author, lang=lang, extra=extra, meta=meta))
         z.writestr("toc.ncx", NCX.format(points="".join(POINT.format(n=n) for n in (1, 2, 3))))
         z.writestr("text.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml"><body><p>{title}</p></body></html>')
         if converted:

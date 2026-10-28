@@ -13,7 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))  # gate_stubs, shared with the in-image driver
 from gate_stubs import Hardcover, epub, hc_book
 
-from cwa_ingest_gate import gate
+from cwa_ingest_gate import gate, ranking
 from cwa_ingest_gate.hardcover import Vocabulary
 
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
@@ -193,6 +193,13 @@ def test_a_retail_copy_replaces_the_existing_books_file(lib, gatekeeper):
     add_format, embed, remove = gatekeeper.calibredb.calls
     assert add_format[:2] == ["add_format", str(old)] and re.search(rf"\({new}\)/.*\.epub$", add_format[2])
     assert embed == ["embed_metadata", str(old)] and remove == ["remove", "--permanent", str(new)]
+
+
+def test_calibre_named_as_producer_alone_does_not_make_an_epub_converted(tmp_path):
+    epub(tmp_path / "edited.epub", "Piranesi", producer=True)
+    epub(tmp_path / "converted.epub", "Piranesi", producer=True, converted=True)
+    assert ranking.inspect_epub(tmp_path / "edited.epub")["retail"] is True
+    assert ranking.inspect_epub(tmp_path / "converted.epub")["markers"] == ["page_styles.css"]
 
 
 def test_a_worse_copy_is_dropped_and_the_existing_file_kept(lib, gatekeeper):
