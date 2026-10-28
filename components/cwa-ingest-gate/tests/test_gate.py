@@ -2,12 +2,16 @@
 
 import re
 import sqlite3
+import sys
+import threading
 import urllib.request
-import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent))  # gate_stubs, shared with the in-image driver
+from gate_stubs import Hardcover, epub, hc_book
 
 from cwa_ingest_gate import gate
 from cwa_ingest_gate.hardcover import Vocabulary
@@ -34,21 +38,6 @@ create table comments (id integer primary key, book int, text text);
 create table publishers (id integer primary key, name text);
 create table books_publishers_link (id integer primary key, book int, publisher int);
 """
-RETAIL_OPF = "<package><metadata><dc:language>{lang}</dc:language></metadata></package>"
-CONVERTED_OPF = (
-    "<package><metadata><dc:language>{lang}</dc:language>"
-    '<dc:contributor opf:role="bkp">calibre (5.0) [https://calibre-ebook.com]</dc:contributor></metadata></package>'
-)
-
-
-def epub(path, retail=True, lang="en"):
-    with zipfile.ZipFile(path, "w") as z:
-        z.writestr("mimetype", "application/epub+zip")
-        z.writestr("OEBPS/content.opf", (RETAIL_OPF if retail else CONVERTED_OPF).format(lang=lang))
-        z.writestr("OEBPS/toc.ncx", "<ncx><navMap>" + "<navPoint><text>x</text></navPoint>" * 3 + "</navMap></ncx>")
-        z.writestr("OEBPS/text.xhtml", "<html><body><p>text</p></body></html>")
-        if not retail:
-            z.writestr("OEBPS/page_styles.css", "")
 
 
 class Lib:
@@ -91,7 +80,7 @@ class Lib:
         name = f"{title} - {author}"
         for f in formats:
             p = self.root / path / f"{name}.{f.lower()}"
-            epub(p, retail, opf_lang) if f == "EPUB" else p.write_bytes(b"x" * 100)
+            epub(p, title, author, opf_lang, converted=not retail) if f == "EPUB" else p.write_bytes(b"x" * 100)
             self.db.execute(
                 "insert into data (book, format, uncompressed_size, name) values (?, ?, ?, ?)",
                 (i, f, p.stat().st_size, name),
@@ -104,48 +93,16 @@ class Lib:
         return row[0] if row else self.db.execute(f"insert into {table} (name) values (?)", (name,)).lastrowid
 
 
-def hc_book(id, title="Project Hail Mary", author="Andy Weir"):
-    return {
-        "id": id, "slug": f"b-{id}", "title": title, "description": None, "rating": None, "ratings_count": 0,
-        "release_date": None, "cached_contributors": [{"author": {"name": author}, "contribution": None}],
-        "cached_tags": {"Genre": [{"tag": "Sci-Fi", "count": 5}]}, "book_series": [], "image": None,
-        "default_ebook_edition": None, "default_physical_edition": None,
-    }  # fmt: skip
-
-
-class StubHardcover:
-    """Finds each Hardcover book whose title the search names."""
-
-    def __init__(self, *books, fail=False):
-        self.books, self.fail = {b["id"]: b for b in books}, fail
-
-    def search(self, q):
-        if self.fail:
-            raise RuntimeError("Hardcover: unreachable")
-        return [
-            {"id": b["id"], "title": b["title"], "authors": [c["author"]["name"] for c in b["cached_contributors"]],
-             "users_count": 10, "isbns": [], "compilation": False}
-            for b in self.books.values() if b["title"] in q
-        ]  # fmt: skip
-
-    def editions_by_isbn(self, i13s):
-        return {}
-
-    def books_by_goodreads(self, ids):
-        return {}
-
-    def details(self, ids):
-        return {i: b for i, b in self.books.items() if i in ids}
-
-
 class Calibredb:
+    """Records each call; a call whose verb is in `fail` exits 1."""
+
     def __init__(self):
-        self.calls = []
+        self.calls, self.fail = [], set()
 
     def __call__(self, args):
         assert args[:3] == ["calibredb", "--with-library", str(self.library)]
         self.calls.append(args[3:])
-        return 0, ""
+        return (1, "calibredb: database is locked") if args[3] in self.fail else (0, "")
 
     def verbs(self):
         return [c[0] for c in self.calls]
@@ -169,7 +126,7 @@ def gatekeeper(lib, tmp_path):
     def once(hc=None, now=NOW, settle=timedelta(minutes=2)):
         return gate.run_once(
             gate.Config(library=str(lib.root), settle=settle, threshold=0.85),
-            state, hc or StubHardcover(), VOCAB, run=calibredb, now=now,
+            state, hc or Hardcover(), VOCAB, run=calibredb, now=now,
         )  # fmt: skip
 
     once.state, once.calibredb = state, calibredb
@@ -185,13 +142,13 @@ def test_first_run_starts_after_the_newest_book(lib, tmp_path):
     state = gate.State(tmp_path)
     calibredb = Calibredb()
     calibredb.library = lib.root
-    assert gate.run_once(gate.Config(library=str(lib.root)), state, StubHardcover(), VOCAB, calibredb, NOW) == []
+    assert gate.run_once(gate.Config(library=str(lib.root)), state, Hardcover(), VOCAB, calibredb, NOW) == []
     assert state.load() == 1 and calibredb.calls == []
 
 
 def test_a_confident_match_is_written_then_embedded(lib, gatekeeper):
     i = lib.add("Project Hail Mary, The", tags=["Junk"])
-    [out] = gatekeeper(StubHardcover(hc_book(10)))
+    [out] = gatekeeper(Hardcover(hc_book(10)))
     assert out == {"book": i, "title": "Project Hail Mary, The", "result": "written", "flags": []}
     set_metadata, embed = gatekeeper.calibredb.calls
     assert set_metadata[:2] == ["set_metadata", str(i)]
@@ -212,7 +169,7 @@ def test_an_unmatched_book_is_flagged(lib, gatekeeper):
 def test_a_non_english_book_is_rejected_and_an_unknown_language_flagged(lib, gatekeeper):
     fr = lib.add("Le Livre", lang="fra")
     unknown = lib.add("Project Hail Mary", lang=None, opf_lang="und")
-    outs = {o["book"]: o for o in gatekeeper(StubHardcover(hc_book(10)))}
+    outs = {o["book"]: o for o in gatekeeper(Hardcover(hc_book(10)))}
     assert outs[fr] == {"book": fr, "title": "Le Livre", "result": "rejected", "reason": "language: fra"}
     assert ["remove", "--permanent", str(fr)] in gatekeeper.calibredb.calls
     assert outs[unknown]["result"] == "flagged" and outs[unknown]["flags"] == ["language unknown"]
@@ -220,7 +177,7 @@ def test_a_non_english_book_is_rejected_and_an_unknown_language_flagged(lib, gat
 
 def test_a_pdf_book_is_flagged_to_confirm_its_layout(lib, gatekeeper):
     i = lib.add("Project Hail Mary", formats=("PDF",))
-    [out] = gatekeeper(StubHardcover(hc_book(10)))
+    [out] = gatekeeper(Hardcover(hc_book(10)))
     assert out["result"] == "flagged" and out["flags"] == ["PDF only: confirm layout"]
     assert "review" in field(gatekeeper.calibredb.calls[0], "tags").split(",")
     assert gatekeeper.calibredb.calls[0][1] == str(i)
@@ -230,7 +187,7 @@ def test_a_retail_copy_replaces_the_existing_books_file(lib, gatekeeper):
     old = lib.add("Project Hail Mary", hardcover=10, retail=False, added=NOW - timedelta(days=9))
     gatekeeper.state.save(old)
     new = lib.add("Project Hail Mary", retail=True)
-    [out] = gatekeeper(StubHardcover(hc_book(10)))
+    [out] = gatekeeper(Hardcover(hc_book(10)))
     assert out == {"book": new, "title": "Project Hail Mary", "result": "merged", "into": old, "kept": "new file",
                    "format": "EPUB", "step": "2 retail EPUB"}  # fmt: skip
     add_format, embed, remove = gatekeeper.calibredb.calls
@@ -242,7 +199,7 @@ def test_a_worse_copy_is_dropped_and_the_existing_file_kept(lib, gatekeeper):
     old = lib.add("Project Hail Mary", hardcover=10, retail=True)
     gatekeeper.state.save(old)
     new = lib.add("Project Hail Mary", formats=("MOBI",))
-    [out] = gatekeeper(StubHardcover(hc_book(10)))
+    [out] = gatekeeper(Hardcover(hc_book(10)))
     assert (out["result"], out["into"], out["kept"], out["step"]) == ("merged", old, "existing file", "1 format")
     assert gatekeeper.calibredb.calls == [["remove", "--permanent", str(new)]]
 
@@ -251,7 +208,7 @@ def test_an_epub_replaces_an_existing_pdf(lib, gatekeeper):
     old = lib.add("Project Hail Mary", hardcover=10, formats=("PDF",))
     gatekeeper.state.save(old)
     lib.add("Project Hail Mary")
-    [out] = gatekeeper(StubHardcover(hc_book(10)))
+    [out] = gatekeeper(Hardcover(hc_book(10)))
     assert (out["kept"], out["step"]) == ("new file", "1 format")
     assert gatekeeper.calibredb.verbs() == ["add_format", "remove_format", "embed_metadata", "remove"]
     assert gatekeeper.calibredb.calls[1] == ["remove_format", str(old), "PDF"]
@@ -262,7 +219,7 @@ def test_a_hardcover_id_held_by_two_books_is_flagged_not_merged(lib, gatekeeper)
     b = lib.add("Project Hail Mary", hardcover=10)
     gatekeeper.state.save(b)
     lib.add("Project Hail Mary")
-    [out] = gatekeeper(StubHardcover(hc_book(10)))
+    [out] = gatekeeper(Hardcover(hc_book(10)))
     assert out["result"] == "flagged" and out["flags"] == [f"Hardcover book 10 is also held by {a}, {b}"]
     assert gatekeeper.calibredb.verbs() == ["set_metadata", "embed_metadata"]
 
@@ -278,8 +235,59 @@ def test_a_book_still_settling_waits_with_every_book_after_it(lib, gatekeeper):
 def test_a_hardcover_failure_writes_nothing_and_retries_next_time(lib, gatekeeper):
     lib.add("Project Hail Mary")
     with pytest.raises(RuntimeError):
-        gatekeeper(StubHardcover(fail=True))
+        gatekeeper(Hardcover(fail=True))
     assert gatekeeper.calibredb.calls == [] and gatekeeper.state.load() == 0
+
+
+def test_an_undetermined_language_is_flagged_not_rejected(lib, gatekeeper):
+    lib.add("Project Hail Mary", lang="und", opf_lang="und")
+    [out] = gatekeeper(Hardcover(hc_book(10)))
+    assert out["result"] == "flagged" and out["flags"] == ["language unknown"]
+
+
+def test_a_book_without_files_takes_the_new_file(lib, gatekeeper):
+    old = lib.add("Project Hail Mary", hardcover=10, formats=())
+    gatekeeper.state.save(old)
+    new = lib.add("Project Hail Mary")
+    [out] = gatekeeper(Hardcover(hc_book(10)))
+    assert (out["result"], out["into"], out["kept"], out["step"]) == ("merged", old, "new file", "1 format")
+    assert gatekeeper.calibredb.verbs() == ["add_format", "embed_metadata", "remove"]
+    assert gatekeeper.calibredb.calls[-1] == ["remove", "--permanent", str(new)]
+
+
+def test_a_failed_write_is_flagged_and_the_gate_moves_on(lib, gatekeeper):
+    i = lib.add("Project Hail Mary", tags=["Sci-Fi"])
+    j = lib.add("Unfindable")
+    gatekeeper.calibredb.fail = {"embed_metadata"}
+    outs = gatekeeper(Hardcover(hc_book(10)))
+    assert [(o["book"], o["result"]) for o in outs] == [(i, "failed"), (j, "failed")]
+    assert outs[0]["reason"] == "embed_metadata: calibredb: database is locked"
+    assert gatekeeper.calibredb.calls[2] == ["set_metadata", str(i), "--field", "tags:Sci-Fi,review"]
+    assert gatekeeper.state.load() == j
+
+
+def test_an_error_on_one_book_does_not_stop_the_next(lib, gatekeeper):
+    i = lib.add("Project Hail Mary")
+    j = lib.add("Unfindable")
+
+    def broken(args):
+        if args[3:5] == ["set_metadata", str(i)] and len(args) > 7:
+            raise OSError("calibredb: not found")
+        return gatekeeper.calibredb(args)
+
+    outs = gate.run_once(gate.Config(library=str(lib.root)), gatekeeper.state, Hardcover(hc_book(10)), VOCAB,
+                         run=broken, now=NOW)  # fmt: skip
+    assert [(o["book"], o["result"]) for o in outs] == [(i, "failed"), (j, "flagged")]
+    assert outs[0]["reason"] == "calibredb: not found"
+
+
+def test_a_copy_of_a_book_without_a_hardcover_id_is_flagged_as_a_likely_duplicate(lib, gatekeeper):
+    old = lib.add("Project Hail Mary: A Novel", added=NOW - timedelta(days=9))
+    lib.add("The Martian")
+    gatekeeper.state.save(old + 1)
+    lib.add("Project Hail Mary")
+    [out] = gatekeeper(Hardcover(hc_book(10)))
+    assert out["result"] == "flagged" and out["flags"] == [f"may duplicate Book {old}"]
 
 
 def test_serves_healthz_and_counts_outcomes():
@@ -287,8 +295,6 @@ def test_serves_healthz_and_counts_outcomes():
     status.record([{"result": "written"}, {"result": "merged"}, {"result": "written"}], NOW.timestamp())
     server = gate.serve(0, status)
     port = server.server_address[1]
-    import threading
-
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz") as r:

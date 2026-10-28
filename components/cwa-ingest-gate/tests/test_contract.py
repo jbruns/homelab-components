@@ -7,54 +7,20 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).parent))  # gate_stubs, shared with the in-image driver
+from gate_stubs import epub, hc_book
+
 SRC = Path(__file__).resolve().parents[1] / "src"
 HERE = Path(__file__).resolve().parent
 # As the Dockerfile sets them
 ENV = ["PATH=/app/calibre:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-       "CALIBRE_CONFIG_DIR=/tmp/calibre-config", "PYTHONPATH=/gate"]  # fmt: skip
-
-CONTAINER = """<?xml version="1.0"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-<rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"""
-OPF = """<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">
-<metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
-<dc:title>{title}</dc:title><dc:creator opf:role="aut">{author}</dc:creator><dc:language>{lang}</dc:language>
-<dc:identifier id="id">urn:uuid:{title}</dc:identifier></metadata>
-<manifest><item id="t" href="text.xhtml" media-type="application/xhtml+xml"/>
-<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>{extra}</manifest>
-<spine toc="ncx"><itemref idref="t"/></spine></package>"""
-NCX = """<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head/>
-<docTitle><text>x</text></docTitle><navMap>{points}</navMap></ncx>"""
-POINT = (
-    '<navPoint id="p{n}" playOrder="{n}"><navLabel><text>{n}</text></navLabel><content src="text.xhtml"/></navPoint>'
-)
-
-
-def epub(path, title, author="Andy Weir", lang="en", converted=False):
-    with zipfile.ZipFile(path, "w") as z:
-        z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
-        z.writestr("META-INF/container.xml", CONTAINER)
-        extra = '<item id="css" href="page_styles.css" media-type="text/css"/>' if converted else ""
-        z.writestr("content.opf", OPF.format(title=title, author=author, lang=lang, extra=extra))
-        z.writestr("toc.ncx", NCX.format(points="".join(POINT.format(n=n) for n in (1, 2, 3))))
-        z.writestr("text.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml"><body><p>{title}</p></body></html>')
-        if converted:
-            z.writestr("page_styles.css", "")
-
-
-def hc_book(id, title, description):
-    return {
-        "id": id, "slug": f"b-{id}", "title": title, "description": description, "rating": None, "ratings_count": 0,
-        "release_date": None, "cached_contributors": [{"author": {"name": "Andy Weir"}, "contribution": None}],
-        "cached_tags": {"Genre": [{"tag": "Sci-Fi", "count": 5}]}, "book_series": [], "image": None,
-        "default_ebook_edition": None, "default_physical_edition": None,
-    }  # fmt: skip
+       "CALIBRE_CONFIG_DIR=/tmp/calibre-config", "PYTHONPATH=/gate:/tests"]  # fmt: skip
 
 
 @pytest.mark.contract
@@ -90,7 +56,7 @@ def test_one_run_on_a_real_library(upstream, tmp_path):
 
     spec = {
         "mark": 1,
-        "hardcover": [hc_book(10, "Project Hail Mary", None), hc_book(20, "The Martian", "Stranded on Mars.")],
+        "hardcover": [hc_book(10), hc_book(20, "The Martian", description="Stranded on Mars.")],
     }
     outs = {
         o["book"]: o for o in json.loads(run("/tests/contract_run.py", stdin=json.dumps(spec), entrypoint="python3"))

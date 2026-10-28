@@ -134,9 +134,10 @@ def deletion(book):
         return f"comic: {', '.join(comic)}", []
     tag = next((t for t in book["tags"] if COMIC_TAG.search(t.casefold())), None)
     flags = [f"comic? tagged {tag}"] if tag else []
-    if book["langs"]:
-        if not any(code.startswith("en") for code in book["langs"]):
-            return f"language: {', '.join(book['langs'])}", []
+    langs = [code for code in book["langs"] if code not in NOT_A_LANGUAGE]
+    if langs:
+        if not any(code.startswith("en") for code in langs):
+            return f"language: {', '.join(langs)}", []
         return None, flags
     lang = next((f["lang"] for f in book["files"] if f.get("lang")), None)
     if lang and lang.startswith("en"):

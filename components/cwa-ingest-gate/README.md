@@ -16,13 +16,14 @@ Each new Book goes through these checks in order:
 
 1. **Rejected**: removed with `calibredb remove --permanent` if it has no files, is a comic (CBR, CBZ, CB7 or
    CBT), or is not in English. The language comes from the Book's languages, or from its EPUB when the Book has
-   none. A Book whose language is unknown is flagged instead.
+   none. Codes that name no language (`und`, `mul`, `zxx`, `mis`) don't count. A Book whose language is unknown
+   is flagged instead.
 2. **Matched** on Hardcover, strongest evidence first: an ISBN naming an edition, a Goodreads ID, an existing
    `hardcover-id`, or a title search. A search result must score at least `THRESHOLD` on title and author. Every
    match must share an author with the Book. A match that came from anything other than a search must also have a
    close title.
-3. **Merged** if the Book matches a Hardcover book that exactly one other Book in the Library already holds, by
-   its `hardcover-id`. The existing Book keeps its id, metadata, shelves and read status. Its best file and the
+3. **Merged** if the Book matches a Hardcover book that exactly one checked Book (at or below the mark) already
+   holds, by its `hardcover-id`. The existing Book keeps its id, metadata, shelves and read status. Its best file and the
    new Book's best file are compared by the ranking below:
    - If the new file is better, it replaces the existing Book's file (`add_format`). The existing Book's other
      Formats are removed and its metadata is embedded in the new file.
@@ -36,10 +37,11 @@ Each new Book goes through these checks in order:
    - An unmatched or uncertain Book gets only its tags mapped.
    - A matched Book that is PDF only, is of unknown language, or matches a Hardcover book that several Books
      hold, is written as above.
+   - A Book that is not merged, but shares its main title and an author with a checked Book, is flagged
+     `may duplicate Book N`. That Book has no `hardcover-id`, or a different one, so a person decides.
 
-Only a person removes `review`. A failed `calibredb` call is logged as `failed`, and the mark moves past that Book.
-Any other error ends the run, and the next run resumes after the last Book handled. A Hardcover error comes
-before any write, so it leaves the whole batch for the next run.
+Only a person removes `review`. A Book whose `calibredb` call fails is logged as `failed` and tagged `review`, and
+the mark moves past it. A Hardcover error comes before any write, so it leaves the whole batch for the next run.
 
 **Ranking.** The first step on which two files differ decides which one stays:
 
@@ -84,7 +86,7 @@ table and the code disagree.
 | `THRESHOLD` | `0.85` | Lowest search score accepted as a match. |
 | `PORT` | `9715` | Port serving `/metrics` and `/healthz`. |
 
-Run the container as the user and group that own the Library, and mount the Library read-write. `calibredb`
+The image runs as `65532` by default. Run the container as the user and group that own the Library, and mount the Library read-write. `calibredb`
 writes there, and it writes its own settings under a temporary `HOME`. `python -m cwa_ingest_gate once` runs a
 single check and exits.
 

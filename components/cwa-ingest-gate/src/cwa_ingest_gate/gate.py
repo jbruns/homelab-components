@@ -71,9 +71,40 @@ def settled(db, mark, cutoff):
     return out
 
 
-def holders(db, hid, batch):
-    rows = db.execute("select book from identifiers where type='hardcover-id' and val=? order by book", (str(hid),))
-    return [b for (b,) in rows if b not in batch]
+def holders(db, hid, mark):
+    """The checked Books (at or below the mark) holding this Hardcover ID."""
+    rows = db.execute(
+        "select book from identifiers where type='hardcover-id' and val=? and book<=? order by book", (str(hid), mark)
+    )
+    return [b for (b,) in rows]
+
+
+def library_titles(db, mark):
+    """Each checked Book's id, title and authors."""
+    rows = db.execute(
+        "select b.id, b.title, a.name from books b left join books_authors_link l on l.book=b.id "
+        "left join authors a on a.id=l.author where b.id<=? order by b.id, l.id",
+        (mark,),
+    )
+    out = {}
+    for i, title, author in rows:
+        out.setdefault(i, (title, []))[1].extend([author] if author else [])
+    return out
+
+
+def likely_duplicates(rec, titles):
+    """Checked Books with the same main title and a shared author as the Book or its Hardcover match: a copy the
+    Hardcover ID can't find, because that Book has none or another one."""
+    hc = rec.get("hardcover") or {}
+    names = {hardcover.main_title(t) for t in (rec["title"], hc.get("title")) if t} - {""}
+    authors = [*rec["authors"], *hc.get("authors", [])]
+    return [
+        i
+        for i, (title, theirs) in titles.items()
+        if hardcover.main_title(title) in names
+        and hardcover.authors_match(authors, theirs)
+        and not hardcover.numbers_conflict(title, rec["title"])
+    ]
 
 
 def flag(rec, old, reason):
@@ -83,9 +114,22 @@ def flag(rec, old, reason):
         rec["changes"]["tags"] = {"old": old["tags"], "new": sorted([*tags, REVIEW_TAG])}
 
 
+@dataclass
+class Step:
+    """What the gate will do with one new Book: reject it, merge it into a checked Book, or write its record."""
+
+    book: int
+    title: str
+    tags: list
+    files: list
+    reject: str | None = None
+    rec: dict | None = None
+    into: int | None = None
+    into_files: list = field(default_factory=list)
+
+
 def run_once(config, state, hc, vocab, run=hardcover.run_calibredb, now=None):
     """Check every settled Book added since the last run; return one outcome per Book."""
-    now = now or datetime.now(UTC)
     db = hardcover.connect(config.library)
     try:
         mark = state.load()
@@ -94,61 +138,94 @@ def run_once(config, state, hc, vocab, run=hardcover.run_calibredb, now=None):
             state.save(mark)
             log({"start": "checking Books added after this one", "book": mark})
             return []
-        ids = settled(db, mark, now - config.settle)
-        books = ranking.load(db, config.library, ids)
-        steps, checked, extra = [], [], {}
-        for i in ids:
-            reason, flags = ranking.deletion(books[i])
-            if reason:
-                steps.append((i, "reject", reason))
-                continue
-            if {f["format"] for f in books[i]["files"]} == {"PDF"}:
-                flags.append("PDF only: confirm layout")
-            checked.append(hardcover.current(db, config.library, i))
-            extra[i] = flags
-            steps.append((i, "plan", None))
-        recs = {r["book"]: r for r in hardcover.plan(checked, hc, vocab, config.threshold)} if checked else {}
-        olds = {b["id"]: b["fields"] for b in checked}
-        for i, rec in recs.items():
-            planned, rec["flags"] = rec["flags"], []
-            for reason in extra[i]:
-                flag(rec, olds[i], reason)
-            rec["flags"] += planned
-            if rec.pop("delete", None):
-                flag(rec, olds[i], "omnibus: holds Books also arriving now")
-            hid = (rec.get("hardcover") or {}).get("id")
-            held = holders(db, hid, set(ids)) if rec["status"] == "match" else []
-            if len(held) > 1:
-                flag(rec, olds[i], f"Hardcover book {hid} is also held by {', '.join(map(str, held))}")
-            elif held:
-                rec["into"] = held[0]
-                rec["into_files"] = ranking.load(db, config.library, held)[held[0]]["files"]
+        steps = plan(db, config, mark, hc, vocab, now or datetime.now(UTC))
     finally:
         db.close()
+    return apply(steps, config.library, state, run)
 
-    cli = ["calibredb", "--with-library", config.library]
+
+def plan(db, config, mark, hc, vocab, now):
+    """Every decision, before anything is written: a Hardcover error leaves the whole batch for the next run."""
+    ids = settled(db, mark, now - config.settle)
+    books = ranking.load(db, config.library, ids)
+    steps, checked, extra = [], [], {}
+    for i in ids:
+        b = books[i]
+        steps.append(Step(i, b["title"], sorted(b["tags"]), b["files"]))
+        reason, flags = ranking.deletion(b)
+        if reason:
+            steps[-1].reject = reason
+            continue
+        if {f["format"] for f in b["files"]} == {"PDF"}:
+            flags.append("PDF only: confirm layout")
+        checked.append(hardcover.current(db, config.library, i))
+        extra[i] = flags
+    if not checked:
+        return steps
+    recs = {r["book"]: r for r in hardcover.plan(checked, hc, vocab, config.threshold)}
+    olds = {b["id"]: b["fields"] for b in checked}
+    titles = library_titles(db, mark)
+    for step in steps:
+        rec = step.rec = recs.get(step.book)
+        if not rec:
+            continue
+        old, planned, rec["flags"] = olds[step.book], rec["flags"], []
+        for reason in extra[step.book]:
+            flag(rec, old, reason)
+        rec["flags"] += planned
+        if rec.pop("delete", None):
+            flag(rec, old, "omnibus: holds Books also arriving now")
+        hid = (rec.get("hardcover") or {}).get("id")
+        held = holders(db, hid, mark) if rec["status"] == "match" else []
+        if len(held) > 1:
+            flag(rec, old, f"Hardcover book {hid} is also held by {', '.join(map(str, held))}")
+        elif held:
+            step.into, step.into_files = held[0], ranking.load(db, config.library, held)[held[0]]["files"]
+        else:
+            for i in likely_duplicates(rec, titles):
+                flag(rec, old, f"may duplicate Book {i}")
+    return steps
+
+
+class CalibredbError(Exception):
+    pass
+
+
+def apply(steps, library, state, run):
+    """Carry out each Step, moving the mark past it whatever happens. A Step that fails is tagged review."""
+
+    def calibredb(*args):
+        rc, msg = run(["calibredb", "--with-library", library, *args])
+        if rc:
+            raise CalibredbError(f"{args[0]}: {(msg.splitlines() or ['exit status ' + str(rc)])[-1]}")
+
     outs = []
     with tempfile.TemporaryDirectory() as tmp:
-        for i, action, reason in steps:
-            book = books[i]
-            out = {"book": i, "title": book["title"]}
-            if action == "reject":
-                rc, msg = run([*cli, "remove", "--permanent", str(i)])
-                out.update(result="rejected", reason=reason)
-            elif "into" in recs[i]:
-                rc, msg = merge(run, cli, config.library, recs[i], book["files"], out)
-            else:
-                rc, msg = write(run, cli, recs[i], tmp)
-                out.update(result="flagged" if recs[i]["flags"] else "written", flags=recs[i]["flags"])
-            if rc:
-                out.update(result="failed", reason=msg.splitlines()[-1:])
+        for step in steps:
+            out = {"book": step.book, "title": step.title}
+            try:
+                if step.reject:
+                    out.update(result="rejected", reason=step.reject)
+                    calibredb("remove", "--permanent", str(step.book))
+                elif step.into:
+                    merge(calibredb, library, step, out)
+                else:
+                    out.update(result="flagged" if step.rec["flags"] else "written", flags=step.rec["flags"])
+                    write(calibredb, step.rec, tmp)
+            except Exception as e:
+                out.update(result="failed", reason=str(e))
+                try:
+                    tags = sorted({*step.tags, REVIEW_TAG})
+                    calibredb("set_metadata", str(step.book), "--field", "tags:" + ",".join(tags))
+                except Exception:
+                    pass
             log(out)
             outs.append(out)
-            state.save(i)
+            state.save(step.book)
     return outs
 
 
-def write(run, cli, rec, tmp):
+def write(calibredb, rec, tmp):
     cover = None
     if "cover" in rec["changes"]:
         cover = os.path.join(tmp, f"{rec['book']}.img")
@@ -157,26 +234,26 @@ def write(run, cli, rec, tmp):
                 cover = None
         except Exception:
             cover = None
-    rc, msg = run([*cli, "set_metadata", str(rec["book"]), *hardcover.calibredb_fields(rec["changes"], cover)])
-    return (rc, msg) if rc else run([*cli, "embed_metadata", str(rec["book"])])
+    calibredb("set_metadata", str(rec["book"]), *hardcover.calibredb_fields(rec["changes"], cover))
+    calibredb("embed_metadata", str(rec["book"]))
 
 
-def merge(run, cli, library, rec, files, out):
-    """Keep the better file on the existing Book, then remove the new record."""
-    into = rec["into"]
-    new, old = ranking.rank(files)[0], ranking.rank(rec["into_files"])[0]
-    winner, step = ranking.compare(new, old)
-    out.update(result="merged", into=into, kept="new file" if winner is new else "existing file")
-    out.update(format=winner["format"], step=step)
+def merge(calibredb, library, step, out):
+    """Keep the better file on the checked Book, then remove the new record."""
+    new = ranking.rank(step.files)[0]
+    if step.into_files:
+        winner, decided = ranking.compare(new, ranking.rank(step.into_files)[0])
+    else:
+        winner, decided = new, ranking.STEPS[0]
+    out.update(result="merged", into=step.into, kept="new file" if winner is new else "existing file")
+    out.update(format=winner["format"], step=decided)
     if winner is new:
-        steps = [["add_format", str(into), os.path.join(library, new["path"])]]
-        steps += [["remove_format", str(into), f["format"]] for f in rec["into_files"] if f["format"] != new["format"]]
-        steps.append(["embed_metadata", str(into)])
-        for args in steps:
-            rc, msg = run([*cli, *args])
-            if rc:
-                return rc, msg
-    return run([*cli, "remove", "--permanent", str(rec["book"])])
+        calibredb("add_format", str(step.into), os.path.join(library, new["path"]))
+        for f in step.into_files:
+            if f["format"] != new["format"]:
+                calibredb("remove_format", str(step.into), f["format"])
+        calibredb("embed_metadata", str(step.into))
+    calibredb("remove", "--permanent", str(step.book))
 
 
 class Status:
