@@ -28,6 +28,17 @@
         "restic/restic"
       ],
       "groupName": "backup-coverage restic"
+    },
+    {
+      "description": "cwa-ingest-gate builds on the Calibre-Web Automated image it runs Contract Tests against: bump the Dockerfile and upstreams.yaml pins together",
+      "matchFileNames": [
+        "components/cwa-ingest-gate/Dockerfile",
+        "components/cwa-ingest-gate/upstreams.yaml"
+      ],
+      "matchPackageNames": [
+        "crocodilestick/calibre-web-automated"
+      ],
+      "groupName": "cwa-ingest-gate calibre-web-automated"
     }
   ],
   "customManagers": [

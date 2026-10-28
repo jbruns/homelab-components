@@ -1,0 +1,6 @@
+# Upstreams this Component calls; see components/_template/upstreams.yaml for the fields.
+upstreams:
+  # calibre's calibredb, run as the image ships it. The Dockerfile builds FROM this same image (keep the two pins
+  # together), so the Contract Tests run the gate's own calls against the calibre it runs with.
+  calibre-web-automated:
+    image: crocodilestick/calibre-web-automated:v4.0.8@sha256:5e00373854247750cc3e4479b492ae09293ff5e06ed10177f226634d97888679
