@@ -78,7 +78,7 @@ table and the code disagree.
 |---|---|---|
 | `HARDCOVER_TOKEN` | required | Hardcover API token, with or without the `Bearer ` prefix. |
 | `LIBRARY` | `/calibre-library` | The calibre Library: the folder holding `metadata.db`. |
-| `STATE_DIR` | `/state` | Writable folder for the mark. Keep it on a volume. |
+| `STATE_DIR` | `/state` | Writable folder for the mark. Keep it on a volume. The image's `/state` is open to any user, so a new volume mounted there is too. |
 | `TAGS_FILE` | `/config/tags.json` | The controlled tag list: `{"tags": [...], "synonyms": {"name": "tag" or ["tag", ...]}}`. Read on every run. |
 | `AUTHOR_OVERRIDES_FILE` | `/config/author-overrides.json` | Author names to write instead of Hardcover's: `{"Hardcover name": "Library name"}`. Read on every run. |
 | `INTERVAL` | `300` | Seconds between runs. |

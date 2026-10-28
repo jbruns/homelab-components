@@ -4,6 +4,9 @@
 # owner as the user.
 FROM crocodilestick/calibre-web-automated:v4.0.8@sha256:5e00373854247750cc3e4479b492ae09293ff5e06ed10177f226634d97888679
 COPY src/ /gate/
+# Open to any user, like /tmp: a new volume mounted here copies the mode, so whichever user Compose sets can keep
+# the mark there.
+RUN mkdir -m 1777 /state
 # calibredb ships in /app/calibre, which only the s6 init puts on PATH; its settings go to a writable temp folder.
 ENV PATH=/app/calibre:$PATH CALIBRE_CONFIG_DIRECTORY=/tmp/calibre-config \
     PYTHONPATH=/gate PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
