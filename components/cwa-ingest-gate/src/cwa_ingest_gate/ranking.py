@@ -18,8 +18,6 @@ FORMATS = ("EPUB", "AZW3", "MOBI", "AZW", "FB2", "LIT", "TXT", "RTF", "DOCX", "P
 COMIC_FORMATS = ("CBR", "CBZ", "CB7", "CBT")
 COMIC_TAG = re.compile(r"\b(comics?|graphic novels?|manga)\b")
 NOT_A_LANGUAGE = {"und", "mul", "zxx", "mis"}
-# Markers calibre's conversion leaves in an EPUB; a retail EPUB has none of them
-CONVERTED = (("producer", re.compile(r'role="bkp"[^>]*>\s*calibre', re.I)),)
 STEPS = ("1 format", "2 retail EPUB", "3 epubcheck", "4 table of contents", "5 larger file", "6 existing")
 
 
@@ -30,7 +28,8 @@ def inspect_epub(path):
             names = z.namelist()
             opf = next((n for n in names if n.endswith(".opf")), None)
             opf_text = z.read(opf).decode("utf8", "replace") if opf else ""
-            markers = [m for m, rx in CONVERTED if rx.search(opf_text)]
+            # Conversion leaves these in the content. Calibre named as producer alone only means it edited the file.
+            markers = []
             if any(n.endswith("page_styles.css") for n in names):
                 markers.append("page_styles.css")
             if any(re.search(r"index_split_\d+", n) for n in names):
