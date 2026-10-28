@@ -20,7 +20,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 HERE = Path(__file__).resolve().parent
 # As the Dockerfile sets them
 ENV = ["PATH=/app/calibre:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-       "CALIBRE_CONFIG_DIR=/tmp/calibre-config", "PYTHONPATH=/gate:/tests"]  # fmt: skip
+       "CALIBRE_CONFIG_DIRECTORY=/tmp/calibre-config", "PYTHONPATH=/gate:/tests"]  # fmt: skip
 
 
 @pytest.mark.contract
