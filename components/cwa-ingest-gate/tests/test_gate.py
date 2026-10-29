@@ -21,7 +21,7 @@ VOCAB = Vocabulary({"tags": ["Fantasy", "Science Fiction"], "synonyms": {"Sci-Fi
 
 SCHEMA = """
 create table books (id integer primary key, title text, path text, timestamp text, pubdate text,
-  has_cover int default 0, series_index real default 1);
+  has_cover int default 0, series_index real default 1, last_modified text);
 create table authors (id integer primary key, name text);
 create table books_authors_link (id integer primary key, book int, author int);
 create table data (id integer primary key, book int, format text, uncompressed_size int, name text);
@@ -59,10 +59,11 @@ class Lib:
         opf_lang="en",
         added=NOW - timedelta(hours=1),
         tags=(),
+        modified=None,
     ):
         i = self.db.execute(
-            "insert into books (title, path, timestamp) values (?, '', ?)",
-            (title, added.isoformat(sep=" ")),
+            "insert into books (title, path, timestamp, last_modified) values (?, '', ?, ?)",
+            (title, added.isoformat(sep=" "), (modified or added).isoformat(sep=" ")),
         ).lastrowid
         path = f"{author}/{title} ({i})"
         self.db.execute("update books set path=? where id=?", (path, i))
@@ -295,6 +296,58 @@ def test_a_copy_of_a_book_without_a_hardcover_id_is_flagged_as_a_likely_duplicat
     lib.add("Project Hail Mary")
     [out] = gatekeeper(Hardcover(hc_book(10)))
     assert out["result"] == "flagged" and out["flags"] == [f"may duplicate Book {old}"]
+
+
+def test_a_format_cwa_added_to_a_checked_book_is_trimmed_to_the_best(lib, gatekeeper):
+    i = lib.add("Project Hail Mary", formats=("PDF", "EPUB"), hardcover=10)
+    single = lib.add("The Martian", formats=("PDF",))
+    gatekeeper.state.save(single)
+    [out] = gatekeeper()
+    assert out == {"book": i, "title": "Project Hail Mary", "result": "trimmed", "kept": "EPUB",
+                   "removed": ["PDF"], "step": "1 format"}  # fmt: skip
+    assert gatekeeper.calibredb.calls == [["remove_format", str(i), "PDF"], ["embed_metadata", str(i)]]
+    assert gatekeeper.state.load() == single
+
+
+def test_a_book_whose_formats_changed_within_settle_is_trimmed_later(lib, gatekeeper):
+    i = lib.add("Project Hail Mary", formats=("MOBI", "EPUB"), modified=NOW - timedelta(seconds=30))
+    gatekeeper.state.save(i)
+    assert gatekeeper() == [] and gatekeeper.calibredb.calls == []
+    [out] = gatekeeper(now=NOW + timedelta(minutes=5))
+    assert (out["result"], out["kept"], out["removed"]) == ("trimmed", "EPUB", ["MOBI"])
+
+
+def test_trimming_does_not_wait_for_hardcover(lib, gatekeeper):
+    i = lib.add("Project Hail Mary", formats=("PDF", "EPUB"))
+    gatekeeper.state.save(i)
+    lib.add("The Martian")
+    with pytest.raises(RuntimeError):
+        gatekeeper(Hardcover(fail=True))
+    assert gatekeeper.calibredb.verbs() == ["remove_format", "embed_metadata"]
+    assert gatekeeper.state.load() == i
+
+
+def test_a_book_with_no_usable_format_is_flagged_once_not_trimmed(lib, gatekeeper):
+    i = lib.add("Project Hail Mary", formats=("KFX", "ZIP"), tags=["Sci-Fi"])
+    gatekeeper.state.save(i)
+    [out] = gatekeeper()
+    assert out == {"book": i, "title": "Project Hail Mary", "result": "flagged", "flags": ["no usable Format"]}
+    assert gatekeeper.calibredb.calls == [["set_metadata", str(i), "--field", "tags:Sci-Fi,review"]]
+    lib.db.execute("insert into tags (name) values ('review')")
+    lib.db.execute("insert into books_tags_link (book, tag) values (?, last_insert_rowid())", (i,))
+    lib.db.commit()
+    assert gatekeeper() == []
+
+
+def test_a_failed_trim_is_flagged_and_retried_next_run(lib, gatekeeper):
+    i = lib.add("Project Hail Mary", formats=("PDF", "EPUB"))
+    gatekeeper.state.save(i)
+    gatekeeper.calibredb.fail = {"remove_format"}
+    [out] = gatekeeper()
+    assert (out["result"], out["reason"]) == ("failed", "remove_format: calibredb: database is locked")
+    assert gatekeeper.calibredb.calls[-1] == ["set_metadata", str(i), "--field", "tags:review"]
+    gatekeeper.calibredb.fail = set()
+    assert [o["result"] for o in gatekeeper()] == ["trimmed"]
 
 
 def test_serves_healthz_and_counts_outcomes():

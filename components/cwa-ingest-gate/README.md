@@ -3,7 +3,8 @@
 Checks each Book that [Calibre-Web Automated](https://github.com/crocodilestick/Calibre-Web-Automated) (CWA) adds to
 its calibre Library. It matches the Book on [Hardcover](https://hardcover.app), then either writes Hardcover's
 metadata, merges the Book into a copy already in the Library, removes it, or tags it `review` for a person to
-check. It runs beside CWA as its own container and writes only through `calibredb`.
+check. It also keeps every checked Book to one Format. It runs beside CWA as its own container and writes only
+through `calibredb`.
 
 ## What a run does
 
@@ -11,6 +12,15 @@ Every `INTERVAL` seconds it checks the Books whose id is above the highest id it
 **mark** in `STATE_DIR/mark`. The first run checks nothing: it sets the mark to the newest Book, so it never
 rewrites a Library that was there before it. It skips a Book that was added less than `SETTLE` seconds ago, while
 calibre may still be writing it, and every Book after it.
+
+Each run first **trims** every checked Book (at or below the mark) that holds more than one Format. CWA's automerge
+adds a file to a Book whose title and authors match whenever that Book lacks the file's Format, with no new record for
+the gate to see (every `auto_ingest_automerge` mode does this). The gate keeps the Book's best file by the ranking
+below, removes its other Formats, embeds the Book's metadata in the kept file, and logs the step that decided. It
+waits until the Book's `last_modified` is `SETTLE` seconds old. A Book whose best file is unusable (no Format the
+ranking lists, or an EPUB that won't open) is tagged `review` instead, and left alone once it carries the tag.
+Trimming needs no Hardcover, so a Hardcover error doesn't hold it back. It covers Books that were in the Library
+before the gate's first run too, so reduce such a Library to one Format per Book before starting the gate.
 
 Each new Book goes through these checks in order:
 
@@ -62,7 +72,7 @@ before the gate has checked the match.
 
 CWA's Hardcover lookup applies the first search result without checking it, so a summary, a study guide or
 another author's book can overwrite a Book's metadata. CWA's duplicate handling merges by title and author, not by
-provider ID, and it does not rank the files it keeps. No upstream option or community tool checks a provider
+provider ID, and it does not rank the files it keeps: a new Format lands beside the Book's existing one. No upstream option or community tool checks a provider
 match before applying it, or merges new arrivals into the copy a Library already holds.
 
 ## Retire when
@@ -83,7 +93,7 @@ table and the code disagree.
 | `TAGS_FILE` | `/config/tags.json` | The controlled tag list: `{"tags": [...], "synonyms": {"name": "tag" or ["tag", ...]}}`. Read on every run. |
 | `AUTHOR_OVERRIDES_FILE` | `/config/author-overrides.json` | Author names to write instead of Hardcover's: `{"Hardcover name": "Library name"}`. Read on every run. |
 | `INTERVAL` | `300` | Seconds between runs. |
-| `SETTLE` | `120` | Seconds a Book must be in the Library before it is checked. |
+| `SETTLE` | `120` | Seconds a Book must be in the Library before it is checked, or unchanged before it is trimmed. |
 | `THRESHOLD` | `0.85` | Lowest search score accepted as a match. |
 | `PORT` | `9715` | Port serving `/metrics` and `/healthz`. |
 
@@ -95,7 +105,7 @@ single check and exits.
 
 | Metric | Description |
 |---|---|
-| `cwa_ingest_gate_books_total{result}` | Books checked since start, by `result`: `written`, `flagged`, `merged`, `rejected` or `failed`. |
+| `cwa_ingest_gate_books_total{result}` | Books checked since start, by `result`: `written`, `flagged`, `merged`, `trimmed`, `rejected` or `failed`. |
 | `cwa_ingest_gate_last_success_timestamp_seconds` | When a run last finished without error; 0 before the first. |
 
 ## Healthcheck
