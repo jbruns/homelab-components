@@ -124,13 +124,15 @@ def gatekeeper(lib, tmp_path):
     calibredb = Calibredb()
     calibredb.library = lib.root
 
+    counted = []
+
     def once(hc=None, now=NOW, settle=timedelta(minutes=2)):
         return gate.run_once(
             gate.Config(library=str(lib.root), settle=settle, threshold=0.85),
-            state, hc or Hardcover(), VOCAB, run=calibredb, now=now,
+            state, hc or Hardcover(), VOCAB, run=calibredb, now=now, count=counted.extend,
         )  # fmt: skip
 
-    once.state, once.calibredb = state, calibredb
+    once.state, once.calibredb, once.counted = state, calibredb, counted
     return once
 
 
@@ -305,7 +307,10 @@ def test_a_format_cwa_added_to_a_checked_book_is_trimmed_to_the_best(lib, gateke
     [out] = gatekeeper()
     assert out == {"book": i, "title": "Project Hail Mary", "result": "trimmed", "kept": "EPUB",
                    "removed": ["PDF"], "step": "1 format"}  # fmt: skip
-    assert gatekeeper.calibredb.calls == [["remove_format", str(i), "PDF"], ["embed_metadata", str(i)]]
+    assert gatekeeper.calibredb.calls == [
+        ["embed_metadata", "--only-formats", "EPUB", str(i)],
+        ["remove_format", str(i), "PDF"],
+    ]
     assert gatekeeper.state.load() == single
 
 
@@ -323,8 +328,9 @@ def test_trimming_does_not_wait_for_hardcover(lib, gatekeeper):
     lib.add("The Martian")
     with pytest.raises(RuntimeError):
         gatekeeper(Hardcover(fail=True))
-    assert gatekeeper.calibredb.verbs() == ["remove_format", "embed_metadata"]
+    assert gatekeeper.calibredb.verbs() == ["embed_metadata", "remove_format"]
     assert gatekeeper.state.load() == i
+    assert [o["result"] for o in gatekeeper.counted] == ["trimmed"]
 
 
 def test_a_book_with_no_usable_format_is_flagged_once_not_trimmed(lib, gatekeeper):
@@ -350,9 +356,34 @@ def test_a_failed_trim_is_flagged_and_retried_next_run(lib, gatekeeper):
     assert [o["result"] for o in gatekeeper()] == ["trimmed"]
 
 
+def test_a_failed_embed_leaves_every_format_for_the_next_run(lib, gatekeeper):
+    i = lib.add("Project Hail Mary", formats=("PDF", "EPUB"))
+    gatekeeper.state.save(i)
+    gatekeeper.calibredb.fail = {"embed_metadata"}
+    [out] = gatekeeper()
+    assert out["result"] == "failed" and "remove_format" not in gatekeeper.calibredb.verbs()
+    gatekeeper.calibredb.fail = set()
+    assert [o["result"] for o in gatekeeper()] == ["trimmed"]
+
+
+def test_a_new_book_waits_while_the_book_it_merges_into_settles(lib, gatekeeper):
+    old = lib.add(
+        "Project Hail Mary", hardcover=10, added=NOW - timedelta(days=9), modified=NOW - timedelta(seconds=30)
+    )
+    gatekeeper.state.save(old)
+    lib.add("Project Hail Mary")
+    lib.add("Unfindable")
+    assert gatekeeper(Hardcover(hc_book(10))) == [] and gatekeeper.calibredb.calls == []
+    assert gatekeeper.state.load() == old
+    outs = gatekeeper(Hardcover(hc_book(10)), now=NOW + timedelta(minutes=5))
+    assert [o["result"] for o in outs] == ["merged", "flagged"]
+
+
 def test_serves_healthz_and_counts_outcomes():
     status = gate.Status()
-    status.record([{"result": "written"}, {"result": "merged"}, {"result": "written"}], NOW.timestamp())
+    status.count([{"result": "written"}, {"result": "merged"}])
+    status.count([{"result": "written"}])
+    status.succeeded(NOW.timestamp())
     server = gate.serve(0, status)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()

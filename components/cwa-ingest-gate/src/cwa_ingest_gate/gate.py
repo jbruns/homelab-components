@@ -85,11 +85,20 @@ def crowded(db, library, mark, cutoff):
             "group by b.id having count(*) > 1 order by b.id",
             (mark,),
         )
-        if not ts or added(ts) <= cutoff
+        if unchanged(ts, cutoff)
     ]
     books = ranking.load(db, library, ids)
     books = [books[i] for i in ids]
     return [b for b in books if ranking.usable(ranking.rank(b["files"])[0]) or REVIEW_TAG not in b["tags"]]
+
+
+def unchanged(last_modified, cutoff):
+    return not last_modified or added(last_modified) <= cutoff
+
+
+def settled_since(db, book, cutoff):
+    """Whether calibre last changed this Book before the cutoff."""
+    return unchanged(db.execute("select last_modified from books where id=?", (book,)).fetchone()[0], cutoff)
 
 
 def holders(db, hid, mark):
@@ -149,9 +158,10 @@ class Step:
     into_files: list = field(default_factory=list)
 
 
-def run_once(config, state, hc, vocab, run=hardcover.run_calibredb, now=None):
+def run_once(config, state, hc, vocab, run=hardcover.run_calibredb, now=None, count=lambda outs: None):
     """Trim every checked Book to one Format, then check every settled Book added since the last run; return one
-    outcome per Book. Trimming needs no Hardcover, so a Hardcover error doesn't hold it back."""
+    outcome per Book. Trimming needs no Hardcover, so a Hardcover error doesn't hold it back; `count` gets each
+    batch of outcomes as soon as it is done, so trims count even when Hardcover then fails."""
     now = now or datetime.now(UTC)
     calibredb = _calibredb(config.library, run)
     db = hardcover.connect(config.library)
@@ -170,16 +180,20 @@ def run_once(config, state, hc, vocab, run=hardcover.run_calibredb, now=None):
         out = {"book": book["id"], "title": book["title"]}
         _attempt(calibredb, book["id"], book["tags"], out, functools.partial(trim, calibredb, book, out))
         outs.append(out)
+    count(outs)
     db = hardcover.connect(config.library)
     try:
-        steps = plan(db, config, mark, hc, vocab, now)
+        steps = plan(db, config, mark, hc, vocab, now, trimmed={o["book"] for o in outs})
     finally:
         db.close()
-    return outs + apply(steps, calibredb, config.library, state)
+    checked = apply(steps, calibredb, config.library, state)
+    count(checked)
+    return outs + checked
 
 
-def plan(db, config, mark, hc, vocab, now):
-    """Every decision, before anything is written: a Hardcover error leaves the whole batch for the next run."""
+def plan(db, config, mark, hc, vocab, now, trimmed=frozenset()):
+    """Every decision, before anything is written: a Hardcover error leaves the whole batch for the next run.
+    A merge waits while its Book settles, unless the gate itself just changed that Book (`trimmed`)."""
     ids = settled(db, mark, now - config.settle)
     books = ranking.load(db, config.library, ids)
     steps, checked, extra = [], [], {}
@@ -213,6 +227,10 @@ def plan(db, config, mark, hc, vocab, now):
         held = holders(db, hid, mark) if rec["status"] == "match" else []
         if len(held) > 1:
             flag(rec, old, f"Hardcover book {hid} is also held by {', '.join(map(str, held))}")
+        elif held and held[0] not in trimmed and not settled_since(db, held[0], now - config.settle):
+            # CWA may still be adding a Format to that Book: this Book and every one after it wait
+            del steps[steps.index(step) :]
+            break
         elif held:
             step.into, step.into_files = held[0], ranking.load(db, config.library, held)[held[0]]["files"]
         else:
@@ -311,9 +329,10 @@ def trim(calibredb, book, out):
         return
     out.update(result="trimmed", kept=best["format"], removed=[f["format"] for f in rest])
     out.update(step=ranking.compare(best, rest[0])[1])
+    # Embed first: once the other Formats are gone the Book no longer needs trimming, so a failed embed would stay
+    calibredb("embed_metadata", "--only-formats", best["format"], str(book["id"]))
     for f in rest:
         calibredb("remove_format", str(book["id"]), f["format"])
-    calibredb("embed_metadata", str(book["id"]))
 
 
 class Status:
@@ -322,9 +341,12 @@ class Status:
     def __init__(self):
         self.counts, self.last_success, self.lock = Counter(), 0.0, threading.Lock()
 
-    def record(self, outs, ts):
+    def count(self, outs):
         with self.lock:
             self.counts.update(o["result"] for o in outs)
+
+    def succeeded(self, ts):
+        with self.lock:
             self.last_success = ts
 
     def metrics(self):
@@ -393,8 +415,8 @@ def main(argv, environ):
     interval = float(environ.get("INTERVAL", "300"))
     hc = hardcover.Hardcover(token)
 
-    def once():
-        return run_once(config, state, hc, hardcover.load_vocabulary(tags, authors))
+    def once(count=lambda outs: None):
+        return run_once(config, state, hc, hardcover.load_vocabulary(tags, authors), count=count)
 
     if argv == ["once"]:
         once()
@@ -405,7 +427,8 @@ def main(argv, environ):
     log({"start": f"serving /metrics on :{port}, checking every {interval:g}s"})
     while True:
         try:
-            status.record(once(), time.time())
+            once(status.count)
+            status.succeeded(time.time())
         except Exception:
             traceback.print_exc()
         time.sleep(interval)

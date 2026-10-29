@@ -16,7 +16,7 @@ calibre may still be writing it, and every Book after it.
 Each run first **trims** every checked Book (at or below the mark) that holds more than one Format. CWA's automerge
 adds a file to a Book whose title and authors match whenever that Book lacks the file's Format, with no new record for
 the gate to see (every `auto_ingest_automerge` mode does this). The gate keeps the Book's best file by the ranking
-below, removes its other Formats, embeds the Book's metadata in the kept file, and logs the step that decided. It
+below, embeds the Book's metadata in that file, removes its other Formats, and logs the step that decided. It
 waits until the Book's `last_modified` is `SETTLE` seconds old. A Book whose best file is unusable (no Format the
 ranking lists, or an EPUB that won't open) is tagged `review` instead, and left alone once it carries the tag.
 Trimming needs no Hardcover, so a Hardcover error doesn't hold it back. It covers Books that were in the Library
@@ -33,7 +33,8 @@ Each new Book goes through these checks in order:
    match must share an author with the Book. A match that came from anything other than a search must also have a
    close title.
 3. **Merged** if the Book matches a Hardcover book that exactly one checked Book (at or below the mark) already
-   holds, by its `hardcover-id`. The existing Book keeps its id, metadata, shelves and read status. Its best file and the
+   holds, by its `hardcover-id`. While that Book changed less than `SETTLE` seconds ago, the new Book and every Book after it
+   wait for the next run. The existing Book keeps its id, metadata, shelves and read status. Its best file and the
    new Book's best file are compared by the ranking below:
    - If the new file is better, it replaces the existing Book's file (`add_format`). The existing Book's other
      Formats are removed and its metadata is embedded in the new file.
