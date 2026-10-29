@@ -49,9 +49,19 @@ def test_one_run_on_a_real_library(upstream, tmp_path):
         epub(files / name, title, **kw)
     (files / "old.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
     calibredb = ("--with-library", "/library")
-    run("add", *calibredb, "--duplicates", "/files/old.epub")
-    run("add_format", *calibredb, "1", "/files/old.pdf")
+    run("add", *calibredb, "--title", "Project Hail Mary", "--authors", "Andy Weir", "/files/old.pdf")
     run("set_metadata", *calibredb, "1", "--field", "identifiers:hardcover-id:10")
+
+    def modified():
+        with sqlite3.connect(lib / "metadata.db") as db:
+            return db.execute("select last_modified from books where id=1").fetchone()[0]
+
+    before = modified()
+    # As CWA ingests: a title and authors match adds the file's Format to Book 1 instead of a new record
+    run("add", *calibredb, "--automerge", "new_record", "/files/old.epub")
+    with sqlite3.connect(lib / "metadata.db") as db:
+        assert db.execute("select book, format from data order by format").fetchall() == [(1, "EPUB"), (1, "PDF")]
+    assert modified() > before  # the gate's settle time counts from here
     run("add", *calibredb, "--duplicates", "/files/new.epub", "/files/martian.epub", "/files/livre.epub")
 
     spec = {
@@ -62,6 +72,12 @@ def test_one_run_on_a_real_library(upstream, tmp_path):
         o["book"]: o for o in json.loads(run("/tests/contract_run.py", stdin=json.dumps(spec), entrypoint="python3"))
     }
 
+    assert (outs[1]["result"], outs[1]["kept"], outs[1]["removed"], outs[1]["step"]) == (
+        "trimmed",
+        "EPUB",
+        ["PDF"],
+        "1 format",
+    )
     assert (outs[2]["result"], outs[2]["into"], outs[2]["kept"], outs[2]["step"]) == (
         "merged",
         1,
