@@ -307,6 +307,25 @@ def test_probe_problems(validate):
     assert validate.probe_problems("app", ok, {"http_2xx"}) == []
 
 
+NO_IDP_URL = "app: a native-OIDC Service (probe.idp_auth: oidc) needs an https probe.idp_url"
+
+
+@pytest.mark.parametrize(
+    "labels,expected",
+    [
+        ({"probe.idp_auth": "oidc", "probe.idp_url": "https://a/login"}, []),
+        ({"probe.idp_auth": "oidc"}, [NO_IDP_URL]),
+        ({"probe.idp_auth": "oidc", "probe.idp_url": "http://a/login"}, [NO_IDP_URL]),
+        (
+            {"probe.idp_auth": "forward", "probe.idp_url": "https://a/"},
+            ["app: probe.idp_auth must be 'oidc' (omit it for forward auth)"],
+        ),
+    ],
+)
+def test_native_oidc_probe(validate, labels, expected):
+    assert validate.probe_problems("app", labels, set()) == expected
+
+
 # --- image VOLUME paths (recorded registry exchanges) -------------------------------------------
 
 
