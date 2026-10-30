@@ -774,6 +774,12 @@ def probe_problems(name: str, labels: dict, modules: set[str]) -> list[str]:
         problems.append(f"{name}: has an https router but no probe.url label")
     if "probe.module" in labels and labels["probe.module"] not in modules:
         problems.append(f"{name}: probe.module {labels['probe.module']!r} is not a blackbox.yml module")
+    # A native-OIDC Service has no forward-auth router, so router_problems cannot tell it is Protected.
+    if "probe.idp_auth" in labels:
+        if labels["probe.idp_auth"] != "oidc":
+            problems.append(f"{name}: probe.idp_auth must be 'oidc' (omit it for forward auth)")
+        elif not str(labels.get("probe.idp_url", "")).startswith("https://"):
+            problems.append(f"{name}: a native-OIDC Service (probe.idp_auth: oidc) needs an https probe.idp_url")
     return problems
 
 

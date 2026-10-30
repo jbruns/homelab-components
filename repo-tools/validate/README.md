@@ -155,7 +155,9 @@ An Exemption naming no item, or one the Service no longer needs, fails. `compose
 Services meet the Baseline and lists every Exemption.
 
 Each Service held to the Baseline must also meet the rules for its Traefik routers: names that carry
-their kind (UI, health, Client Path), health and Client Path rules, and Protected Probes.
+their kind (UI, health, Client Path), health and Client Path rules, and Protected Probes. A Service that
+signs users in through the IdP itself (native OIDC) declares `probe.idp_auth: oidc` and needs an `https://`
+`probe.idp_url`; `oidc` is the label's only valid value.
 
 ## Volumes
 
