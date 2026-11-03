@@ -35,8 +35,8 @@ def register(subparsers) -> None:
             f"those listed in HOPS_<NAME>_{SETTING}. On a Host without the truenas capability, only Docker usage "
             "is shown; Rollback Snapshots need the zfs capability too. On a Host that runs no Stacks and has the "
             "proxmox capability: its nodes (version, pending package updates) and every Guest (Kept, Scratch or "
-            "Stray, state, newest vzdump archive, dual-homing), and the Kept Guests it lacks. A Host that is off "
-            "is reported as off."
+            "Stray, state, last successful vzdump from the task history, dual-homing), and the Kept Guests it "
+            "lacks. A Host that is off is reported as off."
         ),
     )
     _guests.add_options(p)

@@ -27,7 +27,7 @@ import yaml
 
 from hops import snapshots
 from hops.errors import ConfigError, HopsError, HostTimeout
-from hops.proxmox import HostOff, ProxmoxError
+from hops.proxmox import VZDUMP_UPID, HostOff, ProxmoxError
 
 RECORD_DIR = "host"  # the record is <repo root>/host/<Host name>/
 GUESTS_FILE = "guests.yaml"
@@ -293,7 +293,7 @@ Upgradable = Callable[[], list[dict]]
 
 
 def host_report(client, host: str, record: Record, *, upgradable: Upgradable | None = None) -> dict:
-    """Nodes (version, pending updates), every Guest (kind, state, newest vzdump archive, dual-homing), and the Kept
+    """Nodes (version, pending updates), every Guest (kind, state, last successful vzdump, dual-homing), and the Kept
     Guests the Host lacks. `upgradable` lists pending updates another way (e.g. over SSH) for a single node whose
     pending updates the token may not read."""
     notes: list[str] = []
@@ -321,19 +321,11 @@ def host_report(client, host: str, record: Record, *, upgradable: Upgradable | N
         version = reads.get(f"node {entry['node']} version", f"nodes/{entry['node']}/version")
         entry["version"] = version.get("version") if isinstance(version, dict) else None
         entry["updates"] = updates(reads, entry["node"], upgradable if len(nodes) == 1 else None)
-    newest = backups(reads, online)
+    ended = last_backups(reads, online, {g["id"] for g in guest_list})
     now = snapshots.now().timestamp()
     for g in guest_list:
-        archive = newest.get(g["id"])
-        g["backup"] = (
-            None
-            if archive is None
-            else {
-                "volid": archive["volid"],
-                "time": iso(archive["ctime"]),
-                "age_days": round((now - archive["ctime"]) / DAY, 1),
-            }
-        )
+        end = ended.get(g["id"])
+        g["last_backup"] = None if end is None else {"time": iso(end), "age_days": round((now - end) / DAY, 1)}
         g["exclusive_networks"], g["dual_homed"] = None, None
         g["dual_homing_allowed"] = g["id"] in record.may_join_several
         if record.networks is not None and g["node"] in online:
@@ -404,33 +396,102 @@ def apt_upgradable(runner) -> list[dict]:
     ]
 
 
-def backups(reads: Reads, nodes: list[str]) -> dict[int, dict]:
-    """The newest vzdump archive of each Guest, on every active storage holding backups (a shared one read once,
-    from the first node that reads it)."""
-    newest: dict[int, dict] = {}
-    shared: set[str] = set()
-    for node in nodes:
-        storages = reads.get(
-            f"node {node} backup storages", f"nodes/{node}/storage", {"content": "backup", "enabled": 1}, []
-        )
-        for s in sorted(storages or [], key=lambda s: s.get("storage") or ""):
-            name = s.get("storage")
-            if not name or name in shared:
-                continue
-            if not s.get("active"):
-                reads.notes.append(f"backups on storage {name} not read: it is not active on node {node}")
-                continue
-            path = f"nodes/{node}/storage/{name}/content"
-            content = reads.get(f"backups on storage {name}", path, {"content": "backup"}, None)
-            if content is None:
-                continue  # failed: another node may still read a shared storage
-            if s.get("shared"):
-                shared.add(name)  # read once it has been read
-            for item in content:
-                vmid, ctime = item.get("vmid"), item.get("ctime")
-                if isinstance(vmid, int) and isinstance(ctime, int) and ctime > newest.get(vmid, {}).get("ctime", -1):
-                    newest[vmid] = {"volid": item.get("volid"), "ctime": ctime}
-    return newest
+# Backups: the vzdump tasks in each node's task history, newest first. An audit token (Sys.Audit on /nodes/<node>)
+# reads every user's tasks and their logs, but not the backup archives: listing a storage's backups needs
+# Datastore.AllocateSpace on it and VM.Backup on each Guest, and the API silently leaves the rest out.
+TASKS = {"typefilter": "vzdump", "source": "archive", "limit": 50}  # finished tasks only: each has an end time
+LOG_PAGE = 1000  # task log lines per read
+LOG_PAGES = 10  # at most this many reads of one task's log
+# The task log lines vzdump writes for each Guest in a task (PVE/VZDump.pm, exec_backup_task): "Starting Backup of
+# VM <id> (<type>)", then "Finished Backup of VM <id> (<hh:mm:ss>)" on success or "Backup of VM <id> failed - <why>".
+STARTED = re.compile(r"INFO: Starting Backup of VM (\d+) \((?:qemu|lxc)\)\s*")
+FINISHED = re.compile(r"INFO: Finished Backup of VM (\d+) \(\d+:\d\d:\d\d\)\s*")
+FAILED = re.compile(r"ERROR: Backup of VM (\d+) failed - .*")
+
+
+def last_backups(reads: Reads, nodes: list[str], wanted: set[int]) -> dict[int, int]:
+    """The end time of each wanted Guest's newest successful vzdump, from every node's task history. A Guest the
+    history does not cover (never backed up, or its tasks rotated out) is left out: unknown. A Guest whose newest
+    vzdump failed after it, or with none before it, gets a note."""
+    done: dict[int, int] = {}
+    failed: dict[int, int] = {}
+    for node in nodes if wanted else ():
+        tasks = reads.get(f"node {node} vzdump tasks", f"nodes/{node}/tasks", TASKS, None)
+        if tasks is None:
+            continue
+        tasks = [t for t in tasks if isinstance(t, dict) and isinstance(t.get("endtime"), int)]
+        if not tasks:
+            reads.notes.append(f"node {node}: no finished vzdump task in its task history")
+            continue
+        here: dict[int, int] = {}
+        for task in sorted(tasks, key=lambda t: t["endtime"], reverse=True):
+            if wanted <= here.keys():
+                break
+            for vmid, ok in outcomes(reads, node, task, here).items():
+                if ok:
+                    here.setdefault(vmid, task["endtime"])
+                elif vmid not in here:
+                    failed[vmid] = max(failed.get(vmid, 0), task["endtime"])
+        for vmid, end in here.items():
+            done[vmid] = max(done.get(vmid, 0), end)
+    for vmid in sorted(wanted & failed.keys()):
+        if failed[vmid] > done.get(vmid, 0):
+            reads.notes.append(f"Guest {vmid}: its newest vzdump, in a task that ended {iso(failed[vmid])}, failed")
+    return done
+
+
+def outcomes(reads: Reads, node: str, task: dict, known: dict[int, int]) -> dict[int, bool]:
+    """Whether each Guest a finished vzdump task backed up finished (True) or not (False), from its log. Even a
+    task named for one Guest (its `id`) that ended OK may not have backed it up: vzdump silently skips a Guest the
+    task's user lacks VM.Backup on."""
+    vmid = int(task["id"]) if str(task.get("id") or "").isdigit() else None
+    if vmid is not None and vmid in known:
+        return {}  # it has a newer success: its log cannot change that
+    upid = task.get("upid")
+    if not isinstance(upid, str) or not VZDUMP_UPID.fullmatch(upid):
+        return {}
+    lines = task_log(reads, node, upid, task["endtime"])
+    if lines is None:
+        return {}
+    found = parse_log(lines[0], complete=lines[1])
+    if vmid is not None and vmid not in found and lines[1] and task.get("status") != "OK":
+        found[vmid] = False  # the task failed before it started this Guest's backup
+    return found
+
+
+def task_log(reads: Reads, node: str, upid: str, end: int) -> tuple[list[str], bool] | None:
+    """A task's log lines, and whether they are all of it; None when the read failed."""
+    what = f"node {node} vzdump task log (ended {iso(end)})"
+    lines: list[str] = []
+    for page in range(LOG_PAGES):
+        got = reads.get(what, f"nodes/{node}/tasks/{upid}/log", {"start": page * LOG_PAGE, "limit": LOG_PAGE}, None)
+        if got is None:
+            return None
+        lines += [str(line.get("t") or "") for line in got if isinstance(line, dict)]
+        if len(got) < LOG_PAGE:
+            return lines, True
+    reads.notes.append(f"{what}: read only its first {LOG_PAGES * LOG_PAGE} lines")
+    return lines, False
+
+
+def parse_log(lines: list[str], *, complete: bool) -> dict[int, bool]:
+    """Each Guest a vzdump task log shows a backup of: True when it finished, False when it failed or (in a whole
+    log) never finished. A "Finished" line counts only inside its own Guest's backup."""
+    found: dict[int, bool] = {}
+    current = None
+    for line in lines:
+        if m := STARTED.fullmatch(line):
+            current = int(m.group(1))
+            found.setdefault(current, False)
+        elif (m := FINISHED.fullmatch(line)) and int(m.group(1)) == current:
+            found[current] = True
+            current = None
+        elif m := FAILED.fullmatch(line):
+            found[int(m.group(1))] = False
+            current = None
+    if not complete and current is not None:
+        del found[current]  # still running where the read stopped
+    return found
 
 
 def iso(epoch: int) -> str:
