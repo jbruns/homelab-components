@@ -1197,12 +1197,16 @@ tag outside 1–4094, two networks on the same bridge and tag) fails the command
     inactive one is skipped with a note);
   - dual-homing, when the record declares exclusive networks: the exclusive networks the Guest has an
     interface on (each `netN`'s `bridge`, plus its `tag` or each VLAN in its `trunks`, in its `config`), and
-    whether that is more than one. An interface with neither `tag` nor `trunks` on a VLAN-aware bridge (a Linux
-    bridge with `bridge_vlan_aware`, or an Open vSwitch bridge, from `nodes/{node}/network`) reaches every VLAN,
-    so it joins every exclusive network on that bridge. When that bridge's VLAN-awareness cannot be read,
-    `dual_homed` is `null` with a note, unless the Guest is already on two exclusive networks.
-    The text output shows `yes`, `yes (allowed)` (the Guest is in `may_join_several`), `no`, `unknown`, or `-`
-    when not checked.
+    whether that is more than one. The rule is conservative:
+    - an interface with a `tag` joins only that VLAN's network (on a bridge that is not VLAN-aware, Proxmox VE
+      puts it on a per-VLAN sub-bridge, so the tag isolates it);
+    - an interface with `trunks` joins each listed VLAN's network and the bridge's untagged network;
+    - an interface with neither joins every exclusive network on its bridge, whatever the bridge's
+      VLAN-awareness: a VLAN-aware bridge passes it every VLAN, and one without VLAN filtering forwards tagged
+      frames untouched.
+
+    The text output shows `yes`, `yes (allowed)` (the Guest is in `may_join_several`), `no`, or `-` when not
+    checked.
 - **Missing:** the Kept Guests the Host does not have.
 
 A read that fails leaves its field `null` with a note naming the read, the status and the path (e.g.

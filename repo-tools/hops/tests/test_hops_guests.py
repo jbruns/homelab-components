@@ -67,11 +67,6 @@ def routes() -> dict:
         "nodes": [{"node": "pve", "status": "online"}],
         "cluster/resources": RESOURCES,
         "nodes/pve/version": {"version": "9.1.4", "release": "9.1"},
-        "nodes/pve/network": [
-            {"iface": "enp1s0", "type": "eth"},
-            {"iface": "vmbr0", "type": "bridge", "bridge_vlan_aware": 1},
-            {"iface": "vmbr1", "type": "bridge"},
-        ],
         "nodes/pve/apt/update": [{"Package": "pve-manager", "Version": "9.1.5", "OldVersion": "9.1.4"}],
         "nodes/pve/storage": [
             {"storage": "local", "active": 1, "shared": 0},
@@ -524,37 +519,22 @@ def test_a_record_error_naming_the_secret_is_scrubbed(pve_repo, server, monkeypa
     assert secret not in out + err
 
 
-def test_an_untagged_nic_on_a_vlan_aware_bridge_joins_every_vlan_network_on_it(run, server):
+def test_an_untagged_nic_without_trunks_joins_every_exclusive_network_on_its_bridge(run, server):
+    # Whatever the bridge's VLAN-awareness: a bridge without VLAN filtering forwards tagged frames too.
     server.routes["nodes/pve/lxc/300/config"] = {"net0": "name=eth0,bridge=vmbr0"}
     by_id = {g["id"]: g for g in host_json(run)["guests"]}
     assert (by_id[300]["exclusive_networks"], by_id[300]["dual_homed"]) == (["lan", "iot"], True)
+    assert not any(path.endswith("/network") for path, _ in server.requests)
 
 
-def test_an_untagged_nic_on_a_bridge_that_is_not_vlan_aware_joins_only_its_untagged_traffic(run, server):
-    server.routes["nodes/pve/network"] = [
-        {"iface": "vmbr0", "type": "bridge"},
-        {"iface": "vmbr1", "type": "bridge", "bridge_vlan_aware": 1},
-    ]
-    server.routes["nodes/pve/lxc/300/config"] = {"net0": "name=eth0,bridge=vmbr0"}
+def test_a_trunks_nic_joins_its_vlans_and_the_untagged_network(run, server, pve_repo):
+    write(
+        pve_repo,
+        {"host/pve/network.yaml": NETWORK_YAML.replace("mgmt: {bridge: vmbr1}", "native: {bridge: vmbr0}")},
+    )
+    server.routes["nodes/pve/lxc/300/config"] = {"net0": "name=eth0,bridge=vmbr0,trunks=20"}
     by_id = {g["id"]: g for g in host_json(run)["guests"]}
-    assert (by_id[300]["exclusive_networks"], by_id[300]["dual_homed"]) == ([], False)
-    # vmbr1 is VLAN-aware, but mgmt is its only exclusive network: an untagged NIC on it joins only that one.
-    assert (by_id[301]["exclusive_networks"], by_id[301]["dual_homed"]) == (["iot", "mgmt"], True)
-
-
-def test_dual_homing_is_unknown_when_vlan_awareness_cannot_be_read(run, server):
-    server.routes["nodes/pve/network"] = (403, "Permission check failed")
-    server.routes["nodes/pve/lxc/300/config"] = {"net0": "name=eth0,bridge=vmbr0"}
-    report = host_json(run)
-    by_id = {g["id"]: g for g in report["guests"]}
-    assert (by_id[300]["exclusive_networks"], by_id[300]["dual_homed"]) == ([], None)
-    # A tagged NIC needs no VLAN-awareness: Guest 100 is still known to be dual-homed.
-    assert by_id[100]["dual_homed"] is True
-    assert "network of node pve: Proxmox VE read failed (403 permission denied on nodes/pve/network)" in report["notes"]
-    assert any(n.startswith("Guest 300 dual-homing unknown") for n in report["notes"])
-    code, out, _ = run("host", "--host", "pve")
-    row = next(line for line in out.splitlines() if line.startswith("300 "))
-    assert row.split()[-1] == "unknown"
+    assert (by_id[300]["exclusive_networks"], by_id[300]["dual_homed"]) == (["iot", "native"], True)
 
 
 def test_an_unexpected_error_holding_the_secret_is_scrubbed_without_a_traceback(run, monkeypatch):

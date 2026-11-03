@@ -162,7 +162,7 @@ def nics(config: dict) -> list[dict]:
 def interfaces(config: dict) -> list[tuple[str, int | None]]:
     """Each (bridge, VLAN) a Guest's network interfaces reach, from its config (`net0: virtio=…,bridge=vmbr0,tag=20`):
     the interface's `tag` (None: the bridge's untagged traffic), then each VLAN its `trunks` passes
-    (`trunks=10;20-21`). An interface with neither on a VLAN-aware bridge reaches every VLAN too: see `joined`."""
+    (`trunks=10;20-21`). An interface with neither reaches every VLAN too: see `joined`."""
     found = []
     for props in nics(config):
         tag = props.get("tag")
@@ -180,39 +180,13 @@ def trunk_vlans(text: str) -> list[int]:
     return vlans
 
 
-def vlan_aware(network: list | None) -> dict[str, bool] | None:
-    """Whether each bridge in `nodes/{node}/network` passes VLANs to an interface that has neither `tag` nor `trunks`:
-    a Linux bridge with `bridge_vlan_aware` set (Proxmox VE then adds VLANs 2-4094 to the port), or an Open vSwitch
-    bridge (an untagged port trunks every VLAN). None when the network could not be read."""
-    if not isinstance(network, list):
-        return None
-    aware = {}
-    for iface in network:
-        if isinstance(iface, dict) and iface.get("iface"):
-            if iface.get("type") == "bridge":
-                aware[iface["iface"]] = bool(iface.get("bridge_vlan_aware"))
-            elif iface.get("type") == "OVSBridge":
-                aware[iface["iface"]] = True
-    return aware
-
-
-def joined(
-    config: dict, networks: tuple[Network, ...], aware: dict[str, bool] | None = None
-) -> tuple[list[str], list[str]]:
-    """The exclusive networks a Guest has an interface on, in the record's order, and the bridges whose VLAN-awareness
-    is unknown (`aware` lacks them) where an interface with neither `tag` nor `trunks` might reach a VLAN network."""
+def joined(config: dict, networks: tuple[Network, ...]) -> list[str]:
+    """The exclusive networks a Guest has an interface on, in the record's order. An interface with neither `tag` nor
+    `trunks` joins every one on its bridge: a VLAN-aware bridge passes it every VLAN, and a bridge without VLAN
+    filtering forwards tagged frames untouched."""
     ifaces = set(interfaces(config))
-    every_vlan, unknown = set(), []
-    for props in nics(config):
-        bridge = props["bridge"]
-        if props.get("tag") or props.get("trunks") or not any(n.bridge == bridge and n.tag for n in networks):
-            continue
-        if aware is None or bridge not in aware:
-            unknown.append(bridge)
-        elif aware[bridge]:
-            every_vlan.add(bridge)
-    names = [n.name for n in networks if (n.bridge, n.tag) in ifaces or n.bridge in every_vlan]
-    return names, sorted(set(unknown))
+    every = {props["bridge"] for props in nics(config) if not props.get("tag") and not props.get("trunks")}
+    return [n.name for n in networks if (n.bridge, n.tag) in ifaces or n.bridge in every]
 
 
 def tags(resource: dict) -> list[str]:
@@ -348,7 +322,6 @@ def host_report(client, host: str, record: Record, *, upgradable: Upgradable | N
         entry["version"] = version.get("version") if isinstance(version, dict) else None
         entry["updates"] = updates(reads, entry["node"], upgradable if len(nodes) == 1 else None)
     newest = backups(reads, online)
-    bridges: dict[str, dict[str, bool] | None] = {}
     now = snapshots.now().timestamp()
     for g in guest_list:
         archive = newest.get(g["id"])
@@ -366,18 +339,8 @@ def host_report(client, host: str, record: Record, *, upgradable: Upgradable | N
         if record.networks is not None and g["node"] in online:
             config = reads.get(f"Guest {g['id']} config", f"nodes/{g['node']}/{g['type']}/{g['id']}/config")
             if isinstance(config, dict):
-                if g["node"] not in bridges:
-                    bridges[g["node"]] = vlan_aware(
-                        reads.get(f"network of node {g['node']}", f"nodes/{g['node']}/network")
-                    )
-                names, unknown = joined(config, record.networks, bridges[g["node"]])
-                g["exclusive_networks"] = names
-                g["dual_homed"] = True if len(names) > 1 else (None if unknown else False)
-                if g["dual_homed"] is None:
-                    notes.append(
-                        f"Guest {g['id']} dual-homing unknown: an interface without a tag or trunks is on bridge "
-                        f"{', '.join(unknown)} of node {g['node']}, whose VLAN-awareness is not known"
-                    )
+                g["exclusive_networks"] = joined(config, record.networks)
+                g["dual_homed"] = len(g["exclusive_networks"]) > 1
     on_host = {g["id"] for g in guest_list if g["kind"] == "kept"}
     missing = (
         None
