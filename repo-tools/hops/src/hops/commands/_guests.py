@@ -59,7 +59,7 @@ def age(backup: dict | None) -> str:
 
 def dual(g: dict) -> str | None:
     if g["dual_homed"] is None:
-        return None
+        return None if g["exclusive_networks"] is None else "unknown"
     if not g["dual_homed"]:
         return "no"
     return "yes (allowed)" if g["dual_homing_allowed"] else "yes"

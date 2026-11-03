@@ -147,6 +147,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Settings whose values are API credentials: every error message is scrubbed of them, whichever command and
+# code path raised it (e.g. a record key or a URL that holds one).
+SECRET_SETTINGS = ("_PROXMOX_TOKEN_SECRET", "_TRUENAS_API_KEY")
+
+
+def scrub_secrets(text: str, ctx: Context) -> str:
+    """`text` with every configured API credential replaced by [REDACTED]. The values are read straight from the
+    settings, so no config error (a missing repo, an invalid URL) can switch scrubbing off."""
+    values = dict(ctx.env)
+    try:
+        values = config.load_values(ctx.repo_root, ctx.env)
+    except Exception:  # noqa: BLE001 - no repo or .env: the environment alone still holds the credentials
+        pass
+    secrets = {v for k, v in values.items() if k.startswith("HOPS_") and k.endswith(SECRET_SETTINGS) and v}
+    for client, attr in (("proxmox", "token_secret"), ("truenas", "api_key")):
+        if client in vars(ctx):
+            secrets.add(getattr(getattr(getattr(ctx, client), "cfg", None), attr, None) or "")
+    for secret in sorted(filter(None, secrets), key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    return text
+
+
 def main(argv: list[str] | None = None, *, ctx: Context | None = None) -> int:
     args = build_parser().parse_args(argv)
     ctx = ctx or Context()
@@ -161,11 +183,21 @@ def main(argv: list[str] | None = None, *, ctx: Context | None = None) -> int:
             _ = ctx.host  # refuse a Host the command cannot use before it reads or touches anything
         return args.func(args, ctx)
     except HopsError as exc:
-        ctx.stderr.write(f"hops: error: {exc}\n")
+        ctx.stderr.write(f"hops: error: {scrub_secrets(str(exc), ctx)}\n")
         return exc.exit_code
     except BrokenPipeError:  # e.g. `hops status | head`
         # Python flushes stdout again at exit; point it at devnull so that flush cannot fail.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
+    except Exception as exc:
+        # A bug: keep its traceback, unless a message in it holds a credential.
+        chain, seen = [], exc
+        while seen is not None and seen not in chain:
+            chain.append(seen)
+            seen = seen.__cause__ or seen.__context__
+        if all(scrub_secrets(str(e), ctx) == str(e) for e in chain):
+            raise
+        ctx.stderr.write(f"hops: error: {type(exc).__name__}: {scrub_secrets(str(exc), ctx)}\n")
+        return 1
     finally:
         ctx.close()

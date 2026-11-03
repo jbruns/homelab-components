@@ -67,6 +67,11 @@ def routes() -> dict:
         "nodes": [{"node": "pve", "status": "online"}],
         "cluster/resources": RESOURCES,
         "nodes/pve/version": {"version": "9.1.4", "release": "9.1"},
+        "nodes/pve/network": [
+            {"iface": "enp1s0", "type": "eth"},
+            {"iface": "vmbr0", "type": "bridge", "bridge_vlan_aware": 1},
+            {"iface": "vmbr1", "type": "bridge"},
+        ],
         "nodes/pve/apt/update": [{"Package": "pve-manager", "Version": "9.1.5", "OldVersion": "9.1.4"}],
         "nodes/pve/storage": [
             {"storage": "local", "active": 1, "shared": 0},
@@ -485,3 +490,77 @@ def test_a_shared_storage_is_read_on_the_next_node_when_it_failed_or_was_inactiv
     by_id = {g["id"]: g for g in host_json(run)["guests"]}
     assert by_id[100]["backup"]["volid"] == "nas:backup/vzdump-qemu-100-new.vma.zst"
     assert by_id[300]["backup"]["volid"] == "usb:backup/vzdump-lxc-300.tar.zst"
+
+
+# Re-review follow-ups
+
+
+def run_built_in_cli(pve_repo, server, monkeypatch, capsys, env, *argv):
+    """hops with the Proxmox VE client built by the CLI from `env`, as in real use."""
+    monkeypatch.setattr(proxmox, "https_connect", server.connect)
+    ctx = cli.Context(repo_root=pve_repo, env=env, cwd=pve_repo, stdin=io.StringIO(""))
+    code = cli.main(list(argv), ctx=ctx)
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+@pytest.mark.parametrize("command", ["host", "strays"])
+def test_an_error_naming_a_url_that_holds_the_secret_is_scrubbed(pve_repo, server, monkeypatch, capsys, command):
+    secret = FakeProxmox.SECRET
+    server.routes["nodes"] = (401, "authentication failure")
+    server.routes["cluster/resources"] = (401, "authentication failure")
+    env = {**ENV, "HOPS_PVE_PROXMOX_URL": f"https://{secret}.example.com:8006"}
+    code, out, err = run_built_in_cli(pve_repo, server, monkeypatch, capsys, env, command, "--host", "pve")
+    assert code == 1 and "[REDACTED]" in err
+    assert secret not in out + err
+
+
+@pytest.mark.parametrize("command", ["host", "strays"])
+def test_a_record_error_naming_the_secret_is_scrubbed(pve_repo, server, monkeypatch, capsys, command):
+    secret = FakeProxmox.SECRET
+    write(pve_repo, {"host/pve/guests.yaml": f"{secret}:\n  vmid: nope\n"})
+    code, out, err = run_built_in_cli(pve_repo, server, monkeypatch, capsys, ENV, command, "--host", "pve")
+    assert code == 2 and "[REDACTED]" in err
+    assert secret not in out + err
+
+
+def test_an_untagged_nic_on_a_vlan_aware_bridge_joins_every_vlan_network_on_it(run, server):
+    server.routes["nodes/pve/lxc/300/config"] = {"net0": "name=eth0,bridge=vmbr0"}
+    by_id = {g["id"]: g for g in host_json(run)["guests"]}
+    assert (by_id[300]["exclusive_networks"], by_id[300]["dual_homed"]) == (["lan", "iot"], True)
+
+
+def test_an_untagged_nic_on_a_bridge_that_is_not_vlan_aware_joins_only_its_untagged_traffic(run, server):
+    server.routes["nodes/pve/network"] = [
+        {"iface": "vmbr0", "type": "bridge"},
+        {"iface": "vmbr1", "type": "bridge", "bridge_vlan_aware": 1},
+    ]
+    server.routes["nodes/pve/lxc/300/config"] = {"net0": "name=eth0,bridge=vmbr0"}
+    by_id = {g["id"]: g for g in host_json(run)["guests"]}
+    assert (by_id[300]["exclusive_networks"], by_id[300]["dual_homed"]) == ([], False)
+    # vmbr1 is VLAN-aware, but mgmt is its only exclusive network: an untagged NIC on it joins only that one.
+    assert (by_id[301]["exclusive_networks"], by_id[301]["dual_homed"]) == (["iot", "mgmt"], True)
+
+
+def test_dual_homing_is_unknown_when_vlan_awareness_cannot_be_read(run, server):
+    server.routes["nodes/pve/network"] = (403, "Permission check failed")
+    server.routes["nodes/pve/lxc/300/config"] = {"net0": "name=eth0,bridge=vmbr0"}
+    report = host_json(run)
+    by_id = {g["id"]: g for g in report["guests"]}
+    assert (by_id[300]["exclusive_networks"], by_id[300]["dual_homed"]) == ([], None)
+    # A tagged NIC needs no VLAN-awareness: Guest 100 is still known to be dual-homed.
+    assert by_id[100]["dual_homed"] is True
+    assert "network of node pve: Proxmox VE read failed (403 permission denied on nodes/pve/network)" in report["notes"]
+    assert any(n.startswith("Guest 300 dual-homing unknown") for n in report["notes"])
+    code, out, _ = run("host", "--host", "pve")
+    row = next(line for line in out.splitlines() if line.startswith("300 "))
+    assert row.split()[-1] == "unknown"
+
+
+def test_an_unexpected_error_holding_the_secret_is_scrubbed_without_a_traceback(run, monkeypatch):
+    def broken(*args, **kwargs):
+        raise ValueError(f"bad {FakeProxmox.SECRET}")
+
+    monkeypatch.setattr(guests, "host_report", broken)
+    code, out, err = run("host", "--host", "pve")
+    assert (code, err) == (1, "hops: error: ValueError: bad [REDACTED]\n")

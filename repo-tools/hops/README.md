@@ -572,7 +572,10 @@ the request is sent from a transport container on the Host's `doco_cd.network` (
 `exec` with a command and `db -e` return the remote command's own exit code. `db --users` returns 1 when
 a Datastore's users differ from its label.
 
-Errors go to stderr as `hops: error: …`, including with `--json`.
+Errors go to stderr as `hops: error: …`, including with `--json`. Every error, from any command, has each
+configured API credential (`HOPS_<NAME>_PROXMOX_TOKEN_SECRET`, `HOPS_<NAME>_TRUENAS_API_KEY`) scrubbed, e.g. a
+record key or a URL that holds one. An unexpected error whose message holds one prints scrubbed, without its
+traceback (exit 1).
 
 ## Rollback Snapshots
 
@@ -1194,9 +1197,12 @@ tag outside 1–4094, two networks on the same bridge and tag) fails the command
     inactive one is skipped with a note);
   - dual-homing, when the record declares exclusive networks: the exclusive networks the Guest has an
     interface on (each `netN`'s `bridge`, plus its `tag` or each VLAN in its `trunks`, in its `config`), and
-    whether that is more than one.
-    The text output shows `yes`, `yes (allowed)` (the Guest is in `may_join_several`), `no`, or `-` when not
-    checked.
+    whether that is more than one. An interface with neither `tag` nor `trunks` on a VLAN-aware bridge (a Linux
+    bridge with `bridge_vlan_aware`, or an Open vSwitch bridge, from `nodes/{node}/network`) reaches every VLAN,
+    so it joins every exclusive network on that bridge. When that bridge's VLAN-awareness cannot be read,
+    `dual_homed` is `null` with a note, unless the Guest is already on two exclusive networks.
+    The text output shows `yes`, `yes (allowed)` (the Guest is in `may_join_several`), `no`, `unknown`, or `-`
+    when not checked.
 - **Missing:** the Kept Guests the Host does not have.
 
 A read that fails leaves its field `null` with a note naming the read, the status and the path (e.g.
