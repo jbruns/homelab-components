@@ -3,7 +3,8 @@
 import json
 import re
 
-from hops import config, docker, hygiene, output, snapshots, truenas
+from hops import config, docker, guests, hygiene, output, snapshots, truenas
+from hops.commands import _guests
 from hops.errors import ConfigError, HopsError
 
 HELP = "the Host's pools, key datasets, Docker disk usage, Rollback Snapshots, and snapshot and Cloud Sync task status"
@@ -32,9 +33,13 @@ def register(subparsers) -> None:
         description=(
             HELP + ". Read-only. Datasets: the one holding Docker's data-root, the restic repository's, and "
             f"those listed in HOPS_<NAME>_{SETTING}. On a Host without the truenas capability, only Docker usage "
-            "is shown; Rollback Snapshots need the zfs capability too."
+            "is shown; Rollback Snapshots need the zfs capability too. On a Host that runs no Stacks and has the "
+            "proxmox capability: its nodes (version, pending package updates) and every Guest (Kept, Scratch or "
+            "Stray, state, newest vzdump archive, dual-homing), and the Kept Guests it lacks. A Host that is off "
+            "is reported as off."
         ),
     )
+    _guests.add_options(p)
     output.add_json_flag(p)
     p.set_defaults(func=run)
 
@@ -156,6 +161,8 @@ def human(n: int | None) -> str | None:
 
 
 def run(args, ctx) -> int:
+    if _guests.on_guests_host(args, ctx, "hops host"):
+        return run_guests(args, ctx)
     notes: list[str] = []
     report = {
         "pools": None,
@@ -287,3 +294,44 @@ def show(report: dict, out) -> None:
             output.table(headers, rows, out)
     for note in report["notes"]:
         out.write(f"\nnote: {note}\n")
+
+
+def run_guests(args, ctx) -> int:
+    record = _guests.record(args, ctx)
+    report = guests.host_report(
+        ctx.proxmox, ctx.host.name, record, upgradable=lambda: guests.apt_upgradable(ctx.runner)
+    )
+    if args.json:
+        output.print_json(report, ctx.stdout)
+    else:
+        show_guests(report, ctx.stdout)
+    return 0
+
+
+def show_guests(report: dict, out) -> None:
+    out.write(f"Host {report['host']}: {report['state']}\n")
+    if report["state"] == "on":
+        out.write("\nNodes\n")
+        output.table(
+            ["NODE", "STATUS", "VERSION", "UPDATES"],
+            [
+                [n["node"], n["status"], n["version"], None if n["updates"] is None else n["updates"]["count"]]
+                for n in report["nodes"]
+            ],
+            out,
+        )
+        for n in report["nodes"]:
+            if n["updates"] and n["updates"]["packages"]:
+                out.write(f"\nPending updates on {n['node']}\n")
+                output.table(
+                    ["PACKAGE", "FROM", "TO"],
+                    [[p["package"], p["old_version"], p["version"]] for p in n["updates"]["packages"]],
+                    out,
+                )
+        if report["guests"] is not None:
+            out.write("\nGuests\n")
+            _guests.show_guests(report["guests"], out, full=True)
+        if report["missing"]:
+            out.write(f"\nKept Guests not on the Host (listed in {report['record']})\n")
+            output.table(["ID", "NAME"], [[m["id"], m["name"]] for m in report["missing"]], out)
+    _guests.show_notes(report["notes"], out)

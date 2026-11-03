@@ -2,7 +2,8 @@
 
 import json
 
-from hops import docker, origin_main, output, snapshots, strays
+from hops import docker, guests, origin_main, output, snapshots, strays
+from hops.commands import _guests
 from hops.errors import ConfigError, HopsError, UsageError
 
 HELP = (
@@ -15,7 +16,9 @@ DESCRIPTION = (
     "images and networks; volumes (expired Rollback Volumes included), the only Strays that can hold "
     "data, only with --apply --volumes. Anything whose ownership is unknown is listed but never removed. "
     "On a Host with the truenas and zfs capabilities, expired Rollback Snapshots are listed (through "
-    "TrueNAS) and released only with hops snapshot release."
+    "TrueNAS) and released only with hops snapshot release. On a Host that runs no Stacks and has the proxmox "
+    "capability: the Stray Guests, those neither listed in the record nor tagged scratch; list only, and a Host "
+    "that is off is reported as off."
 )
 
 
@@ -23,6 +26,7 @@ def register(subparsers) -> None:
     p = subparsers.add_parser("strays", help=HELP, description=DESCRIPTION)
     p.add_argument("--apply", action="store_true", help="remove Stray containers, images and networks")
     p.add_argument("--volumes", action="store_true", help="with --apply, also remove Stray volumes")
+    _guests.add_options(p)
     output.add_json_flag(p)
     p.set_defaults(func=run)
 
@@ -200,6 +204,8 @@ def note(entry: dict) -> str | None:
 def run(args, ctx) -> int:
     if args.volumes and not args.apply:
         raise UsageError("--volumes needs --apply")
+    if _guests.on_guests_host(args, ctx, "hops strays"):
+        return run_guests(args, ctx)
     if args.apply:
         # Removal trusts only what doco-cd deploys: a missing or partial checkout must not make a
         # Stack's resources Strays.
@@ -246,3 +252,24 @@ def run(args, ctx) -> int:
             "change is verified, or take a new one if it is still needed.\n"
         )
     return 0 if ok and snapshots_ok else 1
+
+
+def run_guests(args, ctx) -> int:
+    """Stray Guests, listed only: hops never removes a Guest."""
+    if args.apply:
+        raise UsageError("--apply applies only to a Host that runs Stacks: hops lists Stray Guests, never removes them")
+    record = _guests.record(args, ctx)
+    report = guests.strays_report(ctx.proxmox, ctx.host.name, record)
+    if args.json:
+        output.print_json(report, ctx.stdout)
+        return 0
+    out = ctx.stdout
+    out.write(f"Host {report['host']}: {report['state']}\n")
+    if report["guests"] is not None:
+        out.write(f"\nStray Guests (against {report['record']})\n")
+        if report["guests"]:
+            _guests.show_guests(report["guests"], out, full=False)
+        else:
+            out.write("none\n")
+    _guests.show_notes(report["notes"], out)
+    return 0
