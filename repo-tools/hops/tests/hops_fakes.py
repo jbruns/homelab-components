@@ -398,9 +398,9 @@ def rollback(name, issue="637", expires="2026-10-30", **kw):
 
 class FakeProxmox:
     """Stands in for the Proxmox VE API: `connect` is a proxmox.Connect. `routes` map an API path (no /api2/json/,
-    no query) to its `data`, to (status, reason) for an error answer, or to a function of the query dict returning
-    either. Every request's (path, query) is recorded; `off=True` makes connecting fail as a switched-off Host does.
-    An unrouted path answers 501, as Proxmox VE answers a path it lacks."""
+    no query, percent-decoded) to its `data`, to (status, reason) for an error answer, or to a function of the
+    query dict returning either. Every request's (path, query) is recorded; `off=True` makes connecting fail as a
+    switched-off Host does. An unrouted path answers 501, as Proxmox VE answers a path it lacks."""
 
     SECRET = "fake-proxmox-secret"
     TOKEN = "hops-reader@pve!hops"
@@ -422,10 +422,10 @@ class FakeProxmox:
 
     def get(self, target: str, headers: dict) -> tuple[int, str, bytes]:
         import json
-        from urllib.parse import parse_qsl, urlsplit
+        from urllib.parse import parse_qsl, unquote, urlsplit
 
         parts = urlsplit(target)
-        path = parts.path.removeprefix("/api2/json/")
+        path = unquote(parts.path.removeprefix("/api2/json/"))
         query = dict(parse_qsl(parts.query))
         self.requests.append((path, query))
         self.headers.append(headers)

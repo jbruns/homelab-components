@@ -35,10 +35,15 @@ from hops.errors import CallError, ConfigError, HopsError, HostTimeout
 REDACTED = "[REDACTED]"
 API = "/api2/json/"
 CONNECT_TIMEOUT = 5.0  # a Host that is off answers nothing; say so quickly
-TIMEOUT = 30.0  # a read, once connected (e.g. a backup storage's content over NFS)
+TIMEOUT = 30.0  # a read, once connected (e.g. a storage's content over NFS)
 # A token ID as Proxmox VE writes it: user@realm!name.
 TOKEN_ID = re.compile(r"[^\s@!=:]+@[A-Za-z][A-Za-z0-9.\-_]*![A-Za-z][A-Za-z0-9.\-_]*")
 TOKEN_SECRET = re.compile(r"[\x21-\x7e]+")  # printable, no spaces: it goes into a header
+# A vzdump task's ID, as PVE::UPID decodes one: UPID:<node>:<pid>:<pstart>:<starttime>:vzdump:<id>:<user>:
+VZDUMP_UPID = re.compile(
+    r"UPID:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:[0-9A-Fa-f]{8}:[0-9A-Fa-f]{8,9}:[0-9A-Fa-f]{8}:vzdump:"
+    r"[^:\s/]*:[^:\s/]+:"
+)
 
 
 @dataclass(frozen=True)

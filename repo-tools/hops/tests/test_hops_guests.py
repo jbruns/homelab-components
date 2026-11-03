@@ -62,24 +62,57 @@ CONFIGS = {
 NOW_S = int(NOW.timestamp())
 
 
+def upid(start: int, vmid: str = "") -> str:
+    return f"UPID:pve:00001234:00ABCDEF:{start:08X}:vzdump:{vmid}:root@pam:"
+
+
+def task(end: int, vmid: str = "", status: str = "OK") -> dict:
+    """A finished vzdump task as nodes/{node}/tasks lists it: `vmid` for a task backing up one Guest, empty for a
+    backup job's task covering several."""
+    start = end - 600
+    return {
+        "upid": upid(start, vmid),
+        "node": "pve",
+        "type": "vzdump",
+        "id": vmid,
+        "user": "root@pam",
+        "starttime": start,
+        "endtime": end,
+        "status": status,
+        "pid": 4660,
+        "pstart": 11259375,
+    }
+
+
+def log(*lines: str) -> list[dict]:
+    return [{"n": i, "t": t} for i, t in enumerate(lines, 1)]
+
+
+# Line shapes from pve-manager's PVE/VZDump.pm (exec_backup_task, exec_backup).
+JOB = task(NOW_S - DAY // 2, status="job errors")
+JOB_LOG = log(
+    "INFO: starting new backup job: vzdump 101 301 --mode snapshot --storage nas",
+    "INFO: Starting Backup of VM 101 (lxc)",
+    "INFO: Backup started at 2026-10-22 23:50:00",
+    "INFO: Finished Backup of VM 101 (00:00:42)",
+    "INFO: Backup finished at 2026-10-22 23:50:42",
+    "INFO: Starting Backup of VM 301 (qemu)",
+    "INFO: Backup started at 2026-10-22 23:50:43",
+    "ERROR: Backup of VM 301 failed - unable to create temporary directory",
+    "INFO: Failed at 2026-10-22 23:50:44",
+    "INFO: Backup job finished with errors",
+    "TASK ERROR: job errors",
+)
+
+
 def routes() -> dict:
     return {
         "nodes": [{"node": "pve", "status": "online"}],
         "cluster/resources": RESOURCES,
         "nodes/pve/version": {"version": "9.1.4", "release": "9.1"},
         "nodes/pve/apt/update": [{"Package": "pve-manager", "Version": "9.1.5", "OldVersion": "9.1.4"}],
-        "nodes/pve/storage": [
-            {"storage": "local", "active": 1, "shared": 0},
-            {"storage": "nas", "active": 1, "shared": 1},
-            {"storage": "usb", "active": 0, "shared": 0},
-        ],
-        "nodes/pve/storage/local/content": [
-            {"volid": "local:backup/vzdump-qemu-100-old.vma.zst", "vmid": 100, "ctime": NOW_S - 9 * DAY},
-        ],
-        "nodes/pve/storage/nas/content": [
-            {"volid": "nas:backup/vzdump-qemu-100-new.vma.zst", "vmid": 100, "ctime": NOW_S - 2 * DAY},
-            {"volid": "nas:backup/vzdump-lxc-101.tar.zst", "vmid": 101, "ctime": NOW_S - DAY // 2},
-        ],
+        "nodes/pve/tasks": [JOB, task(NOW_S - 2 * DAY, "100"), task(NOW_S - 9 * DAY, "100")],
+        f"nodes/pve/tasks/{JOB['upid']}/log": JOB_LOG,
         **CONFIGS,
     }
 
@@ -153,7 +186,7 @@ def host_json(run, *argv):
 # hops host
 
 
-def test_host_reports_nodes_guests_backups_and_dual_homing(run, server):
+def test_host_reports_nodes_guests_last_backups_and_dual_homing(run, server):
     report = host_json(run)
     assert report["host"] == "pve" and report["state"] == "on" and report["record"] == "host/pve"
     assert report["nodes"] == [
@@ -177,13 +210,10 @@ def test_host_reports_nodes_guests_backups_and_dual_homing(run, server):
         300: "stray",
         301: "stray",
     }
-    assert by_id[100]["backup"] == {
-        "volid": "nas:backup/vzdump-qemu-100-new.vma.zst",
-        "time": "2026-10-21T12:00:00Z",
-        "age_days": 2.0,
-    }
-    assert by_id[101]["backup"]["age_days"] == 0.5
-    assert by_id[300]["backup"] is None
+    assert by_id[100]["last_backup"] == {"time": "2026-10-21T12:00:00Z", "age_days": 2.0}  # its own task
+    assert by_id[101]["last_backup"] == {"time": "2026-10-23T00:00:00Z", "age_days": 0.5}  # finished in the job
+    assert by_id[301]["last_backup"] is None  # failed in the job
+    assert by_id[300]["last_backup"] is None  # not in the history
     assert (by_id[100]["exclusive_networks"], by_id[100]["dual_homed"], by_id[100]["dual_homing_allowed"]) == (
         ["lan", "iot"],
         True,
@@ -197,9 +227,10 @@ def test_host_reports_nodes_guests_backups_and_dual_homing(run, server):
     assert (by_id[200]["exclusive_networks"], by_id[200]["dual_homed"]) == ([], False)
     assert by_id[200]["tags"] == ["Scratch", "test"]
     assert report["missing"] == [{"id": 102, "name": "nas"}]
-    assert report["notes"] == ["backups on storage usb not read: it is not active on node pve"]
-    assert ("nodes/pve/storage", {"content": "backup", "enabled": "1"}) in server.requests
-    assert ("nodes/pve/storage/nas/content", {"content": "backup"}) in server.requests
+    assert report["notes"] == ["Guest 301: its newest vzdump, in a task that ended 2026-10-23T00:00:00Z, failed"]
+    assert ("nodes/pve/tasks", {"typefilter": "vzdump", "source": "archive", "limit": "50"}) in server.requests
+    assert (f"nodes/pve/tasks/{JOB['upid']}/log", {"start": "0", "limit": "1000"}) in server.requests
+    assert not any("/storage" in path for path in server.paths())
 
 
 def test_host_text_shows_each_guest(run):
@@ -210,7 +241,7 @@ def test_host_text_shows_each_guest(run):
     assert "Pending updates on pve" in lines
     row = next(line for line in lines if line.startswith("100 "))
     assert row.split() == ["100", "router", "qemu", "kept", "running", "pve", "2d", "yes", "(allowed)"]
-    assert next(line for line in lines if line.startswith("301 ")).split()[-2:] == ["none", "yes"]
+    assert next(line for line in lines if line.startswith("301 ")).split()[-2:] == ["unknown", "yes"]
     assert next(line for line in lines if line.startswith("200 ")).split()[-1] == "no"
     assert "Kept Guests not on the Host (listed in host/pve)" in lines
 
@@ -227,18 +258,22 @@ def test_a_switched_off_host_is_reported_as_off_with_exit_0(run, server):
 
 
 def test_a_failed_read_becomes_a_note_and_the_report_goes_on(run, server):
-    server.routes["nodes/pve/storage/nas/content"] = (500, "storage 'nas' is not online")
+    server.routes[f"nodes/pve/tasks/{JOB['upid']}/log"] = (500, "unable to open file /var/log/pve/tasks/x")
     server.routes["nodes/pve/qemu/301/config"] = (403, "Permission check failed")
     report = host_json(run)
     by_id = {g["id"]: g for g in report["guests"]}
-    assert by_id[100]["backup"]["volid"] == "local:backup/vzdump-qemu-100-old.vma.zst"
+    assert by_id[100]["last_backup"]["age_days"] == 2.0
+    assert by_id[101]["last_backup"] is None
     assert by_id[301]["dual_homed"] is None
-    assert "backups on storage nas: Proxmox VE read failed (500 on nodes/pve/storage/nas/content)" in report["notes"]
+    assert (
+        "node pve vzdump task log (ended 2026-10-23T00:00:00Z): Proxmox VE read failed "
+        f"(500 on nodes/pve/tasks/{JOB['upid']}/log)" in report["notes"]
+    )
     assert (
         "Guest 301 config: Proxmox VE read failed (403 permission denied on nodes/pve/qemu/301/config)"
         in report["notes"]
     )
-    assert all("not online" not in n for n in report["notes"])  # notes never carry the API's text
+    assert all("unable to open" not in n for n in report["notes"])  # notes never carry the API's text
 
 
 def test_pending_updates_fall_back_to_ssh_when_the_token_may_not_list_them(run, server, ssh):
@@ -469,22 +504,14 @@ def test_a_host_off_on_the_first_read_is_scrubbed_in_the_report(run, server):
         assert "off" in out
 
 
-def test_a_shared_storage_is_read_on_the_next_node_when_it_failed_or_was_inactive(run, server):
+def test_every_online_node_s_task_history_is_read(run, server):
     server.routes["nodes"] = [{"node": "pve", "status": "online"}, {"node": "pve2", "status": "online"}]
     server.routes["nodes/pve2/version"] = {"version": "9.1.4"}
     server.routes["nodes/pve2/apt/update"] = []
-    server.routes["nodes/pve/storage/nas/content"] = (500, "storage 'nas' is not online")
-    server.routes["nodes/pve2/storage"] = [
-        {"storage": "nas", "active": 1, "shared": 1},
-        {"storage": "usb", "active": 1, "shared": 1},
-    ]
-    server.routes["nodes/pve2/storage/nas/content"] = routes()["nodes/pve/storage/nas/content"]
-    server.routes["nodes/pve2/storage/usb/content"] = [
-        {"volid": "usb:backup/vzdump-lxc-300.tar.zst", "vmid": 300, "ctime": NOW_S - DAY}
-    ]
+    server.routes["nodes/pve2/tasks"] = [task(NOW_S - DAY, "300"), task(NOW_S - 3 * DAY, "100")]
     by_id = {g["id"]: g for g in host_json(run)["guests"]}
-    assert by_id[100]["backup"]["volid"] == "nas:backup/vzdump-qemu-100-new.vma.zst"
-    assert by_id[300]["backup"]["volid"] == "usb:backup/vzdump-lxc-300.tar.zst"
+    assert by_id[300]["last_backup"]["age_days"] == 1.0
+    assert by_id[100]["last_backup"]["age_days"] == 2.0  # the newer one, on pve
 
 
 # Re-review follow-ups
@@ -544,3 +571,110 @@ def test_an_unexpected_error_holding_the_secret_is_scrubbed_without_a_traceback(
     monkeypatch.setattr(guests, "host_report", broken)
     code, out, err = run("host", "--host", "pve")
     assert (code, err) == (1, "hops: error: ValueError: bad [REDACTED]\n")
+
+
+# Last backups, from the vzdump task history
+
+
+def test_an_empty_task_history_leaves_every_last_backup_unknown(run, server):
+    server.routes["nodes/pve/tasks"] = []
+    code, out, err = run("host", "--host", "pve")
+    assert (code, err) == (0, "")
+    rows = [line.split() for line in out.splitlines() if line[:3].isdigit() and len(line.split()) > 6]
+    assert {row[0]: row[6] for row in rows} == {
+        "100": "unknown",
+        "101": "unknown",
+        "200": "unknown",
+        "300": "unknown",
+        "301": "unknown",
+    }
+    assert "note: node pve: no finished vzdump task in its task history" in out
+    report = host_json(run)
+    assert all(g["last_backup"] is None for g in report["guests"])
+
+
+def test_a_failed_guest_task_does_not_count_and_is_noted(run, server):
+    failed = task(NOW_S - DAY, "100", status="ERROR: Backup of VM 100 failed - storage 'nas' is not online")
+    warned = task(NOW_S - 3 * DAY, "300", status="WARNINGS: 1")
+    never = task(NOW_S - 4 * DAY, "301", status="ERROR: can't acquire lock")
+    server.routes["nodes/pve/tasks"] = [failed, *routes()["nodes/pve/tasks"], warned, never]
+    server.routes[f"nodes/pve/tasks/{failed['upid']}/log"] = log(
+        "INFO: starting new backup job: vzdump 100 --storage nas",
+        "INFO: Starting Backup of VM 100 (qemu)",
+        "ERROR: Backup of VM 100 failed - storage 'nas' is not online",
+        "INFO: Backup job finished with errors",
+        "TASK ERROR: job errors",
+    )
+    server.routes[f"nodes/pve/tasks/{warned['upid']}/log"] = log(
+        "INFO: Starting Backup of VM 300 (lxc)",
+        "WARN: guest agent not running",
+        "INFO: Finished Backup of VM 300 (00:01:05)",
+        "TASK WARNINGS: 1",
+    )
+    server.routes[f"nodes/pve/tasks/{never['upid']}/log"] = log("ERROR: can't acquire lock", "TASK ERROR: x")
+    report = host_json(run)
+    by_id = {g["id"]: g for g in report["guests"]}
+    assert by_id[100]["last_backup"]["time"] == "2026-10-21T12:00:00Z"  # the success before the failure
+    assert by_id[300]["last_backup"]["age_days"] == 3.0  # finished, with warnings
+    assert by_id[301]["last_backup"] is None
+    assert "Guest 100: its newest vzdump, in a task that ended 2026-10-22T12:00:00Z, failed" in report["notes"]
+    assert "Guest 301: its newest vzdump, in a task that ended 2026-10-23T00:00:00Z, failed" in report["notes"]
+
+
+def test_a_guest_a_job_started_but_never_finished_does_not_count(run, server):
+    server.routes[f"nodes/pve/tasks/{JOB['upid']}/log"] = log(
+        "INFO: Starting Backup of VM 101 (lxc)",
+        "INFO: status: 40% (1.0 GiB of 2.5 GiB)",
+        "TASK ERROR: unexpected status",
+    )
+    by_id = {g["id"]: g for g in host_json(run)["guests"]}
+    assert by_id[101]["last_backup"] is None
+
+
+def test_older_tasks_are_not_read_once_every_guest_has_a_last_backup(run, server):
+    server.routes["cluster/resources"] = RESOURCES[:2]
+    older = task(NOW_S - 5 * DAY)
+    server.routes["nodes/pve/tasks"] = [*routes()["nodes/pve/tasks"], older]
+    by_id = {g["id"]: g for g in host_json(run)["guests"]}
+    assert (by_id[100]["last_backup"]["age_days"], by_id[101]["last_backup"]["age_days"]) == (2.0, 0.5)
+    assert f"nodes/pve/tasks/{older['upid']}/log" not in server.paths()
+
+
+def test_a_long_task_log_is_read_page_by_page_up_to_a_limit(run, server, monkeypatch):
+    lines = [t["t"] for t in JOB_LOG]
+    monkeypatch.setattr(guests, "LOG_PAGE", 2)
+    server.routes[f"nodes/pve/tasks/{JOB['upid']}/log"] = lambda q: log(*lines)[int(q["start"]) :][: int(q["limit"])]
+    by_id = {g["id"]: g for g in host_json(run)["guests"]}
+    assert by_id[101]["last_backup"]["age_days"] == 0.5
+    assert server.paths().count(f"nodes/pve/tasks/{JOB['upid']}/log") == 6
+    monkeypatch.setattr(guests, "LOG_PAGES", 3)  # 6 lines: 101 finished, 301 still running where it stops
+    report = host_json(run)
+    assert {g["id"]: g["last_backup"] for g in report["guests"]}[101]["age_days"] == 0.5
+    assert "node pve vzdump task log (ended 2026-10-23T00:00:00Z): read only its first 6 lines" in report["notes"]
+    assert not any(n.startswith("Guest 301") for n in report["notes"])
+
+
+def test_a_task_log_is_never_printed(run, server):
+    secret = FakeProxmox.SECRET
+    server.routes[f"nodes/pve/tasks/{JOB['upid']}/log"] = log(
+        f"INFO: starting new backup job: vzdump --notes-template {secret}",
+        "INFO: Starting Backup of VM 101 (lxc)",
+        f"ERROR: Backup of VM 101 failed - https://user:{secret}@nas.example/ refused",
+        "TASK ERROR: job errors",
+    )
+    for argv in (("host", "--host", "pve"), ("host", "--host", "pve", "--json")):
+        code, out, err = run(*argv)
+        assert code == 0 and secret not in out + err
+        assert "starting new backup job" not in out and "refused" not in out
+
+
+def test_parse_log_counts_a_finished_line_only_inside_its_own_guest_s_backup():
+    lines = [
+        "INFO: Starting Backup of VM 101 (lxc)",
+        "INFO: Finished Backup of VM 300 (00:00:01)",  # e.g. a hook script's output
+        "INFO: Finished Backup of VM 101 (00:00:42)",
+        "INFO: Finished Backup of VM 101 (00:00:42)",
+        "INFO: Starting Backup of VM 102 (qemu)",
+    ]
+    assert guests.parse_log(lines, complete=True) == {101: True, 102: False}
+    assert guests.parse_log(lines, complete=False) == {101: True}

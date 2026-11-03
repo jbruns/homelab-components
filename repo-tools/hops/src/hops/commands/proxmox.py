@@ -9,7 +9,7 @@ from hops.errors import UsageError
 HELP = "read-only Proxmox VE API GETs, for what other hops commands lack"
 README = "hops' README.md (proxmox call)"
 # Each path segment that names something: a node, a Guest ID, a storage, a firewall group, alias or IP set, a
-# notification target or matcher, or a rule's position.
+# notification target or matcher, a rule's position, or a vzdump task.
 SEGMENTS = {
     "{node}": re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*"),
     "{vmid}": re.compile(r"[1-9][0-9]{2,8}"),
@@ -17,6 +17,7 @@ SEGMENTS = {
     "{name}": re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*"),
     "{group}": re.compile(r"[A-Za-z][A-Za-z0-9_-]*"),
     "{pos}": re.compile(r"[0-9]+"),
+    "{upid}": proxmox.VZDUMP_UPID,  # a vzdump task's: no other task's log is readable
 }
 NOTIFICATION_ENDPOINTS = ("gotify", "sendmail", "smtp", "webhook")
 # Fail closed: only these GET paths, each with the query parameters its Proxmox VE 9 schema takes (path parameters
@@ -33,6 +34,19 @@ PATHS: dict[str, tuple[str, ...]] = {
     "nodes/{node}/storage": ("content", "enabled", "format", "storage", "target"),
     "nodes/{node}/storage/{storage}/content": ("content", "vmid"),
     "nodes/{node}/network": ("type",),
+    "nodes/{node}/tasks": (
+        "errors",
+        "limit",
+        "since",
+        "source",
+        "start",
+        "statusfilter",
+        "typefilter",
+        "until",
+        "userfilter",
+        "vmid",
+    ),
+    "nodes/{node}/tasks/{upid}/log": ("limit", "start"),
     "nodes/{node}/apt/update": (),
     "nodes/{node}/version": (),
     "nodes/{node}/firewall": (),

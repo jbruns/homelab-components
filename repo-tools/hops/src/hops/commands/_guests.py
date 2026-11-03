@@ -43,18 +43,19 @@ def record(args, ctx) -> guests.Record:
 def show_guests(rows: list[dict], out, *, full: bool) -> None:
     headers = ["ID", "NAME", "TYPE", "KIND", "STATE", "NODE"]
     if full:
-        headers += ["BACKUP AGE", "DUAL-HOMED"]
+        headers += ["LAST BACKUP", "DUAL-HOMED"]
     table = []
     for g in rows:
         row = [g["id"], g["name"], g["type"], g["kind"], g["state"], g["node"]]
         if full:
-            row += [age(g["backup"]), dual(g)]
+            row += [age(g["last_backup"]), dual(g)]
         table.append(row)
     output.table(headers, table, out)
 
 
 def age(backup: dict | None) -> str:
-    return "none" if backup is None else f"{backup['age_days']:g}d"
+    """The last successful vzdump's age; unknown when the task history does not cover the Guest."""
+    return "unknown" if backup is None else f"{backup['age_days']:g}d"
 
 
 def dual(g: dict) -> str | None:

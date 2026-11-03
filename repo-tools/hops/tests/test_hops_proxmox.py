@@ -247,6 +247,9 @@ def test_url_userinfo_is_masked_in_any_string():
         "nodes/pve/lxc/101/status/current",
         "nodes/pve/storage/local/content",
         "nodes/pve/apt/update",
+        "nodes/pve/tasks",
+        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log",
+        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump:100:hops-reader@pve!hops:/log",
         "cluster/resources",
         "cluster/firewall/groups/web/0",
         "cluster/notifications/endpoints/webhook/alerts",
@@ -267,6 +270,9 @@ def test_allowlisted_paths_pass(path):
         "nodes/pve/storage/../../access/ticket",
         "nodes/pve/firewall/log",
         "cluster/notifications/endpoints/email/x",
+        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:qmstart:100:root@pam:/log",  # only vzdump's logs
+        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:",
+        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/status",
     ],
 )
 def test_other_paths_are_refused(path):
@@ -288,6 +294,26 @@ def test_bad_params_are_refused_without_echoing_them(params, problem):
     with pytest.raises(cli.UsageError) as exc:
         commands.Backend(None).check("nodes/pve/storage", params)
     assert problem in str(exc.value) and "fake-proxmox-guess" not in str(exc.value)
+
+
+def test_task_params_are_allowlisted():
+    commands.Backend(None).check("nodes/pve/tasks", [{"typefilter": "vzdump", "source": "all", "limit": 100}])
+    commands.Backend(None).check(
+        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log", [{"start": 0, "limit": 500}]
+    )
+    with pytest.raises(cli.UsageError, match="takes limit, start"):
+        commands.Backend(None).check(
+            "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log", [{"download": 1}]
+        )
+
+
+def test_call_reads_a_vzdump_task_log(hops_px, server):
+    path = "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log"
+    server.routes[path] = [{"n": 1, "t": "INFO: Starting Backup of VM 100 (qemu)"}]
+    code, out, err = hops_px("proxmox", "call", path, '{"limit": 10}', "--json")
+    assert (code, err) == (0, "")
+    assert json.loads(out) == [{"n": 1, "t": "INFO: Starting Backup of VM 100 (qemu)"}]
+    assert server.requests == [(path, {"limit": "10"})]
 
 
 # hops proxmox call / batch

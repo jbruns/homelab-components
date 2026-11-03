@@ -106,8 +106,9 @@ needed only where `hops host` falls back to SSH for pending updates (below); the
   bundle unless `TRUENAS_INSECURE` says otherwise.
 - **Proxmox VE:** HTTPS GETs to `<PROXMOX_URL>/api2/json/<path>`, one kept-alive connection per command, with
   the token in an `Authorization: PVEAPIToken=<id>=<secret>` header (no login, no ticket). Only `GET` is ever
-  sent. Give the token only the `PVEAuditor` role on `/` (with privilege separation): every read below but pending
-  updates needs no more, and errors print its secret as `[REDACTED]`. Connecting times out after 5 s, as a Host that is off
+  sent. Give the token only the `PVEAuditor` role on `/` (with privilege separation): every read `hops` makes but
+  pending updates needs no more (backups come from the vzdump task history, which `Sys.Audit` reads, since the
+  storage content listing hides backup archives from it), and errors print its secret as `[REDACTED]`. Connecting times out after 5 s, as a Host that is off
   answers nothing: `host` and `strays` then report the Host as off (exit 0), while `proxmox call`/`batch`
   fail (exit 1, "off or unreachable"). A read times out after 30 s. A `401` (the token rejected) is fatal and
   names the two token keys. TLS is verified against the default CA bundle unless `PROXMOX_INSECURE` says
@@ -187,7 +188,7 @@ Every command in this table is **read-only**. Each takes `--json`.
 | `hops host` | `docker system df`; on a `truenas` Host also pools, key datasets, Rollback Snapshots (`zfs`), and the last run of each periodic snapshot and Cloud Sync task (see [host](#host)) |
 | `hops truenas call <method> [json-param…]` | `truenas` Host only. The result of one allowlisted TrueNAS read method (see [truenas call](#truenas-call)), as JSON with credentials redacted. For what other commands lack. |
 | `hops truenas batch --json < calls.json` | `truenas` Host only. Many `truenas call`s over one connection and one login (see [truenas batch](#truenas-batch)). |
-| `hops host --host <proxmox Host> [--record DIR]` | A `proxmox` Host that runs no Stacks: its nodes (version, pending updates) and every Guest (Kept, Scratch or Stray; state; newest vzdump archive's age; dual-homing), and the Kept Guests it lacks (see [Guests](#guests-on-a-proxmox-ve-host)) |
+| `hops host --host <proxmox Host> [--record DIR]` | A `proxmox` Host that runs no Stacks: its nodes (version, pending updates) and every Guest (Kept, Scratch or Stray; state; last successful vzdump's age, from the task history; dual-homing), and the Kept Guests it lacks (see [Guests](#guests-on-a-proxmox-ve-host)) |
 | `hops strays --host <proxmox Host> [--record DIR]` | The Stray Guests on that Host; never removes anything |
 | `hops proxmox call <path> [json-param]` | `proxmox` Host only. The result of one allowlisted Proxmox VE API GET (see [proxmox call](#proxmox-call)), as JSON with credentials redacted |
 | `hops proxmox batch --json < calls.json` | `proxmox` Host only. Many `proxmox call`s over one connection (see [proxmox batch](#proxmox-batch)) |
@@ -389,7 +390,8 @@ cannot switch scrubbing off. An API error (e.g. `403 Permission check failed`, `
 Proxmox VE's reason, plus the names (never the values) of any parameters it rejected.
 
 - **Allowed paths**, with the query parameters each takes (`{node}`, `{storage}` and `{name}` are names of
-  letters, digits, `-`, `_` and `.`; `{vmid}` a Guest ID; `{pos}` a rule's position):
+  letters, digits, `-`, `_` and `.`; `{vmid}` a Guest ID; `{pos}` a rule's position; `{upid}` a vzdump task's
+  ID, `UPID:<node>:…:vzdump:<id>:<user>:`, as `nodes/{node}/tasks` lists it):
 
   | Path | Query parameters |
   |---|---|
@@ -400,6 +402,8 @@ Proxmox VE's reason, plus the names (never the values) of any parameters it reje
   | `nodes/{node}/storage` | `content`, `enabled`, `format`, `storage`, `target` |
   | `nodes/{node}/storage/{storage}/content` | `content`, `vmid` |
   | `nodes/{node}/network` | `type` |
+  | `nodes/{node}/tasks` | `errors`, `limit`, `since`, `source`, `start`, `statusfilter`, `typefilter`, `until`, `userfilter`, `vmid` |
+  | `nodes/{node}/tasks/{upid}/log` | `limit`, `start` |
   | `nodes/{node}/firewall`, `…/firewall/rules`, `…/firewall/rules/{pos}`, `…/firewall/options` | none |
   | `cluster/resources` | `type` |
   | `cluster/backup` | none |
@@ -413,12 +417,20 @@ Proxmox VE's reason, plus the names (never the values) of any parameters it reje
   Each was checked against the Proxmox VE 9 API schema (the API viewer's `apidoc.js`, version 9.2.13) for the
   permission its `GET` needs and for secret-bearing fields, which the redaction below masks. Everything else
   is refused, for example `access/ticket`, a Guest's `vncproxy`/`termproxy`, `nodes/{node}/firewall/log`
-  (needs `Sys.Syslog`), `nodes/{node}/apt/changelog` (needs `Sys.Modify`), and an IP set's entries
-  (`cluster/firewall/ipset/{name}/{cidr}`: a CIDR holds a `/`). Widen the list here and in
+  (needs `Sys.Syslog`), `nodes/{node}/apt/changelog` (needs `Sys.Modify`), an IP set's entries
+  (`cluster/firewall/ipset/{name}/{cidr}`: a CIDR holds a `/`), and the log of any task but a vzdump (another
+  task's output is not needed, so it is not read). The task paths were checked against `apidoc.js` for Proxmox VE
+  9.2: `nodes/{node}/tasks` lists every user's tasks to a token with `Sys.Audit` on `/nodes/{node}`, and
+  `…/tasks/{upid}/log` reads another user's task log with the same privilege, so `PVEAuditor` reads a scheduled
+  backup job's task and log although the scheduler ran them as another user. A log's `download` is refused: `start` and `limit` page
+  through it (`limit` `0` reads it all). Widen the list here and in
   `hops/commands/proxmox.py` together, after checking the path's schema.
 - **`nodes/{node}/apt/update` needs `Sys.Modify`**, which `PVEAuditor` lacks, so with an audit-only token it
   answers `403`. It stays allowed for a token that has it; `hops host` falls back to SSH for it (below).
 - **`access/acl`** lists only the entries the token may change, so it is usually empty for an audit token.
+- **`nodes/{node}/storage/{storage}/content` hides backup archives** from an audit token: listing one needs
+  `Datastore.AllocateSpace` on the storage and `VM.Backup` on its Guest, and the API leaves out what the token may
+  not see without an error. `hops host` reads backups from the vzdump task history instead.
 - **Redaction**, as defense in depth behind the allowlist. A field whose name contains `password`, `passwd`,
   `secret`, `token` or `key` prints as `"[REDACTED]"`, at any depth (`null` and booleans stay visible). So a
   Guest's `cipassword` and `sshkeys`, a storage's `password`, `keyring` or `encryption-key`, an SMTP or Gotify
@@ -1191,10 +1203,19 @@ tag outside 1–4094, two networks on the same bridge and tag) fails the command
   those needs `Sys.Modify`; when the token lacks it (`403`) and the Host has a single node, hops runs
   `apt list --upgradable` over SSH as the SSH user, without `sudo`, and says so in `source`.
 - **Guests** (`cluster/resources?type=vm`): ID, name, type, kind, state, node, and:
-  - the newest vzdump archive and its age, from every active storage holding backups
-    (`nodes/{node}/storage?content=backup&enabled=1`, then `…/storage/{storage}/content?content=backup`;
-    a shared storage is read once, from the first node where it is active and its content read succeeds; an
-    inactive one is skipped with a note);
+  - its last backup: the end time and age of its newest successful vzdump, from each online node's task history
+    (`nodes/{node}/tasks?typefilter=vzdump&source=archive&limit=50`, the 50 newest finished vzdump tasks, newest
+    first). A task backing up one Guest (its `id` is the Guest's ID) that ended `OK` counts for that Guest. A
+    backup job's task covers several Guests (its `id` is empty), so hops reads its log
+    (`nodes/{node}/tasks/{upid}/log`, 1000 lines a page, at most 10 pages, with a note when it stops early) and
+    counts each Guest whose `INFO: Starting Backup of VM <id> (<type>)` is followed by
+    `INFO: Finished Backup of VM <id> (<hh:mm:ss>)`. A Guest with `ERROR: Backup of VM <id> failed - …`, or that
+    started and never finished, does not count; nor does a one-Guest task that failed before it started. A
+    one-Guest task that ended with warnings is read the same way. The time is the task's end, so for a job it
+    is when the whole job ended. Reading stops once every Guest has a last backup. A Guest the history does not
+    cover (never backed up, or its tasks rotated out of the node's task index) shows `unknown`; so does every
+    Guest when no node has a finished vzdump task, with a note. A Guest whose newest vzdump failed gets a note
+    naming when that task ended. Only these parsed results are printed, never a log line;
   - dual-homing, when the record declares exclusive networks: the exclusive networks the Guest has an
     interface on (each `netN`'s `bridge`, plus its `tag` or each VLAN in its `trunks`, in its `config`), and
     whether that is more than one. The rule is conservative:
@@ -1210,7 +1231,7 @@ tag outside 1–4094, two networks on the same bridge and tag) fails the command
 - **Missing:** the Kept Guests the Host does not have.
 
 A read that fails leaves its field `null` with a note naming the read, the status and the path (e.g.
-`backups on storage nas: Proxmox VE read failed (500 on nodes/pve/storage/nas/content)`), never Proxmox VE's
+`Guest 301 config: Proxmox VE read failed (403 permission denied on nodes/pve/qemu/301/config)`), never Proxmox VE's
 text; the rest still show. If the Host stops answering partway, the remaining reads are skipped with a note. A
 rejected token is fatal (exit 1).
 
@@ -1234,7 +1255,7 @@ Lists the Stray Guests (ID, name, type, kind, state, node) and exits 0, Strays o
   "guests": [
     {"id": 100, "name": "router", "type": "qemu", "node": "pve", "kind": "kept", "state": "running",
      "template": false, "tags": [],
-     "backup": {"volid": "nas:backup/vzdump-qemu-100-….vma.zst", "time": "2026-10-21T12:00:00Z", "age_days": 2.0},
+     "last_backup": {"time": "2026-10-21T12:00:00Z", "age_days": 2.0},
      "exclusive_networks": ["lan", "iot"], "dual_homed": true, "dual_homing_allowed": true}
   ],
   "missing": [{"id": 102, "name": "nas"}],
@@ -1249,8 +1270,9 @@ Lists the Stray Guests (ID, name, type, kind, state, node) and exits 0, Strays o
   is `api` or `ssh`.
 - `guests[].kind`: `kept`, `scratch` or `stray`. `state`: Proxmox VE's status, e.g. `running` or `stopped`.
   `tags`: the Guest's tags as written. `template`: a template, not a running Guest.
-- `backup`: the newest vzdump archive, or `null` when none was found. `time` is UTC; `age_days` is rounded to a
-  tenth.
+- `last_backup`: the newest successful vzdump in the task history: `time`, the end of the task that made it, in
+  UTC, and `age_days`, rounded to a tenth. `null` (text: `unknown`) when the history does not cover the Guest or
+  could not be read. Before hops 2.0 this was `backup`, the newest archive on a backup storage, with its `volid`.
 - `exclusive_networks` and `dual_homed`: `null` when not checked (no `exclusive_networks` in the record, the
   node offline, or the config read failed). `dual_homing_allowed`: the Guest is in `may_join_several`.
 - `guests` and `missing` are `null` when `cluster/resources` could not be read.
