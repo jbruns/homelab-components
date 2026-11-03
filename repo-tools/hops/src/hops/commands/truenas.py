@@ -133,3 +133,6 @@ class Backend:
 
     def redact(self, result, method: str):
         return truenas.redact(result, method)
+
+    def redact_params(self, params: list) -> list:
+        return truenas.redact_params(params)

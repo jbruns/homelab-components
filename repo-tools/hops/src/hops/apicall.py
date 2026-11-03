@@ -11,6 +11,8 @@ redaction, behind `Backend`:
 - `call(method, params)` sends one call and returns its raw result. It raises CallError when the API answered
   with an error and the connection is still usable; any other HopsError means the connection is lost.
 - `redact(result, method)` masks credentials in one call's result before it is printed.
+- `redact_params(params)` masks credentials in a call's params (e.g. a password field, or a password filter's
+  value), since `batch` echoes each call's params, refused or not; the backend sends the params unmasked.
 
 `call` prints one redacted result. `batch` reads `[{"method": ..., "params": [...]}, ...]` from stdin, opens one
 connection with one login, and runs each call in order: a refused call or a CallError becomes that call's
@@ -41,6 +43,7 @@ class Backend(Protocol):
     def open(self) -> None: ...
     def call(self, method: str, params: list) -> Any: ...
     def redact(self, result: Any, method: str) -> Any: ...
+    def redact_params(self, params: list) -> list: ...
 
 
 def call(backend: Backend, method: str, params: list) -> Any:
@@ -53,20 +56,25 @@ def call(backend: Backend, method: str, params: list) -> Any:
 def batch(backend: Backend, calls: list[tuple[str, list]]) -> tuple[list[dict], HopsError | None]:
     """Each call's redacted result or error, in order, over one connection opened before the first call sent,
     and the failure that ended the batch early (None when every call ran). A failed login or lost connection
-    stops the batch after an entry for the call it failed; the connection is not opened again."""
+    stops the batch after an entry for the call it failed; the connection is not opened again. Every entry
+    echoes its call's params only through `backend.redact_params`."""
     results: list[dict] = []
     opened = False
     for method, params in calls:
-        entry = {"method": method, "params": params}
+        entry = {"method": method, "params": backend.redact_params(params)}
         try:
             backend.check(method, params)
         except UsageError as exc:
             results.append({**entry, "error": str(exc)})
             continue
-        try:
-            if not opened:
-                opened = True
+        if not opened:
+            opened = True
+            try:
                 backend.open()
+            except HopsError as exc:  # any login failure, even an API error (e.g. EACCES), ends the batch
+                results.append({**entry, "error": str(exc)})
+                return results, exc
+        try:
             result = backend.call(method, params)
         except CallError as exc:
             results.append({**entry, "error": str(exc)})
@@ -104,11 +112,11 @@ def parse_calls(text: str) -> list[tuple[str, list]]:
 def parse_params(texts: list[str]) -> list:
     """`call`'s positional parameters, one JSON value each."""
     params = []
-    for text in texts:
+    for n, text in enumerate(texts, 1):
         try:
             params.append(json.loads(text))
-        except json.JSONDecodeError as exc:
-            raise UsageError(f"parameter is not JSON: {text!r} ({exc.msg})") from None
+        except json.JSONDecodeError as exc:  # not echoed: a parameter may hold a secret
+            raise UsageError(f"parameter {n} is not JSON ({exc.msg})") from None
     return params
 
 

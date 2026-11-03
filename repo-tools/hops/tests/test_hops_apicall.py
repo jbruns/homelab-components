@@ -39,6 +39,9 @@ class FakeBackend:
     def redact(self, result, method):
         return {k: "[REDACTED]" if k == "secret" else v for k, v in result.items()}
 
+    def redact_params(self, params):
+        return [{**p, "secret": "[REDACTED]"} if isinstance(p, dict) and "secret" in p else p for p in params]
+
 
 def test_call_returns_the_redacted_result():
     backend = FakeBackend({"a.read": {"name": "x", "secret": "fake-secret"}})
@@ -110,6 +113,32 @@ def test_a_lost_connection_keeps_the_results_so_far_and_ends_the_batch():
     ]
     assert error is failure
     assert backend.opens == 1 and backend.sent == [("a.read", []), ("b.read", [2])]
+
+
+def test_every_batch_entry_echoes_params_only_redacted():
+    failure = HopsError("cannot reach fake")
+    backend = FakeBackend({"a.read": {}, "b.read": CallError("fake b.read: ENOENT"), "c.read": failure})
+    hidden = {"secret": "fake-param-secret"}
+    results, _ = apicall.batch(
+        backend, [("a.read", [hidden]), ("write.it", [hidden]), ("b.read", [hidden]), ("c.read", [hidden])]
+    )
+    assert [r["params"] for r in results] == [[{"secret": "[REDACTED]"}]] * 4
+    assert "fake-param-secret" not in repr(results)
+    assert backend.sent[0] == ("a.read", [hidden])
+
+
+def test_a_failed_login_is_fatal_even_when_it_is_an_api_error():
+    failure = CallError("fake auth: EACCES: not allowed")
+    backend = FakeBackend({"a.read": {}}, open_error=failure)
+    results, error = apicall.batch(backend, [("a.read", []), ("a.read", [])])
+    assert results == [{"method": "a.read", "params": [], "error": "fake auth: EACCES: not allowed"}]
+    assert error is failure and backend.opens == 1
+
+
+def test_a_call_parameter_that_is_not_json_is_not_echoed():
+    with pytest.raises(UsageError) as e:
+        apicall.parse_params(["{}", '{"password": "fake-param-secret"'])
+    assert "fake-param-secret" not in str(e.value) and "parameter 2 is not JSON" in str(e.value)
 
 
 @pytest.mark.parametrize(

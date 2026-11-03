@@ -260,7 +260,7 @@ unchanged.
 On a `truenas` Host only. A passthrough for Host-hygiene reads and for auditing the Host's
 configuration where no other command covers it, e.g.
 `hops truenas call pool.query '[["name","=","tank"]]' '{"order_by":["name"]}'`. Each
-`json-param` is one JSON value, passed as one positional parameter of the method. It fails
+`json-param` is one JSON value, passed as one positional parameter of the method; `call` never echoes it, even when it is not JSON. It fails
 closed: anything not listed here is refused (exit 2) before connecting.
 
 - **Read methods only:** `*.query`, `*.get_instance`, `*.config`, plus `system.info`,
@@ -333,9 +333,11 @@ echo '[{"method": "system.info"}, {"method": "pool.query", "params": [[["name", 
   batch goes on.
 - **Output:** a JSON list, one entry per call in order: `{"method", "params", "result"}`, where `result` is
   exactly what `hops truenas call --json` prints, or `{"method", "params", "error"}`, where `error` is the
-  message `call` would print (credentials redacted).
-- **Exit:** 0 when every call ran, whatever their errors. A failed login or a lost connection ends the batch
-  without logging in again: stdout holds the entries for the calls before it, then an entry with the `error`
+  message `call` would print (credentials redacted). `params` is echoed with credentials masked, whether or
+  not the call was sent: a credential-named field (as in results), and the value of a query filter on one
+  (`[["password", "=", "[REDACTED]"]]`), at any depth. The call itself is sent with the params as given.
+- **Exit:** 0 when every call ran, whatever their errors. A failed login (any login error, `EACCES` included,
+  or `EBUSY` after one backoff sequence) or a lost connection ends the batch without logging in again: stdout holds the entries for the calls before it, then an entry with the `error`
   for the call it failed (later calls get none), and `hops` exits non-zero with the error on stderr, so a
   caller keeps the reads that completed.
 
@@ -1114,7 +1116,8 @@ Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-
   not touch the Host until `open()`, and has `check(method, params)` (raise UsageError to refuse, before
   connecting), `open()` (connect and authenticate once), `call(method, params)` (raise `hops.errors.CallError`
   for an API error that leaves the connection usable; any other HopsError ends a batch after that call's entry) and
-  `redact(result, method)`.
+  `redact(result, method)`, and `redact_params(params)`, which masks credentials in the params `batch` echoes.
+  An `open()` failure always ends a batch, even a CallError.
 - Raise `hops.errors.UsageError` for bad input (exit 2) and `HopsError` for failures (exit 1).
 
 ## Test

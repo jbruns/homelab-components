@@ -503,6 +503,44 @@ def test_a_connection_lost_mid_batch_prints_what_ran_then_the_failed_call(hops_t
     assert server.called() == ["auth.login_with_api_key", "system.info", "pool.query"]
 
 
+def test_batch_never_echoes_a_secret_in_params(hops_tn, server):
+    server.methods["pool.query"] = lambda *params: []
+    code, out, _ = batch(
+        hops_tn,
+        {"method": "user.update", "params": [1, {"password": "FAKE-SECRET"}]},
+        {"method": "pool.query", "params": [[["password", "=", "FAKE-SECRET"], ["name", "=", "tank"]]]},
+        {"method": "pool.query", "params": [[["OR", [["api_key", "=", "FAKE-SECRET"], ["id", "=", 1]]]]]},
+    )
+    assert code == 0
+    assert "FAKE-SECRET" not in json.dumps(out)
+    assert out[0]["params"] == [1, {"password": "[REDACTED]"}] and "error" in out[0]
+    assert out[1]["params"] == [[["password", "=", "[REDACTED]"], ["name", "=", "tank"]]]
+    assert out[2]["params"] == [[["OR", [["api_key", "=", "[REDACTED]"], ["id", "=", 1]]]]]
+    assert server.requests[1]["params"] == [[["password", "=", "FAKE-SECRET"], ["name", "=", "tank"]]]
+
+
+def test_a_batch_whose_login_is_refused_with_eaccess_stops_after_one_login(hops_tn, server):
+    def refuse(key):
+        raise FakeTrueNASError("EACCES", "not authorized")
+
+    server.methods["auth.login_with_api_key"] = refuse
+    code, out, err = batch(hops_tn, {"method": "system.info"}, {"method": "system.info"})
+    assert code == 1
+    assert out == [
+        {"method": "system.info", "params": [], "error": "TrueNAS auth.login_with_api_key: EACCES: not authorized"}
+    ]
+    assert server.called() == ["auth.login_with_api_key"]
+    assert "EACCES" in err
+
+
+def test_a_batch_whose_login_stays_busy_backs_off_once_then_stops(hops_tn, server, sleeps):
+    server.methods["auth.login_with_api_key"] = rate_limited(100)
+    code, out, _ = batch(hops_tn, {"method": "system.info"}, {"method": "system.info"})
+    assert code == 1 and len(out) == 1 and "EBUSY" in out[0]["error"]
+    assert sleeps == list(truenas.LOGIN_BACKOFF)
+    assert server.called() == ["auth.login_with_api_key"] * (len(truenas.LOGIN_BACKOFF) + 1)
+
+
 def test_malformed_batch_input_is_refused_before_connecting(hops_tn, server):
     code, out, err = hops_tn("truenas", "batch", "--json", stdin='{"method": "system.info"}')
     assert (code, out) == (2, "") and "a JSON list" in err
@@ -723,3 +761,11 @@ def test_call_reduces_embedded_jobs_to_their_status(hops_tn, server):
         "time_finished": {"$date": 2},
     }
     assert json.loads(out) == [{"id": 1, "job": status, "nested": [{"job": status}]}]
+
+
+def test_redact_params_masks_secret_filters_inside_options_too():
+    params = [{"filters": [["attributes.pass", "~", "FAKE-SECRET"]], "count": True}, ["enabled", "=", True]]
+    assert truenas.redact_params(params) == [
+        {"filters": [["attributes.pass", "~", "[REDACTED]"]], "count": True},
+        ["enabled", "=", True],
+    ]

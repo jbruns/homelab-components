@@ -271,6 +271,26 @@ URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s?#]*@")
 PROVIDER_FIELDS = ("attributes", "provider")
 
 
+def redact_params(params: list) -> list:
+    """A copy of a call's params for echoing: credential fields masked as in `redact`, at any depth, and the
+    value of a query filter `[field, operator, value]` on such a field (e.g. `["password", "=", ...]`)."""
+
+    def secret(field) -> bool:
+        name = field.lower()
+        return any(s in name for s in SECRET_NAMES) or name.rsplit(".", 1)[-1] in FREE_TEXT
+
+    def walk(x):
+        if isinstance(x, dict):
+            return {k: walk(v) for k, v in x.items()}
+        if not isinstance(x, list):
+            return x
+        if len(x) == 3 and isinstance(x[0], str) and isinstance(x[1], str) and secret(x[0]):
+            return [x[0], x[1], x[2] if x[2] is None or isinstance(x[2], bool) else REDACTED]
+        return [walk(v) for v in x]
+
+    return redact(walk(params))
+
+
 def redact(data, method: str = ""):
     """A copy of `method`'s result with credential-looking values, user-written scripts and commands,
     and URL userinfo in any string, replaced by [REDACTED], and embedded jobs reduced to their status.
