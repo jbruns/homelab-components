@@ -570,6 +570,36 @@ def test_picking_for_stacks_with_no_host_that_runs_them_is_an_error(tmp_path):
         hosts.pick(stacks=True)
 
 
+def test_picking_for_a_capability_considers_only_hosts_with_it(stack_host_and_pve):
+    assert stack_host_and_pve.pick(capability="truenas").name == "host-a"
+    assert stack_host_and_pve.pick(capability="proxmox").name == "pve"
+    assert stack_host_and_pve.pick(path=stack_host_and_pve.root / "tn", capability="proxmox").name == "pve"
+
+
+def test_picking_a_host_without_the_capability_is_refused_stating_the_rule(stack_host_and_pve):
+    with pytest.raises(HostsError) as e:
+        stack_host_and_pve.pick("pve", capability="truenas")
+
+    assert str(e.value) == (
+        "Host 'pve' lacks the truenas capability this command needs; Hosts with it: host-a (e.g. --host)"
+    )
+
+
+def test_picking_for_a_capability_no_host_has_is_an_error(tmp_path):
+    hosts = load_hosts(write_repo(tmp_path, "version: 1\nhosts:\n  pve:\n    deployer: none\n    capabilities: []\n"))
+
+    with pytest.raises(HostsError) as e:
+        hosts.pick(capability="truenas")
+
+    assert str(e.value) == "no Host in hosts.yaml has the truenas capability this command needs"
+
+
+def test_picking_for_stacks_and_a_capability_needs_both(stack_host_and_pve):
+    assert stack_host_and_pve.pick(stacks=True, capability="zfs").name == "host-a"
+    with pytest.raises(HostsError, match="no Host in hosts.yaml runs Stacks and has the proxmox capability"):
+        stack_host_and_pve.pick(stacks=True, capability="proxmox")
+
+
 def test_proxmox_settings_come_from_the_proxmox_keys(stack_host_and_pve):
     env = {
         "HOPS_PVE_PROXMOX_URL": "https://pve.example:8006",

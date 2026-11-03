@@ -117,24 +117,48 @@ class Hosts(Mapping[str, Host]):
     def __len__(self) -> int:
         return len(self.hosts)
 
-    def pick(self, name: str | None = None, path: str | Path | None = None, *, stacks: bool = False) -> Host:
+    def pick(
+        self,
+        name: str | None = None,
+        path: str | Path | None = None,
+        *,
+        stacks: bool = False,
+        capability: str | None = None,
+    ) -> Host:
         """The Host a command targets: `name` if given (e.g. --host), else the Host whose stack root contains
         `path`, else the only Host. Otherwise HostsError, listing the Hosts.
 
-        With `stacks` (a command that works on Stacks), only Hosts that run Stacks count: `name` must be one,
-        and "the only Host" means the only one that runs Stacks."""
-        candidates = {n: h for n, h in self.hosts.items() if h.runs_stacks or not stacks}
+        Only the Hosts a command can use count: with `stacks` (a command that works on Stacks) those that run
+        Stacks, with `capability` (e.g. a command calling a Host API) those that have it. `name` must be one of
+        them, and "the only Host" means the only one of them."""
+        candidates = {
+            n: h
+            for n, h in self.hosts.items()
+            if (h.runs_stacks or not stacks) and (capability is None or h.has(capability))
+        }
         if name is not None:
             if name not in self.hosts:
                 raise HostsError(f"no Host {name!r} in {HOSTS_FILE}; Hosts: {', '.join(self.hosts)}")
-            if name not in candidates:
+            host = self.hosts[name]
+            if stacks and not host.runs_stacks:
                 raise HostsError(
                     f"Host {name!r} has deployer {NO_DEPLOYER}, so it runs no Stacks; "
                     + (f"Hosts with Stacks: {', '.join(candidates)} (e.g. --host)" if candidates else "no Host does")
                 )
-            return self.hosts[name]
+            if capability is not None and not host.has(capability):
+                raise HostsError(
+                    f"Host {name!r} lacks the {capability} capability this command needs; "
+                    + (f"Hosts with it: {', '.join(candidates)} (e.g. --host)" if candidates else "no Host has it")
+                )
+            return host
         if not candidates:
-            raise HostsError(f"no Host in {HOSTS_FILE} runs Stacks; every Host has deployer {NO_DEPLOYER}")
+            if not stacks:
+                raise HostsError(f"no Host in {HOSTS_FILE} has the {capability} capability this command needs")
+            if capability is None:
+                raise HostsError(f"no Host in {HOSTS_FILE} runs Stacks; every Host has deployer {NO_DEPLOYER}")
+            raise HostsError(
+                f"no Host in {HOSTS_FILE} runs Stacks and has the {capability} capability this command needs"
+            )
         if path is not None:
             for host in candidates.values():
                 if host.path is not None and _is_within(path, host.path):

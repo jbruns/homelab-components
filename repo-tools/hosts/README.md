@@ -118,6 +118,7 @@ from homelab_hosts import HostsError, host_settings, load_hosts
 hosts = load_hosts()  # finds the repo root from the working directory
 host = hosts.pick(args.host, path=args.path)               # any Host
 stack_host = hosts.pick(args.host, path=args.path, stacks=True)  # a command that works on Stacks
+api_host = hosts.pick(args.host, path=args.path, capability="truenas")  # a command calling a Host API
 if host.has("zfs"):
     ...
 settings = host_settings(env, host)  # env: a mapping the caller built from .env and/or os.environ
@@ -132,7 +133,7 @@ Everything below is exported from `homelab_hosts`; nothing else is public.
   `find_repo_root()`.
 - `Hosts`: a read-only mapping of Host name to `Host`, in file order, with `root` (the repo root),
   `default_branch`, `validate` (the validation command's argv as a tuple, empty when not declared), and
-  `pick(name=None, path=None, *, stacks=False) -> Host`, which returns:
+  `pick(name=None, path=None, *, stacks=False, capability=None) -> Host`, which returns:
   1. the Host called `name` (e.g. from `--host`), or an error listing the Hosts when there is none;
   2. else the Host whose stack root contains `path` (relative paths resolve against the working directory;
      `path` need not exist);
@@ -143,6 +144,11 @@ Everything below is exported from `homelab_hosts`; nothing else is public.
   `deployer: none` is an error stating that it runs no Stacks, and step 3 picks the only Host that runs
   Stacks, so a repo with one `doco-cd` Host and any number of `deployer: none` Hosts needs no `--host` for
   Stack work. A repo-wide Stack check iterates `[h for h in hosts.values() if h.runs_stacks]`.
+
+  With `capability=` (e.g. `"truenas"`, for a tool that calls that Host API), only Hosts with that capability
+  count in the same way: a named Host without it is an error stating that the command needs it, and step 3
+  picks the only Host with it, so a repo with one TrueNAS Host and a `deployer: none` Proxmox Host needs no
+  `--host` for TrueNAS calls. With both, a Host must meet both.
 - `Host`: `name`, `stack_root` (as written), `path` (the stack root, absolute with symlinks resolved), `deployer`, `capabilities`
   (a frozenset), `doco_cd` (a `DocoCd` with `stack`, `api_secret`, `address`, `network`, defaults filled in),
   `runs_stacks` (false for `deployer: none`, whose `stack_root`, `path` and `doco_cd` are `None`), and
