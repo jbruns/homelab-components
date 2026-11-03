@@ -390,8 +390,7 @@ cannot switch scrubbing off. An API error (e.g. `403 Permission check failed`, `
 Proxmox VE's reason, plus the names (never the values) of any parameters it rejected.
 
 - **Allowed paths**, with the query parameters each takes (`{node}`, `{storage}` and `{name}` are names of
-  letters, digits, `-`, `_` and `.`; `{vmid}` a Guest ID; `{pos}` a rule's position; `{upid}` a vzdump task's
-  ID, `UPID:<node>:…:vzdump:<id>:<user>:`, as `nodes/{node}/tasks` lists it):
+  letters, digits, `-`, `_` and `.`; `{vmid}` a Guest ID; `{pos}` a rule's position):
 
   | Path | Query parameters |
   |---|---|
@@ -403,7 +402,6 @@ Proxmox VE's reason, plus the names (never the values) of any parameters it reje
   | `nodes/{node}/storage/{storage}/content` | `content`, `vmid` |
   | `nodes/{node}/network` | `type` |
   | `nodes/{node}/tasks` | `errors`, `limit`, `since`, `source`, `start`, `statusfilter`, `typefilter`, `until`, `userfilter`, `vmid` |
-  | `nodes/{node}/tasks/{upid}/log` | `limit`, `start` |
   | `nodes/{node}/firewall`, `…/firewall/rules`, `…/firewall/rules/{pos}`, `…/firewall/options` | none |
   | `cluster/resources` | `type` |
   | `cluster/backup` | none |
@@ -418,12 +416,11 @@ Proxmox VE's reason, plus the names (never the values) of any parameters it reje
   permission its `GET` needs and for secret-bearing fields, which the redaction below masks. Everything else
   is refused, for example `access/ticket`, a Guest's `vncproxy`/`termproxy`, `nodes/{node}/firewall/log`
   (needs `Sys.Syslog`), `nodes/{node}/apt/changelog` (needs `Sys.Modify`), an IP set's entries
-  (`cluster/firewall/ipset/{name}/{cidr}`: a CIDR holds a `/`), and the log of any task but a vzdump (another
-  task's output is not needed, so it is not read). The task paths were checked against `apidoc.js` for Proxmox VE
-  9.2: `nodes/{node}/tasks` lists every user's tasks to a token with `Sys.Audit` on `/nodes/{node}`, and
-  `…/tasks/{upid}/log` reads another user's task log with the same privilege, so `PVEAuditor` reads a scheduled
-  backup job's task and log although the scheduler ran them as another user. A log's `download` is refused: `start` and `limit` page
-  through it (`limit` `0` reads it all). Widen the list here and in
+  (`cluster/firewall/ipset/{name}/{cidr}`: a CIDR holds a `/`), and any task's log (`nodes/{node}/tasks/{upid}/log`:
+  a log is free text, which can carry a hook script's output or a command line; `hops host` reads vzdump logs
+  itself and prints only what it parses). The task path was checked against `apidoc.js` for Proxmox VE 9.2:
+  `nodes/{node}/tasks` lists every user's tasks to a token with `Sys.Audit` on `/nodes/{node}`, so `PVEAuditor`
+  sees a scheduled backup job's task although the scheduler ran it as another user. Widen the list here and in
   `hops/commands/proxmox.py` together, after checking the path's schema.
 - **`nodes/{node}/apt/update` needs `Sys.Modify`**, which `PVEAuditor` lacks, so with an audit-only token it
   answers `403`. It stays allowed for a token that has it; `hops host` falls back to SSH for it (below).
@@ -441,7 +438,10 @@ Proxmox VE's reason, plus the names (never the values) of any parameters it reje
   `header` and `secret` entries keep their names and lose their values (`name=Authorization,value=[REDACTED]`),
   its `body` is redacted, and its `url` (which can carry a token) prints as `"[REDACTED sha256:<12 hex
   digits>]"`, the first 12 hex digits of the URL's SHA-256, so an audit can compare it with the URL it
-  expects. In every string, a URL's user name and password print as `scheme://[REDACTED]@host…`.
+  expects. In a task list (`nodes/{node}/tasks`), a task's `status` prints only as `OK`, `WARNINGS: <n>`,
+  `unexpected status` or `ERROR`; any other status is an error's free text, so `ERROR: …` prints as
+  `ERROR: [REDACTED]` and anything else as `"[REDACTED]"`. In every string, a URL's user name and password print
+  as `scheme://[REDACTED]@host…`.
 
 ### proxmox batch
 
@@ -1205,13 +1205,14 @@ tag outside 1–4094, two networks on the same bridge and tag) fails the command
 - **Guests** (`cluster/resources?type=vm`): ID, name, type, kind, state, node, and:
   - its last backup: the end time and age of its newest successful vzdump, from each online node's task history
     (`nodes/{node}/tasks?typefilter=vzdump&source=archive&limit=50`, the 50 newest finished vzdump tasks, newest
-    first). A task backing up one Guest (its `id` is the Guest's ID) that ended `OK` counts for that Guest. A
-    backup job's task covers several Guests (its `id` is empty), so hops reads its log
-    (`nodes/{node}/tasks/{upid}/log`, 1000 lines a page, at most 10 pages, with a note when it stops early) and
-    counts each Guest whose `INFO: Starting Backup of VM <id> (<type>)` is followed by
+    first). hops reads each task's log (`nodes/{node}/tasks/{upid}/log`, 1000 lines a page, at most 10 pages,
+    with a note when it stops early), whether the task backed up one Guest (its `id` is the Guest's ID) or ran a
+    backup job (its `id` is empty), and counts each Guest whose `INFO: Starting Backup of VM <id> (<type>)` is followed by
     `INFO: Finished Backup of VM <id> (<hh:mm:ss>)`. A Guest with `ERROR: Backup of VM <id> failed - …`, or that
-    started and never finished, does not count; nor does a one-Guest task that failed before it started. A
-    one-Guest task that ended with warnings is read the same way. The time is the task's end, so for a job it
+    started and never finished, does not count; nor does a one-Guest task that failed before it started. Even a
+    one-Guest task that ended `OK` counts only when its log shows the Guest's backup finish: vzdump silently skips
+    a Guest the task's user lacks `VM.Backup` on. A log that stops early (the page cap) leaves a Guest it does not
+    finish `unknown`, not failed. The time is the task's end, so for a job it
     is when the whole job ended. Reading stops once every Guest has a last backup. A Guest the history does not
     cover (never backed up, or its tasks rotated out of the node's task index) shows `unknown`; so does every
     Guest when no node has a finished vzdump task, with a note. A Guest whose newest vzdump failed gets a note

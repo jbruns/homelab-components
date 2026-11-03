@@ -441,11 +441,10 @@ def last_backups(reads: Reads, nodes: list[str], wanted: set[int]) -> dict[int, 
 
 
 def outcomes(reads: Reads, node: str, task: dict, known: dict[int, int]) -> dict[int, bool]:
-    """Whether each Guest a finished vzdump task backed up finished (True) or not (False). A task for one Guest
-    (its `id` is the Guest's ID) that ended OK needs no more; any other task's log says, Guest by Guest."""
+    """Whether each Guest a finished vzdump task backed up finished (True) or not (False), from its log. Even a
+    task named for one Guest (its `id`) that ended OK may not have backed it up: vzdump silently skips a Guest the
+    task's user lacks VM.Backup on."""
     vmid = int(task["id"]) if str(task.get("id") or "").isdigit() else None
-    if vmid is not None and task.get("status") == "OK":
-        return {vmid: True}
     if vmid is not None and vmid in known:
         return {}  # it has a newer success: its log cannot change that
     upid = task.get("upid")
@@ -455,7 +454,7 @@ def outcomes(reads: Reads, node: str, task: dict, known: dict[int, int]) -> dict
     if lines is None:
         return {}
     found = parse_log(lines[0], complete=lines[1])
-    if vmid is not None and vmid not in found:
+    if vmid is not None and vmid not in found and lines[1] and task.get("status") != "OK":
         found[vmid] = False  # the task failed before it started this Guest's backup
     return found
 

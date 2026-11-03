@@ -277,6 +277,10 @@ GUEST_CONFIG = re.compile(r"nodes/[^/]+/(qemu|lxc)/[^/]+/config")
 NAMED_VALUES = {"header", "secret"}
 NOTIFICATION_FREE_TEXT = {"body"}
 FINGERPRINTED = {"url"}
+# A task list (nodes/{node}/tasks): a finished task's `status` is OK, WARNINGS: <n>, or its error's free text,
+# which may quote a hook script's output or a command line. Only these shapes print; an error's text is masked.
+TASK_LIST = re.compile(r"nodes/[^/]+/tasks")
+TASK_STATUS = re.compile(r"OK|WARNINGS: \d+|unexpected status|ERROR")
 # A URL's user name and password, e.g. https://user:pass@host/, in any string.
 URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s?#]*@")
 PROPERTY_NAME = re.compile(r"(?:^|,)name=([^,]*)")
@@ -297,13 +301,20 @@ def named_value(entry) -> str:
     return f"name={found.group(1)},value={REDACTED}" if found else REDACTED
 
 
+def task_status(status: str) -> str:
+    if TASK_STATUS.fullmatch(status):
+        return status
+    return f"ERROR: {REDACTED}" if status.startswith("ERROR:") else REDACTED
+
+
 def redact(data, path: str = ""):
     """A copy of `path`'s result with credential-looking values, a Guest's free-text config, a notification
-    target's credentials, and URL userinfo in any string replaced by [REDACTED]. A boolean or null is never masked:
-    it holds no secret."""
+    target's credentials, a task's error text, and URL userinfo in any string replaced by [REDACTED]. A boolean or
+    null is never masked: it holds no secret."""
     path = path.strip("/")
     guest = bool(GUEST_CONFIG.fullmatch(path))
     notification = path.startswith("cluster/notifications/")
+    tasks = bool(TASK_LIST.fullmatch(path))
 
     def walk(x):
         if isinstance(x, str):
@@ -323,6 +334,8 @@ def redact(data, path: str = ""):
                 out[k] = REDACTED
             elif notification and name in FINGERPRINTED and isinstance(v, str):
                 out[k] = fingerprint(v)
+            elif tasks and name == "status":
+                out[k] = task_status(v) if isinstance(v, str) else REDACTED
             elif secret_name(name):
                 out[k] = REDACTED
             elif guest and name in GUEST_FREE_TEXT:

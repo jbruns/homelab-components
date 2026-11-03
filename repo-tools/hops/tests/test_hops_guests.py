@@ -105,14 +105,36 @@ JOB_LOG = log(
 )
 
 
+def finished(vmid: int, kind: str = "qemu") -> list[dict]:
+    """The log of a task that backed up one Guest and finished."""
+    return log(
+        f"INFO: starting new backup job: vzdump {vmid} --storage nas",
+        f"INFO: Starting Backup of VM {vmid} ({kind})",
+        f"INFO: Finished Backup of VM {vmid} (00:01:00)",
+        "INFO: Backup job finished successfully",
+        "TASK OK",
+    )
+
+
+def with_log(t: dict, lines: list[dict], node: str = "pve") -> dict:
+    """Routes for a task and its log."""
+    return {f"nodes/{node}/tasks/{t['upid']}/log": lines}
+
+
+GUEST_100 = task(NOW_S - 2 * DAY, "100")
+GUEST_100_OLD = task(NOW_S - 9 * DAY, "100")
+
+
 def routes() -> dict:
     return {
         "nodes": [{"node": "pve", "status": "online"}],
         "cluster/resources": RESOURCES,
         "nodes/pve/version": {"version": "9.1.4", "release": "9.1"},
         "nodes/pve/apt/update": [{"Package": "pve-manager", "Version": "9.1.5", "OldVersion": "9.1.4"}],
-        "nodes/pve/tasks": [JOB, task(NOW_S - 2 * DAY, "100"), task(NOW_S - 9 * DAY, "100")],
+        "nodes/pve/tasks": [JOB, GUEST_100, GUEST_100_OLD],
         f"nodes/pve/tasks/{JOB['upid']}/log": JOB_LOG,
+        **with_log(GUEST_100, finished(100)),
+        **with_log(GUEST_100_OLD, finished(100)),
         **CONFIGS,
     }
 
@@ -508,7 +530,10 @@ def test_every_online_node_s_task_history_is_read(run, server):
     server.routes["nodes"] = [{"node": "pve", "status": "online"}, {"node": "pve2", "status": "online"}]
     server.routes["nodes/pve2/version"] = {"version": "9.1.4"}
     server.routes["nodes/pve2/apt/update"] = []
-    server.routes["nodes/pve2/tasks"] = [task(NOW_S - DAY, "300"), task(NOW_S - 3 * DAY, "100")]
+    on_pve2 = [task(NOW_S - DAY, "300"), task(NOW_S - 3 * DAY, "100")]
+    server.routes["nodes/pve2/tasks"] = on_pve2
+    server.routes.update(with_log(on_pve2[0], finished(300, "lxc"), "pve2"))
+    server.routes.update(with_log(on_pve2[1], finished(100), "pve2"))
     by_id = {g["id"]: g for g in host_json(run)["guests"]}
     assert by_id[300]["last_backup"]["age_days"] == 1.0
     assert by_id[100]["last_backup"]["age_days"] == 2.0  # the newer one, on pve
@@ -678,3 +703,28 @@ def test_parse_log_counts_a_finished_line_only_inside_its_own_guest_s_backup():
     ]
     assert guests.parse_log(lines, complete=True) == {101: True, 102: False}
     assert guests.parse_log(lines, complete=False) == {101: True}
+
+
+def test_an_ok_one_guest_task_counts_only_when_its_log_shows_the_guest_backed_up(run, server):
+    # vzdump skips a Guest the job's user may not back up (VM.Backup), yet the task, named for it, ends OK.
+    skipped = task(NOW_S - DAY, "300")
+    server.routes["nodes/pve/tasks"] = [*routes()["nodes/pve/tasks"], skipped]
+    server.routes.update(
+        with_log(skipped, log("INFO: starting new backup job: vzdump 300", "INFO: Backup job finished successfully"))
+    )
+    report = host_json(run)
+    assert {g["id"]: g["last_backup"] for g in report["guests"]}[300] is None
+    assert not any(n.startswith("Guest 300") for n in report["notes"])
+    assert f"nodes/pve/tasks/{GUEST_100['upid']}/log" in server.paths()
+
+
+def test_a_one_guest_task_whose_log_stops_before_the_guest_is_unknown_not_failed(run, server, monkeypatch):
+    long = task(NOW_S - DAY, "300", status="WARNINGS: 1")
+    server.routes["nodes/pve/tasks"] = [long]
+    lines = log(*["INFO: starting new backup job: vzdump 300"] * 5, "INFO: Starting Backup of VM 300 (lxc)")
+    server.routes.update(with_log(long, lines))
+    monkeypatch.setattr(guests, "LOG_PAGE", 2)
+    monkeypatch.setattr(guests, "LOG_PAGES", 2)
+    report = host_json(run)
+    assert {g["id"]: g["last_backup"] for g in report["guests"]}[300] is None
+    assert not any(n.startswith("Guest 300") for n in report["notes"])

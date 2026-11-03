@@ -248,8 +248,6 @@ def test_url_userinfo_is_masked_in_any_string():
         "nodes/pve/storage/local/content",
         "nodes/pve/apt/update",
         "nodes/pve/tasks",
-        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log",
-        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump:100:hops-reader@pve!hops:/log",
         "cluster/resources",
         "cluster/firewall/groups/web/0",
         "cluster/notifications/endpoints/webhook/alerts",
@@ -270,7 +268,8 @@ def test_allowlisted_paths_pass(path):
         "nodes/pve/storage/../../access/ticket",
         "nodes/pve/firewall/log",
         "cluster/notifications/endpoints/email/x",
-        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:qmstart:100:root@pam:/log",  # only vzdump's logs
+        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:qmstart:100:root@pam:/log",
+        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log",  # raw text: hops host only
         "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:",
         "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/status",
     ],
@@ -298,22 +297,40 @@ def test_bad_params_are_refused_without_echoing_them(params, problem):
 
 def test_task_params_are_allowlisted():
     commands.Backend(None).check("nodes/pve/tasks", [{"typefilter": "vzdump", "source": "all", "limit": 100}])
-    commands.Backend(None).check(
-        "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log", [{"start": 0, "limit": 500}]
-    )
-    with pytest.raises(cli.UsageError, match="takes limit, start"):
-        commands.Backend(None).check(
-            "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log", [{"download": 1}]
-        )
 
 
-def test_call_reads_a_vzdump_task_log(hops_px, server):
-    path = "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log"
-    server.routes[path] = [{"n": 1, "t": "INFO: Starting Backup of VM 100 (qemu)"}]
-    code, out, err = hops_px("proxmox", "call", path, '{"limit": 10}', "--json")
+TASK_STATUSES = [
+    ("OK", "OK"),
+    ("WARNINGS: 3", "WARNINGS: 3"),
+    ("unexpected status", "unexpected status"),
+    ("ERROR", "ERROR"),
+    ("ERROR: hook script said token=abc", "ERROR: [REDACTED]"),
+    ("job errors", "[REDACTED]"),
+    ("command 'curl https://x/?key=abc' failed: exit code 1", "[REDACTED]"),
+    ("WARNINGS: 3 and more", "[REDACTED]"),
+]
+
+
+def test_call_masks_a_task_s_free_text_status(hops_px, server):
+    server.routes["nodes/pve/tasks"] = [
+        {"upid": "UPID:x", "type": "vzdump", "id": "", "status": status, "endtime": 1} for status, _ in TASK_STATUSES
+    ] + [{"upid": "UPID:y", "type": "vzdump", "id": ""}]  # running: no status yet
+    code, out, err = hops_px("proxmox", "call", "nodes/pve/tasks", '{"typefilter": "vzdump"}', "--json")
     assert (code, err) == (0, "")
-    assert json.loads(out) == [{"n": 1, "t": "INFO: Starting Backup of VM 100 (qemu)"}]
-    assert server.requests == [(path, {"limit": "10"})]
+    assert [t.get("status") for t in json.loads(out)] == [masked for _, masked in TASK_STATUSES] + [None]
+    code, out, _ = hops_px("proxmox", "batch", "--json", stdin=json.dumps([{"method": "nodes/pve/tasks"}]))
+    assert code == 0 and "abc" not in out and "job errors" not in out
+
+
+def test_a_task_log_is_refused_by_call_and_batch(hops_px, server):
+    path = "nodes/pve/tasks/UPID:pve:00001234:00ABCDEF:6719A0C0:vzdump::root@pam:/log"
+    server.routes[path] = [{"n": 1, "t": "INFO: fake-log-marker"}]
+    code, out, err = hops_px("proxmox", "call", path)
+    assert code == 2 and "allowlist" in err and "fake-log-marker" not in out + err
+    code, out, err = hops_px("proxmox", "batch", "--json", stdin=json.dumps([{"method": path}]))
+    assert code == 0 and "fake-log-marker" not in out + err
+    assert "allowlist" in json.loads(out)[0]["error"]
+    assert server.requests == []
 
 
 # hops proxmox call / batch
