@@ -7,7 +7,7 @@ or Host access. Its messages state the rule each check enforces.
 
 | Check | What it enforces, for each Host |
 |---|---|
-| `secrets` | Sensitive files are tracked only SOPS-encrypted as `*.sops.*`, with no plaintext twin; Stack layout (`<stack root>/<stack>/compose.yaml`, each included file `<service>/service.yaml` and included by some Stack); at least one doco-cd deploy config (`.doco-cd*.y(a)ml`, anywhere) is tracked and every one keeps `auto_discovery.depth: 1` |
+| `secrets` | Sensitive files are tracked only SOPS-encrypted as `*.sops.*`, with no plaintext twin; Stack layout (`<stack root>/<stack>/compose.yaml`, each included file `<service>/service.yaml` and included by some Stack); at least one doco-cd deploy config (`.doco-cd*.y(a)ml`, anywhere) is tracked when some Host runs Stacks, and every one keeps `auto_discovery.depth: 1` |
 | `env` | Every `${VAR}` a Stack uses is in its `env.template` and `.sops.env`; when the Host uses [dependency rendering](#dependency-rendering), its `dependencies.yml` exists and its placeholders reach `dependencies-render` |
 | `compose` | `docker compose config` renders every Stack, and every `templates/<name>/` as a Stack of each Host; startup-order, logging, restart and Probe rules; no `env_file` `format` (doco-cd supports only the default); the [Baseline](#the-baseline); [volume names](#volumes) |
 | `monitoring` | Full Prometheus config and rule checks, behavioral rule suites, amtool/Loki/Alloy config checks, dashboard generation and query checks, declared-containers freshness, and Grafana provisioning boots, using the images the Host deploys; see [Monitoring checks](#monitoring-checks) |

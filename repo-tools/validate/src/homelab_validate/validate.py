@@ -309,8 +309,9 @@ def check_layout(tracked: set[Path]) -> None:
     # internal/config/deploy/auto_discovery.go). It only looks for compose.yaml, so service.yaml is
     # never discovered; this is defence in depth: at depth 0 (unlimited) a compose.yaml in a Service
     # folder would become a Stack, and delete: true would remove it when it disappears.
+    # A repo whose Hosts all have deployer none runs no doco-cd, so it needs no deploy config.
     configs = sorted(f for f in tracked if DOCO_CD_CONFIG_RE.fullmatch(f.name))
-    if not configs:
+    if not configs and HOSTS:
         fail("no doco-cd deploy config (.doco-cd.yml) is tracked")
     for config in configs:
         depth = ((yaml.safe_load(config.read_text()) or {}).get("auto_discovery") or {}).get("depth")
