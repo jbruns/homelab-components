@@ -552,6 +552,24 @@ def test_call_errors_scrub_the_api_key(hops_tn, server):
     assert code == 0 and KEY not in json.dumps(out) + err
 
 
+def test_the_api_key_is_scrubbed_even_when_the_truenas_config_is_invalid(repo, capsys):
+    env = {"HOME": "/h", "HOPS_HOST_A_TRUENAS_API_KEY": "fake-api-key"}  # no URL: the client cannot be built
+    calls = [
+        {"method": "pool.query", "params": [[["name", "=", "fake-api-key"]]]},
+        {"method": "pool.query", "params": [[], {"fake-api-key": True}]},
+    ]
+    ctx = cli.Context(repo_root=repo, env=env, stdin=io.StringIO(json.dumps(calls)))
+    assert cli.main(["truenas", "batch", "--json"], ctx=ctx) == 2
+    captured = capsys.readouterr()
+    assert "TRUENAS_URL is not set" in captured.err
+    assert "fake-api-key" not in captured.out + captured.err
+    assert json.loads(captured.out)[0]["params"] == [[["name", "=", "[REDACTED]"]]]
+
+    ctx = cli.Context(repo_root=repo, env=env)
+    assert cli.main(["truenas", "call", "fake-api-key.update"], ctx=ctx) == 2
+    assert "fake-api-key" not in capsys.readouterr().err
+
+
 def test_a_batch_whose_login_is_refused_with_eaccess_stops_after_one_login(hops_tn, server):
     def refuse(key):
         raise FakeTrueNASError("EACCES", "not authorized")

@@ -3,8 +3,8 @@ hops.apicall; this is its TrueNAS backend."""
 
 import re
 
-from hops import apicall, truenas
-from hops.errors import ConfigError, UsageError
+from hops import apicall, config, truenas
+from hops.errors import UsageError
 
 HELP = "read-only TrueNAS middleware calls (JSON-RPC), for what other hops commands lack"
 # Read methods by name: TrueNAS's conventions for reads, plus reads that don't follow them.
@@ -134,15 +134,18 @@ class Backend:
     def redact(self, result, method: str):
         return truenas.redact(result, method)
 
-    def _key(self) -> str | None:
-        try:
-            return self.ctx.truenas.cfg.api_key
-        except ConfigError:  # no key configured, so none to scrub
-            return None
+    def _keys(self) -> list[str]:
+        """The API keys to scrub: the configured one, read straight from the settings so that an invalid URL or
+        another config error cannot switch scrubbing off, and the client's when one is built."""
+        keys = {config.host_setting(self.ctx.repo_root, self.ctx.host, "TRUENAS_API_KEY", self.ctx.env)}
+        if "truenas" in vars(self.ctx):  # a client already built (cached_property stores it on the instance)
+            keys.add(self.ctx.truenas.cfg.api_key)
+        return sorted((k for k in keys if k), key=len, reverse=True)
 
     def scrub(self, text: str) -> str:
-        key = self._key()
-        return text.replace(key, truenas.REDACTED) if key else text
+        for key in self._keys():
+            text = text.replace(key, truenas.REDACTED)
+        return text
 
     def redact_params(self, params: list) -> list:
-        return truenas.redact_params(params, self._key())
+        return truenas.scrub_strings(truenas.redact_params(params), self._keys())

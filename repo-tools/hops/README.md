@@ -263,7 +263,8 @@ configuration where no other command covers it, e.g.
 `json-param` is one JSON value, passed as one positional parameter of the method; `call` never echoes it, even when it is not JSON. It fails
 closed: anything not listed here is refused (exit 2) before connecting. A refusal states the rule and what
 is allowed, never the method, option or value refused, and every error `call` or `batch` prints has the
-configured API key scrubbed.
+configured API key scrubbed. The key to scrub is read straight from `HOPS_<NAME>_TRUENAS_API_KEY`, so an
+invalid or missing URL cannot switch scrubbing off.
 
 - **Read methods only:** `*.query`, `*.get_instance`, `*.config`, plus `system.info`,
   `system.version`, `pool.dataset.details`, `alert.list`, `docker.status`, `filesystem.stat` and
