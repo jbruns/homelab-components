@@ -513,10 +513,22 @@ def test_batch_never_echoes_a_secret_in_params(hops_tn, server):
     )
     assert code == 0
     assert "FAKE-SECRET" not in json.dumps(out)
-    assert out[0]["params"] == [1, {"password": "[REDACTED]"}] and "error" in out[0]
+    assert out[0]["params"] == "[REDACTED]" and "error" in out[0]
     assert out[1]["params"] == [[["password", "=", "[REDACTED]"], ["name", "=", "tank"]]]
     assert out[2]["params"] == [[["OR", [["api_key", "=", "[REDACTED]"], ["id", "=", 1]]]]]
     assert server.requests[1]["params"] == [[["password", "=", "FAKE-SECRET"], ["name", "=", "tank"]]]
+
+
+def test_batch_never_echoes_the_api_key_in_params(hops_tn, server):
+    server.methods["pool.query"] = lambda *params: []
+    code, out, _ = batch(
+        hops_tn,
+        {"method": "auth.login_with_api_key", "params": [KEY]},
+        {"method": "pool.query", "params": [[["name", "=", f"x-{KEY}-y"]], {"order_by": [KEY]}]},
+    )
+    assert code == 0 and KEY not in json.dumps(out)
+    assert out[0]["params"] == "[REDACTED]"
+    assert out[1]["params"] == [[["name", "=", "x-[REDACTED]-y"]], {"order_by": ["[REDACTED]"]}]
 
 
 def test_a_batch_whose_login_is_refused_with_eaccess_stops_after_one_login(hops_tn, server):

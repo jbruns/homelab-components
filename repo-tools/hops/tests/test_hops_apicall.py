@@ -71,7 +71,7 @@ def test_batch_opens_once_and_redacts_each_result():
 def test_a_refused_call_inside_a_valid_batch_is_reported_and_never_sent():
     backend = FakeBackend({"a.read": {"name": "a"}})
     results, _ = apicall.batch(backend, [("a.read", []), ("write.it", [{"x": 1}]), ("a.read", [])])
-    assert results[1] == {"method": "write.it", "params": [{"x": 1}], "error": "write.it is not a read method"}
+    assert results[1] == {"method": "write.it", "params": "[REDACTED]", "error": "write.it is not a read method"}
     assert [r.get("result") for r in results] == [{"name": "a"}, None, {"name": "a"}]
     assert backend.sent == [("a.read", []), ("a.read", [])]
 
@@ -97,7 +97,7 @@ def test_a_failed_login_ends_the_batch_at_the_call_that_needed_it():
     backend = FakeBackend({"a.read": {}}, open_error=failure)
     results, error = apicall.batch(backend, [("write.it", []), ("a.read", [1]), ("a.read", [])])
     assert results == [
-        {"method": "write.it", "params": [], "error": "write.it is not a read method"},
+        {"method": "write.it", "params": "[REDACTED]", "error": "write.it is not a read method"},
         {"method": "a.read", "params": [1], "error": "fake rejected the key"},
     ]
     assert error is failure and backend.sent == []
@@ -122,7 +122,8 @@ def test_every_batch_entry_echoes_params_only_redacted():
     results, _ = apicall.batch(
         backend, [("a.read", [hidden]), ("write.it", [hidden]), ("b.read", [hidden]), ("c.read", [hidden])]
     )
-    assert [r["params"] for r in results] == [[{"secret": "[REDACTED]"}]] * 4
+    masked = [{"secret": "[REDACTED]"}]
+    assert [r["params"] for r in results] == [masked, "[REDACTED]", masked, masked]
     assert "fake-param-secret" not in repr(results)
     assert backend.sent[0] == ("a.read", [hidden])
 

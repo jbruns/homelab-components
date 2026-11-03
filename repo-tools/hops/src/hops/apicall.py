@@ -12,7 +12,8 @@ redaction, behind `Backend`:
   with an error and the connection is still usable; any other HopsError means the connection is lost.
 - `redact(result, method)` masks credentials in one call's result before it is printed.
 - `redact_params(params)` masks credentials in a call's params (e.g. a password field, or a password filter's
-  value), since `batch` echoes each call's params, refused or not; the backend sends the params unmasked.
+  value, and the API's own credential anywhere in a string), since `batch` echoes the params of each call it
+  sends; the backend sends them unmasked. A refused call's params are echoed only as "[REDACTED]".
 
 `call` prints one redacted result. `batch` reads `[{"method": ..., "params": [...]}, ...]` from stdin, opens one
 connection with one login, and runs each call in order: a refused call or a CallError becomes that call's
@@ -31,6 +32,7 @@ from hops import output
 from hops.errors import CallError, HopsError, UsageError
 
 CALL_KEYS = {"method", "params"}
+REFUSED_PARAMS = "[REDACTED]"  # a refused call's params, echoed in full: they may be anything, e.g. a raw key
 
 
 class Backend(Protocol):
@@ -57,16 +59,16 @@ def batch(backend: Backend, calls: list[tuple[str, list]]) -> tuple[list[dict], 
     """Each call's redacted result or error, in order, over one connection opened before the first call sent,
     and the failure that ended the batch early (None when every call ran). A failed login or lost connection
     stops the batch after an entry for the call it failed; the connection is not opened again. Every entry
-    echoes its call's params only through `backend.redact_params`."""
+    echoes its call's params only through `backend.redact_params`, or as REFUSED_PARAMS when refused."""
     results: list[dict] = []
     opened = False
     for method, params in calls:
-        entry = {"method": method, "params": backend.redact_params(params)}
         try:
             backend.check(method, params)
         except UsageError as exc:
-            results.append({**entry, "error": str(exc)})
+            results.append({"method": method, "params": REFUSED_PARAMS, "error": str(exc)})
             continue
+        entry = {"method": method, "params": backend.redact_params(params)}
         if not opened:
             opened = True
             try:

@@ -4,7 +4,7 @@ hops.apicall; this is its TrueNAS backend."""
 import re
 
 from hops import apicall, truenas
-from hops.errors import UsageError
+from hops.errors import ConfigError, UsageError
 
 HELP = "read-only TrueNAS middleware calls (JSON-RPC), for what other hops commands lack"
 # Read methods by name: TrueNAS's conventions for reads, plus reads that don't follow them.
@@ -135,4 +135,8 @@ class Backend:
         return truenas.redact(result, method)
 
     def redact_params(self, params: list) -> list:
-        return truenas.redact_params(params)
+        try:
+            key = self.ctx.truenas.cfg.api_key
+        except ConfigError:  # no key configured, so none to scrub
+            key = None
+        return truenas.redact_params(params, key)

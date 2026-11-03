@@ -333,9 +333,11 @@ echo '[{"method": "system.info"}, {"method": "pool.query", "params": [[["name", 
   batch goes on.
 - **Output:** a JSON list, one entry per call in order: `{"method", "params", "result"}`, where `result` is
   exactly what `hops truenas call --json` prints, or `{"method", "params", "error"}`, where `error` is the
-  message `call` would print (credentials redacted). `params` is echoed with credentials masked, whether or
-  not the call was sent: a credential-named field (as in results), and the value of a query filter on one
-  (`[["password", "=", "[REDACTED]"]]`), at any depth. The call itself is sent with the params as given.
+  message `call` would print (credentials redacted). A refused call's `params` print only as `"[REDACTED]"`,
+  since they may be anything (e.g. a raw key). A sent call's `params` print with credentials masked: a
+  credential-named field (as in results), the value of a query filter on one
+  (`[["password", "=", "[REDACTED]"]]`), at any depth, and the configured API key wherever it appears in a
+  string. The call itself is sent with the params as given.
 - **Exit:** 0 when every call ran, whatever their errors. A failed login (any login error, `EACCES` included,
   or `EBUSY` after one backoff sequence) or a lost connection ends the batch without logging in again: stdout holds the entries for the calls before it, then an entry with the `error`
   for the call it failed (later calls get none), and `hops` exits non-zero with the error on stderr, so a
@@ -1116,7 +1118,8 @@ Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-
   not touch the Host until `open()`, and has `check(method, params)` (raise UsageError to refuse, before
   connecting), `open()` (connect and authenticate once), `call(method, params)` (raise `hops.errors.CallError`
   for an API error that leaves the connection usable; any other HopsError ends a batch after that call's entry) and
-  `redact(result, method)`, and `redact_params(params)`, which masks credentials in the params `batch` echoes.
+  `redact(result, method)`, and `redact_params(params)`, which masks credentials (and the API's own key) in the params `batch` echoes
+  for a sent call; the front end echoes a refused call's params only as `"[REDACTED]"`.
   An `open()` failure always ends a batch, even a CallError.
 - Raise `hops.errors.UsageError` for bad input (exit 2) and `HopsError` for failures (exit 1).
 
