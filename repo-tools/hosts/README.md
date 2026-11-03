@@ -116,7 +116,7 @@ needs the TrueNAS or Proxmox keys.
 from homelab_hosts import HostsError, host_settings, load_hosts
 
 hosts = load_hosts()  # finds the repo root from the working directory
-host = hosts.pick(args.host, path=args.path)               # any Host
+host = hosts.pick(args.host, path=args.path)  # any Host
 stack_host = hosts.pick(args.host, path=args.path, stacks=True)  # a command that works on Stacks
 api_host = hosts.pick(args.host, path=args.path, capability="truenas")  # a command calling a Host API
 if host.has("zfs"):
