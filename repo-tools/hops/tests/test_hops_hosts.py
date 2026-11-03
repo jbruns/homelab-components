@@ -4,7 +4,7 @@ and the capability gates on commands a Host cannot serve."""
 import json
 
 import pytest
-from hops_fakes import NAS_2, FakeTrueNAS, write
+from hops_fakes import NAS_2, FakeTrueNAS, hosts_yaml, write
 
 from hops import cli, truenas
 
@@ -89,3 +89,63 @@ def test_truenas_and_zfs_commands_are_refused_on_a_host_without_them(run, fake_h
     assert code == 2
     assert err == f"hops: error: {what}; Host 'nas-2' has none (hosts.yaml)\n"
     assert fake_host.calls == []
+
+
+# A Host with deployer none runs no Stacks
+
+
+@pytest.fixture
+def with_pve(repo, runner, capsys):
+    """hops in the fixture repo plus `pve`, a Host that runs no Stacks, from the repo root."""
+    write(
+        repo,
+        {"hosts.yaml": hosts_yaml(extra="\n      pve:\n        deployer: none\n        capabilities: [proxmox]\n")},
+    )
+
+    def run(*argv, client=None):
+        ctx = cli.Context(repo_root=repo, runner=runner, truenas=client, env={}, cwd=repo)
+        code = cli.main(list(argv), ctx=ctx)
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err, ctx
+
+    return run
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["status"],
+        ["restart", "web"],
+        ["recreate", "web"],
+        ["bump", "web", "1.2"],
+        ["logs", "web"],
+        ["exec", "web", "true"],
+        ["deploys"],
+        ["alerts"],
+        ["host"],
+        ["strays"],
+        ["snapshot", "list"],
+        ["volume", "move", "--issue", "1", "a", "b"],
+    ],
+    ids=lambda argv: argv[0],
+)
+def test_commands_that_need_stacks_refuse_a_host_without_them(with_pve, fake_host, argv):
+    code, out, err, _ = with_pve("--host", "pve", *argv)
+    assert (code, out) == (2, "")
+    assert err == (
+        "hops: error: Host 'pve' has deployer none, so it runs no Stacks; Hosts with Stacks: host-a (e.g. --host)\n"
+    )
+    assert fake_host.calls == []
+
+
+def test_commands_that_need_stacks_pick_the_only_host_that_runs_them(with_pve, fake_host):
+    code, _, err, ctx = with_pve("restart", "nosuch")
+    assert code == 2 and "unknown Stack or Service 'nosuch'" in err
+    assert ctx.host.name == "host-a"
+
+
+def test_truenas_call_considers_every_host(with_pve):
+    code, _, err, _ = with_pve("truenas", "call", "system.info")
+    assert code == 2 and "pick one of: host-a, pve (e.g. --host)" in err
+    code, _, err, _ = with_pve("truenas", "call", "system.info", "--host", "pve")
+    assert code == 2 and "needs a Host with the truenas capability; Host 'pve' has proxmox" in err

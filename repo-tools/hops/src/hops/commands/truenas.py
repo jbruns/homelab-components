@@ -89,7 +89,7 @@ def register(subparsers) -> None:
         help='one JSON value per positional parameter, e.g. \'[["name","=","tank"]]\'',
     )
     output.add_json_flag(call)
-    call.set_defaults(func=run)
+    call.set_defaults(func=run, stacks=False)
 
 
 def is_read(method: str) -> bool:

@@ -1,5 +1,8 @@
 """Subcommands. Each module here exposes `register(subparsers)`, which adds its parser and sets
 `func=run` with `run(args, ctx) -> int`. Modules are discovered, so a new command is a new file.
+
+A command works on Stacks unless its parser sets `stacks=False`. For a command on Stacks, hops picks only a Host
+that runs Stacks and refuses one with `deployer: none` before the command runs.
 """
 
 import importlib
