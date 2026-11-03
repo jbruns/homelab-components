@@ -1,7 +1,7 @@
 # homelab-validate
 
 Shared Repo Tooling: the repository checks a consuming repo runs in CI on every PR and in its pre-commit hook,
-for **every Host** its `hosts.yaml` declares. It reads the Hosts and their stack roots through
+for **every Host** its `hosts.yaml` declares that runs Stacks (a Host with `deployer: none` is skipped). It reads the Hosts and their stack roots through
 [`homelab_hosts`](../hosts/README.md), never runs on a Host, and needs no decryption key, production credential
 or Host access. Its messages state the rule each check enforces.
 
@@ -46,13 +46,13 @@ homelab-validate --host host-a monitoring        # one Host
 ```
 
 With no check named, every check runs, including `isolation`. Exit status is 1 if any check failed, or if
-`hosts.yaml` is invalid or `--host` names no Host.
+`hosts.yaml` is invalid or `--host` names no Host or a Host with `deployer: none`.
 
 ## Configuration
 
 - `--root DIR`: the repository to check (default: the one containing the working directory, found by its
   `hosts.yaml`).
-- `--host NAME`: check only this Host (default: every Host).
+- `--host NAME`: check only this Host (default: every Host that runs Stacks).
 - `--path NAME=PATH`: move one [input](#inputs), relative to `--root` or absolute, for every selected Host. It must
   exist (a directory or file, as the input needs) for every selected Host, or each check that reads it fails. Repeat
   it for several. To move an input differently per Host, run once per Host with `--host`.

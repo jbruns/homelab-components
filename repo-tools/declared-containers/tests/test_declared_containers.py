@@ -201,3 +201,11 @@ def test_reports_an_invalid_hosts_file(root):
 def test_accepts_a_hosts_file_naming_a_validate_command(root):
     write(root, {"hosts.yaml": "validate: [homelab-validate]\n" + textwrap.dedent(HOSTS_YAML)})
     assert run("--root", str(root)).returncode == 0
+
+
+def test_a_host_without_stacks_is_skipped_and_refused_by_name(root):
+    write(root, {"hosts.yaml": HOSTS_YAML + "      pve:\n        deployer: none\n        capabilities: [proxmox]\n"})
+    assert run("--root", str(root), "--out", str(root / "x.prom")).returncode == 0
+    assert (root / "x.prom").read_text() == EXPECTED
+    r = run("--root", str(root), "--host", "pve")
+    assert r.returncode == 1 and "Host 'pve' has deployer none, so it runs no Stacks" in r.stdout

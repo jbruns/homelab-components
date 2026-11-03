@@ -1,6 +1,7 @@
 # homelab-declared-containers
 
-Shared Repo Tooling: generates, for **each Host** a consuming repo's `hosts.yaml` declares, the desired state its
+Shared Repo Tooling: generates, for **each Host** a consuming repo's `hosts.yaml` declares that runs Stacks (a Host with `deployer: none` is
+skipped), the desired state its
 ContainerDown alert compares with cAdvisor. It reads the Hosts and their stack roots through
 [`homelab_hosts`](../hosts/README.md) and never runs on a Host.
 
@@ -47,11 +48,11 @@ node-exporter when the file changes.
 
 - `--root DIR`: the repository to read (default: the one containing the working directory, found by its
   `hosts.yaml`).
-- `--host NAME`: only this Host (default: every Host).
+- `--host NAME`: only this Host (default: every Host that runs Stacks).
 - `--out FILE`: the file to write or check instead of the default; needs `--host` when `hosts.yaml` declares more
-  than one Host.
+  than one Host that runs Stacks.
 
-Exit status is 1 when `hosts.yaml` is invalid, `--host` names no Host, a Service breaks a rule above, or (with
+Exit status is 1 when `hosts.yaml` is invalid, `--host` names no Host or a Host with `deployer: none`, a Service breaks a rule above, or (with
 `--check`) a file is stale; 2 on a usage error.
 
 ## Test
