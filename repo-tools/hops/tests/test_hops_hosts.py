@@ -131,8 +131,6 @@ def with_pve(repo, runner, capsys):
         ["exec", "web", "true"],
         ["deploys"],
         ["alerts"],
-        ["host"],
-        ["strays"],
         ["snapshot", "list"],
         ["volume", "move", "--issue", "1", "a", "b"],
     ],

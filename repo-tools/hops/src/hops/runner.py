@@ -1,7 +1,8 @@
 """The Runner: how hops runs docker on the Host.
 
 Every Host call is `ssh … user@host sudo -n docker …`, the least-privilege path the agent account
-has (sudoers allows only /usr/bin/docker). Connections are shared through ControlMaster so a
+has (sudoers allows only /usr/bin/docker). The one exception is `command`, a read that needs no sudo at all
+(e.g. `apt list --upgradable`). Connections are shared through ControlMaster so a
 command that makes several calls pays for one handshake. Nothing is installed on the Host.
 
 Tests swap `process` for a fake that records the argv (tests/conftest.py FakeHost).
@@ -93,6 +94,11 @@ class Runner:
             remote = shlex.join(["bash", "-c", f"set -o pipefail; {remote}"])
         what = " | ".join(shlex.join(["docker", *c]) for c in commands)
         return self._run(remote, what, input=input, capture=True, check=check, timeout=timeout)
+
+    def command(self, *argv: str, check: bool = True, timeout: float | None = None) -> Result:
+        """Run a read-only command on the Host as the SSH user, without sudo, and capture its output."""
+        what = shlex.join(argv)
+        return self._run(what, what, input=None, capture=True, check=check, timeout=timeout)
 
     def attach(self, *args: str, tty: bool = False) -> int:
         """Run `docker <args>` with this terminal attached (follow logs, interactive exec)."""

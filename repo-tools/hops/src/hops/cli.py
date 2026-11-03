@@ -11,6 +11,8 @@ from homelab_hosts import Host, Hosts
 from hops import commands, config
 from hops.declared import Declared
 from hops.errors import HopsError, UsageError
+from hops.proxmox import Client as ProxmoxClient
+from hops.proxmox import load_config as load_proxmox
 from hops.runner import Runner
 from hops.truenas import Client as TrueNASClient
 from hops.truenas import load_config as load_truenas
@@ -34,6 +36,7 @@ class Context:
         host: str | None = None,
         runner: Runner | None = None,
         truenas: TrueNASClient | None = None,
+        proxmox: ProxmoxClient | None = None,
         env=None,
         cwd: Path | None = None,
         stdin=None,
@@ -56,6 +59,8 @@ class Context:
             self.runner = runner
         if truenas is not None:
             self.truenas = truenas
+        if proxmox is not None:
+            self.proxmox = proxmox
 
     @cached_property
     def repo_root(self) -> Path:
@@ -101,10 +106,16 @@ class Context:
         """The Host's TrueNAS middleware; a ConfigError when this Host has none."""
         return TrueNASClient(load_truenas(self.repo_root, self.host, self.env))
 
+    @cached_property
+    def proxmox(self) -> ProxmoxClient:
+        """The Host's Proxmox VE API; a ConfigError when this Host has none."""
+        return ProxmoxClient(load_proxmox(self.repo_root, self.host, self.env))
+
     def close(self) -> None:
         """End connections a command opened."""
-        if "truenas" in vars(self):  # built (cached_property stores it on the instance)
-            self.truenas.close()
+        for client in ("truenas", "proxmox"):
+            if client in vars(self):  # built (cached_property stores it on the instance)
+                getattr(self, client).close()
 
 
 HOST_HELP = (
@@ -136,23 +147,57 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Settings whose values are API credentials: every error message is scrubbed of them, whichever command and
+# code path raised it (e.g. a record key or a URL that holds one).
+SECRET_SETTINGS = ("_PROXMOX_TOKEN_SECRET", "_TRUENAS_API_KEY")
+
+
+def scrub_secrets(text: str, ctx: Context) -> str:
+    """`text` with every configured API credential replaced by [REDACTED]. The values are read straight from the
+    settings, so no config error (a missing repo, an invalid URL) can switch scrubbing off."""
+    values = dict(ctx.env)
+    try:
+        values = config.load_values(ctx.repo_root, ctx.env)
+    except Exception:  # noqa: BLE001 - no repo or .env: the environment alone still holds the credentials
+        pass
+    secrets = {v for k, v in values.items() if k.startswith("HOPS_") and k.endswith(SECRET_SETTINGS) and v}
+    for client, attr in (("proxmox", "token_secret"), ("truenas", "api_key")):
+        if client in vars(ctx):
+            secrets.add(getattr(getattr(getattr(ctx, client), "cfg", None), attr, None) or "")
+    for secret in sorted(filter(None, secrets), key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    return text
+
+
 def main(argv: list[str] | None = None, *, ctx: Context | None = None) -> int:
     args = build_parser().parse_args(argv)
     ctx = ctx or Context()
     if args.host is not None:
         ctx.host_name = args.host
     ctx.stacks = getattr(args, "stacks", True)  # a command that needs no Stacks sets stacks=False
+    if getattr(args, "any_named_host", False) and ctx.host_name is not None:
+        ctx.stacks = False  # e.g. hops host: Stacks by default, and any Host --host names
     ctx.capability = getattr(args, "capability", None)  # a command on a Host API picks a Host with it
     try:
         if ctx.capability is not None or (ctx.stacks and ctx.host_name is not None):
             _ = ctx.host  # refuse a Host the command cannot use before it reads or touches anything
         return args.func(args, ctx)
     except HopsError as exc:
-        ctx.stderr.write(f"hops: error: {exc}\n")
+        ctx.stderr.write(f"hops: error: {scrub_secrets(str(exc), ctx)}\n")
         return exc.exit_code
     except BrokenPipeError:  # e.g. `hops status | head`
         # Python flushes stdout again at exit; point it at devnull so that flush cannot fail.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
+    except Exception as exc:
+        # A bug: keep its traceback, unless a message in it holds a credential.
+        chain, seen = [], exc
+        while seen is not None and seen not in chain:
+            chain.append(seen)
+            seen = seen.__cause__ or seen.__context__
+        if all(scrub_secrets(str(e), ctx) == str(e) for e in chain):
+            raise
+        ctx.stderr.write(f"hops: error: {type(exc).__name__}: {scrub_secrets(str(exc), ctx)}\n")
+        return 1
     finally:
         ctx.close()

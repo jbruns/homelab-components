@@ -30,9 +30,11 @@ Python 3.11 or later. It brings PyYAML, websocket-client (for TrueNAS) and `home
 
 - `stack_root`: the directory holding `<stack>/compose.yaml`. Names resolve against it.
 - `deployer`: `doco-cd`, or `none` for a Host that runs no Stacks (no `stack_root`, no `doco_cd`). Every
-  command that acts on Stacks refuses a `deployer: none` Host (exit 2); only a Host API's `call`/`batch` (e.g.
-  `truenas call` on a `truenas` Host) reach one today.
-- `capabilities`: `truenas` and `zfs` switch on the commands that need them ([Capabilities](#capabilities)).
+  command that acts on Stacks refuses a `deployer: none` Host (exit 2); a Host API's `call`/`batch` (e.g.
+  `truenas call` on a `truenas` Host) reach one, and so do `host` and `strays` on a `proxmox` Host
+  ([Guests](#guests-on-a-proxmox-ve-host)).
+- `capabilities`: `truenas`, `zfs` and `proxmox` switch on the commands that need them
+  ([Capabilities](#capabilities)).
 - `doco_cd`: where doco-cd is: its Stack (default `doco-cd`), its API key file (default
   `doco-cd/api_secret.sops.txt` under the stack root), its address (default `doco-cd:80`) and the network a
   transport reaches it on (default `metrics`). `recreate` and `deploys` use them; `stop`, `strays` and
@@ -47,12 +49,14 @@ and `validate`, the command `bump` runs before it commits.
 - Else the Host whose stack root holds the working directory (`cd nas/` then `hops status`).
 - Else the only Host, when `hosts.yaml` declares one.
 
-A command that acts on Stacks (all but `truenas call`/`batch`) considers only Hosts that run Stacks: "the only
+A command that acts on Stacks (all but the `call`/`batch` pairs) considers only Hosts that run Stacks: "the only
 Host" is the only one that runs Stacks, so a repo with one `doco-cd` Host beside `deployer: none` Hosts needs no
 `--host`, and `--host` naming a `deployer: none` Host is refused before anything else (exit 2):
-`Host 'pve' has deployer none, so it runs no Stacks; Hosts with Stacks: nas (e.g. --host)`.
+`Host 'pve' has deployer none, so it runs no Stacks; Hosts with Stacks: nas (e.g. --host)`. `host` and `strays`
+are the exception: without `--host` they pick as above, and `--host` may name any Host, so
+`hops host --host pve` reports a Proxmox VE Host's Guests ([Guests](#guests-on-a-proxmox-ve-host)).
 
-A command on a Host API (`truenas call`/`batch`) considers only Hosts with that API's capability, whether or not
+A command on a Host API (`truenas call`/`batch`, `proxmox call`/`batch`) considers only Hosts with that API's capability, whether or not
 they run Stacks, in the same way: a repo with one `truenas` Host beside a `deployer: none` Proxmox Host needs no
 `--host`, and `--host` naming a Host without the capability is refused before anything connects (exit 2):
 `Host 'pve' lacks the truenas capability this command needs; Hosts with it: nas (e.g. --host)`.
@@ -77,11 +81,17 @@ under `.worktrees/` have no `.env` of their own, so they use the main one. Envir
 | `HOPS_<NAME>_TRUENAS_API_KEY` | for TrueNAS reads on a `truenas` Host | A TrueNAS API key |
 | `HOPS_<NAME>_TRUENAS_INSECURE` | no | `1`/`true`/`yes`/`on` skips TLS verification for a self-signed certificate |
 | `HOPS_<NAME>_HOST_DATASETS` | no | Dataset names, comma- or space-separated, that `hops host` also reports |
+| `HOPS_<NAME>_PROXMOX_URL` | for Proxmox VE reads on a `proxmox` Host | The API's address, `https://<host>:8006`; no path, user name or password |
+| `HOPS_<NAME>_PROXMOX_TOKEN_ID` | for Proxmox VE reads on a `proxmox` Host | An API token ID, `user@realm!name` |
+| `HOPS_<NAME>_PROXMOX_TOKEN_SECRET` | for Proxmox VE reads on a `proxmox` Host | The token's secret |
+| `HOPS_<NAME>_PROXMOX_INSECURE` | no | `1`/`true`/`yes`/`on` skips TLS verification for the Host's self-signed certificate |
 
 A missing required key fails the command that needs it (exit 2), naming the key and the files searched; values are
 never printed. Commands that only use SSH need only the SSH keys, even on a `truenas` Host. The TrueNAS keys are
 read only when a command talks to TrueNAS: `truenas call`, `truenas batch` and `snapshot` fail without them, while `host` and
-`strays` show what they can and name the missing keys.
+`strays` show what they can and name the missing keys. The Proxmox VE keys are read only by `proxmox call`,
+`proxmox batch`, and `host` and `strays` on a `proxmox` Host. On a Host that runs no Stacks, the SSH keys are
+needed only where `hops host` falls back to SSH for pending updates (below); the SSH user needs no `sudo` for it.
 
 - **SSH:** `ssh [-i $HOPS_<NAME>_SSH_KEY] $HOPS_<NAME>_SSH_USER@$HOPS_<NAME>_SSH_HOST sudo -n docker …` with
   `BatchMode=yes`, so `hops` never prompts. Calls share one connection
@@ -94,6 +104,16 @@ read only when a command talks to TrueNAS: `truenas call`, `truenas batch` and `
   whose privilege roles are only `READONLY_ADMIN`, `SNAPSHOT_WRITE` and `SNAPSHOT_DELETE`. The key goes only
   into the login message; errors print it as `[REDACTED]`. TLS is verified against the default CA
   bundle unless `TRUENAS_INSECURE` says otherwise.
+- **Proxmox VE:** HTTPS GETs to `<PROXMOX_URL>/api2/json/<path>`, one kept-alive connection per command, with
+  the token in an `Authorization: PVEAPIToken=<id>=<secret>` header (no login, no ticket). Only `GET` is ever
+  sent. Give the token only the `PVEAuditor` role on `/` (with privilege separation): every read below but pending
+  updates needs no more, and errors print its secret as `[REDACTED]`. Connecting times out after 5 s, as a Host that is off
+  answers nothing: `host` and `strays` then report the Host as off (exit 0), while `proxmox call`/`batch`
+  fail (exit 1, "off or unreachable"). A read times out after 30 s. A `401` (the token rejected) is fatal and
+  names the two token keys. TLS is verified against the default CA bundle unless `PROXMOX_INSECURE` says
+  otherwise; a failed verification names that key. Only a connection that is refused, times out, has no route
+  or whose name does not resolve means off; any other TLS failure (e.g. a plain-HTTP port) is fatal (exit 1).
+  A `PROXMOX_URL` that does not parse fails (exit 2) without echoing it.
 
 ### Capabilities
 
@@ -104,6 +124,7 @@ in `hosts.yaml`, and refuses (exit 2) before touching the Host without it, namin
 |---|---|
 | `truenas` | `hops truenas call` and `batch`; `hops host`'s pools, datasets and task sections (without it, `hops host` shows only Docker, with a note) |
 | `truenas` and `zfs` | `hops snapshot take/list/release`; `volume move --take-snapshot`; `volume move` with a Rollback Snapshot; Rollback Snapshots in `hops host` and `hops strays` |
+| `proxmox` | `hops proxmox call` and `batch`; `hops host` and `hops strays` on a Host that runs no Stacks ([Guests](#guests-on-a-proxmox-ve-host)) |
 | neither | everything else. `volume move` keeps a [Rollback Volume](#rollback-volumes) instead of a Rollback Snapshot, and `strays` treats `ix-` names as ordinary (only a `truenas` Host has TrueNAS Apps) |
 
 ## Targets
@@ -166,6 +187,10 @@ Every command in this table is **read-only**. Each takes `--json`.
 | `hops host` | `docker system df`; on a `truenas` Host also pools, key datasets, Rollback Snapshots (`zfs`), and the last run of each periodic snapshot and Cloud Sync task (see [host](#host)) |
 | `hops truenas call <method> [json-param…]` | `truenas` Host only. The result of one allowlisted TrueNAS read method (see [truenas call](#truenas-call)), as JSON with credentials redacted. For what other commands lack. |
 | `hops truenas batch --json < calls.json` | `truenas` Host only. Many `truenas call`s over one connection and one login (see [truenas batch](#truenas-batch)). |
+| `hops host --host <proxmox Host> [--record DIR]` | A `proxmox` Host that runs no Stacks: its nodes (version, pending updates) and every Guest (Kept, Scratch or Stray; state; newest vzdump archive's age; dual-homing), and the Kept Guests it lacks (see [Guests](#guests-on-a-proxmox-ve-host)) |
+| `hops strays --host <proxmox Host> [--record DIR]` | The Stray Guests on that Host; never removes anything |
+| `hops proxmox call <path> [json-param]` | `proxmox` Host only. The result of one allowlisted Proxmox VE API GET (see [proxmox call](#proxmox-call)), as JSON with credentials redacted |
+| `hops proxmox batch --json < calls.json` | `proxmox` Host only. Many `proxmox call`s over one connection (see [proxmox batch](#proxmox-batch)) |
 
 `alerts` authenticates without sending the password to this machine. The Host pipes the monitoring Stack's Prometheus's
 Alertmanager password file (`/run/secrets/prometheus_password`) from the prometheus container
@@ -350,6 +375,71 @@ echo '[{"method": "system.info"}, {"method": "pool.query", "params": [[["name", 
 [Adding a command](#adding-a-command).
 - Output is the method's result as JSON, with or without `--json`.
 
+### proxmox call
+
+On a `proxmox` Host only. A passthrough for auditing the Host's configuration where no other command covers it,
+e.g. `hops proxmox call nodes/pve/storage '{"content": "backup"}'`. The method is an API path relative to
+`/api2/json` (leading and trailing `/` ignored); the one optional `json-param` is an object of query
+parameters (a boolean is sent as `1`/`0`). Only `GET` is sent. It fails closed: a path or query parameter not
+listed here is refused (exit 2) before connecting. A refusal states the rule and what is allowed, never the
+path, name or value refused, and every result and error `call` or `batch` prints has the configured token secret
+scrubbed, in keys and values alike.
+The secret to scrub is read straight from `HOPS_<NAME>_PROXMOX_TOKEN_SECRET`, so an invalid URL or token ID
+cannot switch scrubbing off. An API error (e.g. `403 Permission check failed`, `500`) prints the status and
+Proxmox VE's reason, plus the names (never the values) of any parameters it rejected.
+
+- **Allowed paths**, with the query parameters each takes (`{node}`, `{storage}` and `{name}` are names of
+  letters, digits, `-`, `_` and `.`; `{vmid}` a Guest ID; `{pos}` a rule's position):
+
+  | Path | Query parameters |
+  |---|---|
+  | `nodes`; `nodes/{node}/version`; `nodes/{node}/apt/update` | none |
+  | `nodes/{node}/qemu` | `full` |
+  | `nodes/{node}/lxc`; `nodes/{node}/{qemu,lxc}/{vmid}/status/current` | none |
+  | `nodes/{node}/{qemu,lxc}/{vmid}/config` | `current`, `snapshot` |
+  | `nodes/{node}/storage` | `content`, `enabled`, `format`, `storage`, `target` |
+  | `nodes/{node}/storage/{storage}/content` | `content`, `vmid` |
+  | `nodes/{node}/network` | `type` |
+  | `nodes/{node}/firewall`, `…/firewall/rules`, `…/firewall/rules/{pos}`, `…/firewall/options` | none |
+  | `cluster/resources` | `type` |
+  | `cluster/backup` | none |
+  | `cluster/firewall`, `…/aliases`, `…/aliases/{name}`, `…/groups`, `…/groups/{group}`, `…/groups/{group}/{pos}`, `…/ipset`, `…/ipset/{name}`, `…/macros`, `…/options`, `…/rules`, `…/rules/{pos}` | none |
+  | `cluster/firewall/refs` | `type` |
+  | `cluster/notifications`, `…/endpoints`, `…/endpoints/{gotify,sendmail,smtp,webhook}`, the same `/{name}`, `…/targets`, `…/matchers`, `…/matchers/{name}`, `…/matcher-fields`, `…/matcher-field-values` | none |
+  | `access/users` | `enabled`, `full` |
+  | `access/acl` | none |
+  | `storage` | `type` |
+
+  Each was checked against the Proxmox VE 9 API schema (the API viewer's `apidoc.js`, version 9.2.13) for the
+  permission its `GET` needs and for secret-bearing fields, which the redaction below masks. Everything else
+  is refused, for example `access/ticket`, a Guest's `vncproxy`/`termproxy`, `nodes/{node}/firewall/log`
+  (needs `Sys.Syslog`), `nodes/{node}/apt/changelog` (needs `Sys.Modify`), and an IP set's entries
+  (`cluster/firewall/ipset/{name}/{cidr}`: a CIDR holds a `/`). Widen the list here and in
+  `hops/commands/proxmox.py` together, after checking the path's schema.
+- **`nodes/{node}/apt/update` needs `Sys.Modify`**, which `PVEAuditor` lacks, so with an audit-only token it
+  answers `403`. It stays allowed for a token that has it; `hops host` falls back to SSH for it (below).
+- **`access/acl`** lists only the entries the token may change, so it is usually empty for an audit token.
+- **Redaction**, as defense in depth behind the allowlist. A field whose name contains `password`, `passwd`,
+  `secret`, `token` or `key` prints as `"[REDACTED]"`, at any depth (`null` and booleans stay visible). So a
+  Guest's `cipassword` and `sshkeys`, a storage's `password`, `keyring` or `encryption-key`, an SMTP or Gotify
+  target's `password`/`token`, and a user's two-factor `keys` are masked. Names that only look secret are
+  kept: `keyboard` (a VM's keyboard layout), `tokens` (a user's token list, walked into) and `tokenid` (a
+  token's name; its secret is never readable). In a Guest's `config`, its free-text and raw fields, `args`,
+  `lxc`, `env`, `entrypoint` and `description`, are redacted too. Under `cluster/notifications/`, a webhook's
+  `header` and `secret` entries keep their names and lose their values (`name=Authorization,value=[REDACTED]`),
+  its `body` is redacted, and its `url` (which can carry a token) prints as `"[REDACTED sha256:<12 hex
+  digits>]"`, the first 12 hex digits of the URL's SHA-256, so an audit can compare it with the URL it
+  expects. In every string, a URL's user name and password print as `scheme://[REDACTED]@host…`.
+
+### proxmox batch
+
+`hops proxmox batch --json < calls.json` runs many `proxmox call`s over one connection, exactly as
+[truenas batch](#truenas-batch) does: the same input (`params` holds at most the one query-parameter object),
+the same per-call checks, refusals and redaction, the same output and exit codes. A per-call API error (e.g.
+a `403` for one path) becomes that call's `error` and the batch goes on; a rejected token or a lost
+connection ends it. A sent call's `params` print with credential-named parameters masked and the configured
+token secret scrubbed.
+
 ### exec and db
 
 | Command | What it does | Guardrail class |
@@ -482,7 +572,10 @@ the request is sent from a transport container on the Host's `doco_cd.network` (
 `exec` with a command and `db -e` return the remote command's own exit code. `db --users` returns 1 when
 a Datastore's users differ from its label.
 
-Errors go to stderr as `hops: error: …`, including with `--json`.
+Errors go to stderr as `hops: error: …`, including with `--json`. Every error, from any command, has each
+configured API credential (`HOPS_<NAME>_PROXMOX_TOKEN_SECRET`, `HOPS_<NAME>_TRUENAS_API_KEY`) scrubbed, e.g. a
+record key or a URL that holds one. An unexpected error whose message holds one prints scrubbed, without its
+traceback (exit 1).
 
 ## Rollback Snapshots
 
@@ -1041,6 +1134,144 @@ continue, and the exit code is 1.
 - `snapshots`: expired Rollback Snapshots; `size` is bytes (`used`). `null` when they were not
   checked, and then `snapshots_unchecked` says why (no `truenas`/`zfs` capability, or TrueNAS's error).
 
+## Guests on a Proxmox VE Host
+
+On a Host that runs no Stacks (`deployer: none`) and has the `proxmox` capability, `hops host --host <name>` and
+`hops strays --host <name>` report its **Guests** (VMs, type `qemu`, and containers, `lxc`) through the Proxmox VE
+API, against the consuming repo's record of the Host. Both take `--json`, and both are read-only. A Guest is:
+
+- **Kept** when the record lists its ID (and its type, if the record gives one);
+- **Scratch** when it carries the `scratch` tag (any case), so it may be removed at any time;
+- a **Stray** otherwise.
+
+A Kept Guest tagged `scratch` stays Kept, with a note; a Guest whose type differs from the record's is not that
+Kept Guest, with a note.
+
+The Host is often off by design. When nothing answers on the API port, both commands print `Host <name>: off`
+(`"state": "off"`) and exit 0. Both scrub the configured token secret from every string they print, text or
+`--json`.
+
+### The record
+
+hops reads `host/<Host name>/` in the repo (the Host's `hosts.yaml` key, e.g. `host/pve/`), or the directory
+`--record DIR` names, relative to the working directory. A `hosts.yaml` field would need a schema change for
+every consuming repo; a convention path keeps the record beside the rest of the Host's declared state, and
+`--record` covers any other layout. hops reads only these keys and ignores every other one, so the files can
+hold the rest of the Host's declared state:
+
+```yaml
+# guests.yaml: one top-level key per Kept Guest, named as Proxmox VE names it
+router:
+  vmid: 100 # required: the Guest's ID, from 100
+  type: qemu # optional: qemu or lxc
+dns:
+  vmid: 101
+  type: lxc
+```
+
+```yaml
+# network.yaml
+exclusive_networks: # optional: the networks a Guest may join only one of
+  networks: # two or more, each a bridge and an optional VLAN tag (without one: the bridge's untagged traffic)
+    lan: {bridge: vmbr0, tag: 10}
+    iot: {bridge: vmbr0, tag: 20}
+    mgmt: {bridge: vmbr1}
+  may_join_several: [100] # optional: the IDs of the Guests that may join more than one, e.g. a router
+```
+
+A missing `guests.yaml` lists no Kept Guests, so every untagged Guest is a Stray; a missing
+`exclusive_networks` leaves dual-homing unchecked. Both say so in a note. A malformed record (a Guest without
+a whole-number `vmid` of 100 or more, a duplicate `vmid`, an unknown `type`, fewer than two networks, a VLAN
+tag outside 1–4094, two networks on the same bridge and tag) fails the command (exit 2), naming the file and key.
+
+### `host` on a Proxmox VE Host
+
+- **Nodes:** each node's status (`nodes`), and for an online node its version (`nodes/{node}/version`) and
+  pending package updates (`nodes/{node}/apt/update`: the package lists the node refreshes daily). Listing
+  those needs `Sys.Modify`; when the token lacks it (`403`) and the Host has a single node, hops runs
+  `apt list --upgradable` over SSH as the SSH user, without `sudo`, and says so in `source`.
+- **Guests** (`cluster/resources?type=vm`): ID, name, type, kind, state, node, and:
+  - the newest vzdump archive and its age, from every active storage holding backups
+    (`nodes/{node}/storage?content=backup&enabled=1`, then `…/storage/{storage}/content?content=backup`;
+    a shared storage is read once, from the first node where it is active and its content read succeeds; an
+    inactive one is skipped with a note);
+  - dual-homing, when the record declares exclusive networks: the exclusive networks the Guest has an
+    interface on (each `netN`'s `bridge`, plus its `tag` or each VLAN in its `trunks`, in its `config`), and
+    whether that is more than one. The rule is conservative:
+    - an interface with a `tag` joins only that VLAN's network (on a bridge that is not VLAN-aware, Proxmox VE
+      puts it on a per-VLAN sub-bridge, so the tag isolates it);
+    - an interface with `trunks` joins each listed VLAN's network and the bridge's untagged network;
+    - an interface with neither joins every exclusive network on its bridge, whatever the bridge's
+      VLAN-awareness: a VLAN-aware bridge passes it every VLAN, and one without VLAN filtering forwards tagged
+      frames untouched.
+
+    The text output shows `yes`, `yes (allowed)` (the Guest is in `may_join_several`), `no`, or `-` when not
+    checked.
+- **Missing:** the Kept Guests the Host does not have.
+
+A read that fails leaves its field `null` with a note naming the read, the status and the path (e.g.
+`backups on storage nas: Proxmox VE read failed (500 on nodes/pve/storage/nas/content)`), never Proxmox VE's
+text; the rest still show. If the Host stops answering partway, the remaining reads are skipped with a note. A
+rejected token is fatal (exit 1).
+
+### `strays` on a Proxmox VE Host
+
+Lists the Stray Guests (ID, name, type, kind, state, node) and exits 0, Strays or not. It reads only
+`cluster/resources`. `--apply` is refused (exit 2): hops never removes a Guest.
+
+### `host --json` on a Proxmox VE Host
+
+```json
+{
+  "host": "pve",
+  "state": "on",
+  "record": "host/pve",
+  "nodes": [
+    {"node": "pve", "status": "online", "version": "9.1.4",
+     "updates": {"source": "ssh", "count": 1,
+                 "packages": [{"package": "pve-manager", "version": "9.1.5", "old_version": "9.1.4"}]}}
+  ],
+  "guests": [
+    {"id": 100, "name": "router", "type": "qemu", "node": "pve", "kind": "kept", "state": "running",
+     "template": false, "tags": [],
+     "backup": {"volid": "nas:backup/vzdump-qemu-100-….vma.zst", "time": "2026-10-21T12:00:00Z", "age_days": 2.0},
+     "exclusive_networks": ["lan", "iot"], "dual_homed": true, "dual_homing_allowed": true}
+  ],
+  "missing": [{"id": 102, "name": "nas"}],
+  "notes": []
+}
+```
+
+- `state`: `on`, or `off` when the Host does not answer; then `nodes`, `guests` and `missing` are `null` and
+  `notes` says why.
+- `record`: the record directory, relative to the repo root when inside it.
+- `nodes[].version` and `updates` are `null` for a node that is not online or whose read failed. `updates.source`
+  is `api` or `ssh`.
+- `guests[].kind`: `kept`, `scratch` or `stray`. `state`: Proxmox VE's status, e.g. `running` or `stopped`.
+  `tags`: the Guest's tags as written. `template`: a template, not a running Guest.
+- `backup`: the newest vzdump archive, or `null` when none was found. `time` is UTC; `age_days` is rounded to a
+  tenth.
+- `exclusive_networks` and `dual_homed`: `null` when not checked (no `exclusive_networks` in the record, the
+  node offline, or the config read failed). `dual_homing_allowed`: the Guest is in `may_join_several`.
+- `guests` and `missing` are `null` when `cluster/resources` could not be read.
+
+### `strays --json` on a Proxmox VE Host
+
+```json
+{
+  "host": "pve",
+  "state": "on",
+  "record": "host/pve",
+  "guests": [
+    {"id": 300, "name": "mystery", "type": "lxc", "node": "pve", "kind": "stray", "state": "running",
+     "template": false, "tags": []}
+  ],
+  "notes": []
+}
+```
+
+`guests` holds only Strays, and is `null` when the Host is off.
+
 ## `bump`: pin a newer image through a PR
 
 ```sh
@@ -1112,8 +1343,15 @@ Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-
   object, build the record from named fields, as `hops/hygiene.py` does, rather than filtering it. On a Host
   without the `truenas` capability, using `ctx.truenas` raises a ConfigError; on one with it, a missing TrueNAS
   key already fails `ctx.runner` too.
+- `ctx.proxmox` (`hops.proxmox.Client`) is the only way to reach Proxmox VE; `get(path, params)` returns a GET's
+  `data`, raising `hops.proxmox.ProxmoxError` (with `status` and `path`) for an error answer and
+  `hops.proxmox.HostOff` when the Host does not answer. `proxmox.redact(data, path)` masks credentials before
+  printing. The Guest reads live in `hops/guests.py`. `ctx.runner.command(*argv)` runs a read on the Host as the
+  SSH user without `sudo` (`apt list --upgradable`); everything else goes through `sudo -n docker`.
 - A command acts on Stacks unless its parser sets `stacks=False` (`set_defaults(func=run, stacks=False)`);
-  then `ctx.host` may be a `deployer: none` Host, which has no `stack_root`, `doco_cd` or `ctx.declared`.
+  then `ctx.host` may be a `deployer: none` Host, which has no `stack_root`, `doco_cd` or `ctx.declared`. A
+  command that acts on Stacks by default but also on any Host `--host` names (`host`, `strays`) sets
+  `any_named_host=True`, and branches on `ctx.host.runs_stacks`.
 - A Host API's read-only `call`/`batch` pair comes from `hops.apicall.register(sub, Backend, ...)`. The front end
   owns parsing, the refusal checks' place, the output schema and exit codes. The backend class (TrueNAS's is in
   `hops/commands/truenas.py`) has `api` (the command group) and `capability`, by which both commands pick their
@@ -1140,7 +1378,9 @@ HOPS_CONSUMER_REPO=~/src/<repo> HOPS_CONSUMER_HOST=<host> .venv/bin/pytest -m li
 The `fake_host` fixture (`tests/conftest.py`) replaces the ssh process. It records each argv and
 answers with canned `docker` output. The `hops` fixture runs the CLI against a fixture repo.
 `hops_fakes.FakeTrueNAS` stands in for the TrueNAS WebSocket: pass its `connect` to
-`truenas.Client(..., connect=)` and its `methods` answer each JSON-RPC call. `test_hops_apicall.py` drives the
+`truenas.Client(..., connect=)` and its `methods` answer each JSON-RPC call. `hops_fakes.FakeProxmox` stands in
+for the Proxmox VE API: pass its `connect` to `proxmox.Client(..., connect=)`; its `routes` map an API path to
+fabricated `data` or an error status, and `off=True` makes the Host unreachable. `test_hops_apicall.py` drives the
 `call`/`batch` front end with a fake backend.
 `hops_fakes.FakeSnapshots` builds on it with an in-memory set of snapshots; pass its `client` as
 `hops(..., truenas=)`. Tests fix today's date by patching `hops.snapshots.now`. The fixture repo declares

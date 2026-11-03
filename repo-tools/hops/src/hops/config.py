@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import homelab_hosts
-from homelab_hosts import Host, Hosts, HostsError, TrueNasSettings
+from homelab_hosts import Host, Hosts, HostsError, ProxmoxSettings, TrueNasSettings
 
 from hops.errors import ConfigError
 
@@ -115,6 +115,11 @@ def _settings(read, repo_root: Path, host: Host, env):
 def truenas_settings(repo_root: Path, host: Host, env=None) -> TrueNasSettings:
     """The Host's TrueNAS URL and API key. Only a TrueNAS client needs them: SSH commands never ask."""
     return _settings(homelab_hosts.truenas_settings, repo_root, host, env)
+
+
+def proxmox_settings(repo_root: Path, host: Host, env=None) -> ProxmoxSettings:
+    """The Host's Proxmox VE URL and API token. Only a Proxmox VE client needs them: SSH commands never ask."""
+    return _settings(homelab_hosts.proxmox_settings, repo_root, host, env)
 
 
 def load_host(repo_root: Path, host: Host, env=None) -> HostConfig:
