@@ -9,7 +9,7 @@ on the Host.
   commands that need one fail with a ConfigError (Unavailable).
 - `Client(cfg).call(method, *params)` returns the method's result; `Client(cfg).job(...)` calls a
   method that starts a job and waits for the job's result. The client connects and logs in on first
-  use; `close()` ends the connection. TrueNAS rate-limits logins (EBUSY), so a refused login is
+  use (or `open()`); `close()` ends the connection. TrueNAS rate-limits logins (EBUSY), so a refused login is
   retried on a new connection after each of LOGIN_BACKOFF's pauses before the error is raised.
 - The API key travels only inside the login message: never in an argv or a log, and it is replaced
   by [REDACTED] in every error hops raises.
@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 from homelab_hosts import Host, env_prefix
 
 from hops import config
-from hops.errors import ConfigError, HopsError, HostTimeout
+from hops.errors import CallError, ConfigError, HopsError, HostTimeout
 
 REDACTED = "[REDACTED]"
 TIMEOUT = 30.0
@@ -81,7 +81,7 @@ class Transport(Protocol):
 Connect = Callable[..., Transport]  # connect(url, *, verify: bool, timeout: float) -> Transport
 
 
-class TrueNASError(HopsError):
+class TrueNASError(CallError):
     """A TrueNAS method returned an error."""
 
     def __init__(self, message: str, errname: str | None = None, method: str | None = None):
@@ -111,9 +111,13 @@ class Client:
             ws, self._ws = self._ws, None
             ws.close()
 
-    def call(self, method: str, *params):
+    def open(self) -> None:
+        """Connect and log in, unless connected already."""
         if self._ws is None:
             self._open()
+
+    def call(self, method: str, *params):
+        self.open()
         return self._rpc(method, list(params))
 
     def job(self, method: str, *params, timeout: float | None = None):

@@ -1,9 +1,9 @@
-"""hops truenas call: a read-only passthrough to the TrueNAS middleware, for gaps in hops."""
+"""hops truenas call/batch: a read-only passthrough to the TrueNAS middleware, for gaps in hops. The front end is
+hops.apicall; this is its TrueNAS backend."""
 
-import json
 import re
 
-from hops import output, truenas
+from hops import apicall, truenas
 from hops.errors import UsageError
 
 HELP = "read-only TrueNAS middleware calls (JSON-RPC), for what other hops commands lack"
@@ -74,22 +74,15 @@ METHOD = re.compile(r"[a-z0-9_]+(\.[a-z0-9_]+)+")
 def register(subparsers) -> None:
     p = subparsers.add_parser("truenas", help=HELP, description=HELP + ".")
     sub = p.add_subparsers(dest="truenas_command", metavar="<command>", required=True)
-    call = sub.add_parser(
-        "call",
-        help="call a read method and print its result, with credentials redacted",
-        description=f"Call a TrueNAS read method ({READS}) in an allowed namespace (see {README}). "
+    apicall.register(
+        sub,
+        Backend,
+        call_description=f"Call a TrueNAS read method ({READS}) in an allowed namespace (see {README}). "
         f"Every other method is refused before anything is sent. Credential-looking fields are printed as "
         f"{truenas.REDACTED}.",
+        method_help="e.g. system.info or pool.query",
+        param_help='one JSON value per positional parameter, e.g. \'[["name","=","tank"]]\'',
     )
-    call.add_argument("method", help="e.g. system.info or pool.query")
-    call.add_argument(
-        "params",
-        nargs="*",
-        metavar="json-param",
-        help='one JSON value per positional parameter, e.g. \'[["name","=","tank"]]\'',
-    )
-    output.add_json_flag(call)
-    call.set_defaults(func=run, stacks=False)
 
 
 def is_read(method: str) -> bool:
@@ -110,24 +103,33 @@ def check_query_options(options: dict) -> None:
         )
 
 
-def run(args, ctx) -> int:
-    ctx.require("truenas", what="hops truenas call")
-    if not is_read(args.method):
-        raise UsageError(f"{args.method} is not a read method; hops truenas call only reads ({READS})")
-    if not is_allowed(args.method):
-        raise UsageError(
-            f"{args.method} is not on hops truenas call's allowlist, as its results may hold "
-            f"secrets; the allowed namespaces are listed in {README}"
-        )
-    params = []
-    for text in args.params:
-        try:
-            params.append(json.loads(text))
-        except json.JSONDecodeError as exc:
-            raise UsageError(f"parameter is not JSON: {text!r} ({exc.msg})") from None
-    for param in params:
-        if isinstance(param, dict):
-            check_query_options(param)
-    result = ctx.truenas.call(args.method, *params)
-    output.print_json(truenas.redact(result, args.method), ctx.stdout)
-    return 0
+class Backend:
+    """TrueNAS's JSON-RPC middleware behind hops.apicall: ctx.truenas (one connection, one login with the
+    EBUSY backoff), the read allowlist above, and truenas.redact."""
+
+    api = "truenas"
+    capability = "truenas"
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def check(self, method: str, params: list) -> None:
+        if not is_read(method):
+            raise UsageError(f"{method} is not a read method; hops truenas call only reads ({READS})")
+        if not is_allowed(method):
+            raise UsageError(
+                f"{method} is not on hops truenas call's allowlist, as its results may hold "
+                f"secrets; the allowed namespaces are listed in {README}"
+            )
+        for param in params:
+            if isinstance(param, dict):
+                check_query_options(param)
+
+    def open(self) -> None:
+        self.ctx.truenas.open()
+
+    def call(self, method: str, params: list):
+        return self.ctx.truenas.call(method, *params)
+
+    def redact(self, result, method: str):
+        return truenas.redact(result, method)

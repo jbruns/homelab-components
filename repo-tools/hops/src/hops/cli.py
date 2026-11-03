@@ -36,6 +36,7 @@ class Context:
         truenas: TrueNASClient | None = None,
         env=None,
         cwd: Path | None = None,
+        stdin=None,
         stdout=None,
         stderr=None,
         stacks: bool = True,
@@ -44,6 +45,7 @@ class Context:
         self.host_name = host
         self.stacks = stacks  # whether the command works on Stacks: then only a Host that runs them is picked
         self.cwd = cwd
+        self.stdin = stdin or sys.stdin
         self.stdout = stdout or sys.stdout
         self.stderr = stderr or sys.stderr
         if repo_root is not None:
