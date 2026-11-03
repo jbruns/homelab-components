@@ -39,6 +39,9 @@ class FakeBackend:
     def redact(self, result, method):
         return {k: "[REDACTED]" if k == "secret" else v for k, v in result.items()}
 
+    def scrub(self, text):
+        return text.replace("fake-api-key", "[REDACTED]")
+
     def redact_params(self, params):
         return [{**p, "secret": "[REDACTED]"} if isinstance(p, dict) and "secret" in p else p for p in params]
 
@@ -136,6 +139,20 @@ def test_a_failed_login_is_fatal_even_when_it_is_an_api_error():
     assert error is failure and backend.opens == 1
 
 
+def test_batch_input_errors_never_echo_a_callers_key_names():
+    with pytest.raises(UsageError) as e:
+        apicall.parse_calls('[{"method": "a.read", "fake-api-key": 1}]')
+    assert "fake-api-key" not in str(e.value)
+
+
+def test_every_printed_batch_error_and_method_is_scrubbed():
+    failure = HopsError("lost fake at fake-api-key")
+    backend = FakeBackend({"a.read": CallError("fake a.read: bad fake-api-key"), "b.read": failure})
+    results, error = apicall.batch(backend, [("write.fake-api-key", []), ("a.read", []), ("b.read", [])])
+    assert "fake-api-key" not in repr(results) + str(error)
+    assert results[0]["method"] == "write.[REDACTED]"
+
+
 def test_a_call_parameter_that_is_not_json_is_not_echoed():
     with pytest.raises(UsageError) as e:
         apicall.parse_params(["{}", '{"password": "fake-param-secret"'])
@@ -150,7 +167,7 @@ def test_a_call_parameter_that_is_not_json_is_not_echoed():
         ('["a.read"]', "call 1: must be an object"),
         ('[{"params": []}]', "call 1: method must be a non-empty string"),
         ('[{"method": "a.read", "params": {"x": 1}}]', "call 1: params must be a list"),
-        ('[{"method": "a.read"}, {"method": "b.read", "id": 3}]', "call 2: unknown key id"),
+        ('[{"method": "a.read"}, {"method": "b.read", "id": 3}]', "call 2: only method and params are allowed"),
     ],
 )
 def test_malformed_batch_input_is_a_usage_error(text, problem):

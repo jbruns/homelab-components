@@ -11,6 +11,9 @@ redaction, behind `Backend`:
 - `call(method, params)` sends one call and returns its raw result. It raises CallError when the API answered
   with an error and the connection is still usable; any other HopsError means the connection is lost.
 - `redact(result, method)` masks credentials in one call's result before it is printed.
+- `scrub(text)` removes the API's own credential from a string; the front end passes every error it prints,
+  and each echoed method, through it. A backend's refusal messages state the rule and what is allowed, never
+  the caller-supplied name or value refused.
 - `redact_params(params)` masks credentials in a call's params (e.g. a password field, or a password filter's
   value, and the API's own credential anywhere in a string), since `batch` echoes the params of each call it
   sends; the backend sends them unmasked. A refused call's params are echoed only as "[REDACTED]".
@@ -26,6 +29,7 @@ Both commands target only Hosts with the backend's `capability` (see `register`)
 
 import json
 from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Any, Protocol
 
 from hops import output
@@ -46,13 +50,25 @@ class Backend(Protocol):
     def call(self, method: str, params: list) -> Any: ...
     def redact(self, result: Any, method: str) -> Any: ...
     def redact_params(self, params: list) -> list: ...
+    def scrub(self, text: str) -> str: ...
 
 
 def call(backend: Backend, method: str, params: list) -> Any:
     """One call's redacted result. UsageError, before connecting, when the backend refuses it."""
-    backend.check(method, params)
-    backend.open()
-    return backend.redact(backend.call(method, params), method)
+    with scrubbed(backend):
+        backend.check(method, params)
+        backend.open()
+        return backend.redact(backend.call(method, params), method)
+
+
+@contextmanager
+def scrubbed(backend: Backend):
+    """Re-raise a HopsError with its message passed through the backend's scrub."""
+    try:
+        yield
+    except HopsError as exc:
+        exc.args = (backend.scrub(str(exc)),)
+        raise
 
 
 def batch(backend: Backend, calls: list[tuple[str, list]]) -> tuple[list[dict], HopsError | None]:
@@ -63,25 +79,28 @@ def batch(backend: Backend, calls: list[tuple[str, list]]) -> tuple[list[dict], 
     results: list[dict] = []
     opened = False
     for method, params in calls:
+        shown = backend.scrub(method)
         try:
             backend.check(method, params)
         except UsageError as exc:
-            results.append({"method": method, "params": REFUSED_PARAMS, "error": str(exc)})
+            results.append({"method": shown, "params": REFUSED_PARAMS, "error": backend.scrub(str(exc))})
             continue
-        entry = {"method": method, "params": backend.redact_params(params)}
+        entry = {"method": shown, "params": backend.redact_params(params)}
         if not opened:
             opened = True
             try:
                 backend.open()
             except HopsError as exc:  # any login failure, even an API error (e.g. EACCES), ends the batch
+                exc.args = (backend.scrub(str(exc)),)
                 results.append({**entry, "error": str(exc)})
                 return results, exc
         try:
             result = backend.call(method, params)
         except CallError as exc:
-            results.append({**entry, "error": str(exc)})
+            results.append({**entry, "error": backend.scrub(str(exc))})
             continue
         except HopsError as exc:
+            exc.args = (backend.scrub(str(exc)),)
             results.append({**entry, "error": str(exc)})
             return results, exc
         results.append({**entry, "result": backend.redact(result, method)})
@@ -100,8 +119,8 @@ def parse_calls(text: str) -> list[tuple[str, list]]:
     for n, item in enumerate(data, 1):
         if not isinstance(item, dict):
             raise UsageError(f'call {n}: must be an object {{"method": ..., "params": [...]}}')
-        if unknown := sorted(set(item) - CALL_KEYS):
-            raise UsageError(f"call {n}: unknown key {', '.join(unknown)}; expected method and params")
+        if set(item) - CALL_KEYS:
+            raise UsageError(f"call {n}: only method and params are allowed")
         method, params = item.get("method"), item.get("params", [])
         if not isinstance(method, str) or not method:
             raise UsageError(f"call {n}: method must be a non-empty string")
@@ -137,11 +156,17 @@ def register(
     api, capability = backend.api, backend.capability
 
     def run_call(args, ctx) -> int:
-        output.print_json(call(backend(ctx), args.method, parse_params(args.params)), ctx.stdout)
+        b = backend(ctx)
+        with scrubbed(b):
+            params = parse_params(args.params)
+        output.print_json(call(b, args.method, params), ctx.stdout)
         return 0
 
     def run_batch(args, ctx) -> int:
-        results, failure = batch(backend(ctx), parse_calls(ctx.stdin.read()))
+        b = backend(ctx)
+        with scrubbed(b):
+            calls = parse_calls(ctx.stdin.read())
+        results, failure = batch(b, calls)
         output.print_json(results, ctx.stdout)
         if failure is not None:
             raise failure

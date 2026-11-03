@@ -94,11 +94,11 @@ def is_allowed(method: str) -> bool:
 
 
 def check_query_options(options: dict) -> None:
-    """Refuse query options other than filtering, ordering and counting, before connecting."""
-    refused = sorted(set(options) - QUERY_OPTIONS)
-    if refused:
+    """Refuse query options other than filtering, ordering and counting, before connecting. The message names
+    the allowed options, never the refused ones: a caller-supplied name may be anything, e.g. a secret."""
+    if set(options) - QUERY_OPTIONS:
         raise UsageError(
-            f"query option {', '.join(refused)} is refused (allowed: {', '.join(sorted(QUERY_OPTIONS))}); "
+            f"a query option is refused; allowed: {', '.join(sorted(QUERY_OPTIONS))}; "
             "select the fields you need from the output instead"
         )
 
@@ -115,10 +115,10 @@ class Backend:
 
     def check(self, method: str, params: list) -> None:
         if not is_read(method):
-            raise UsageError(f"{method} is not a read method; hops truenas call only reads ({READS})")
+            raise UsageError(f"the method is not a read method; hops truenas call only reads ({READS})")
         if not is_allowed(method):
             raise UsageError(
-                f"{method} is not on hops truenas call's allowlist, as its results may hold "
+                "the method is not on hops truenas call's allowlist, as its results may hold "
                 f"secrets; the allowed namespaces are listed in {README}"
             )
         for param in params:
@@ -134,9 +134,15 @@ class Backend:
     def redact(self, result, method: str):
         return truenas.redact(result, method)
 
-    def redact_params(self, params: list) -> list:
+    def _key(self) -> str | None:
         try:
-            key = self.ctx.truenas.cfg.api_key
+            return self.ctx.truenas.cfg.api_key
         except ConfigError:  # no key configured, so none to scrub
-            key = None
-        return truenas.redact_params(params, key)
+            return None
+
+    def scrub(self, text: str) -> str:
+        key = self._key()
+        return text.replace(key, truenas.REDACTED) if key else text
+
+    def redact_params(self, params: list) -> list:
+        return truenas.redact_params(params, self._key())

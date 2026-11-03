@@ -431,7 +431,7 @@ def test_batch_refuses_a_disallowed_call_and_runs_the_rest(hops_tn, server):
     ]
     assert "not a read method" in out[1]["error"]
     assert "allowlist" in out[2]["error"]
-    assert "query option extra is refused" in out[3]["error"]
+    assert "a query option is refused" in out[3]["error"]
     assert server.called() == ["auth.login_with_api_key", "system.info", "system.info"]
 
 
@@ -529,6 +529,27 @@ def test_batch_never_echoes_the_api_key_in_params(hops_tn, server):
     assert code == 0 and KEY not in json.dumps(out)
     assert out[0]["params"] == "[REDACTED]"
     assert out[1]["params"] == [[["name", "=", "x-[REDACTED]-y"]], {"order_by": ["[REDACTED]"]}]
+
+
+def test_refusals_never_echo_caller_supplied_names(hops_tn, server):
+    code, out, err = batch(
+        hops_tn,
+        {"method": "pool.query", "params": [[], {"fake-option": True}]},
+        {"method": "pool.fake-method.create"},
+        {"method": "fakens.query"},
+    )
+    assert code == 0 and "fake-option" not in json.dumps(out)
+    assert out[0]["error"].startswith("a query option is refused; allowed: count, get, limit, offset, order_by")
+    for entry in out:
+        assert "fake-method" not in entry["error"] and "fakens" not in entry["error"]
+    assert server.connects == []
+
+
+def test_call_errors_scrub_the_api_key(hops_tn, server):
+    code, _, err = hops_tn("truenas", "call", f"{KEY}.update")
+    assert code == 2 and KEY not in err
+    code, out, err = batch(hops_tn, {"method": "pool.query", "params": [[], {KEY: True}]}, {"method": KEY})
+    assert code == 0 and KEY not in json.dumps(out) + err
 
 
 def test_a_batch_whose_login_is_refused_with_eaccess_stops_after_one_login(hops_tn, server):

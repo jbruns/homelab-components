@@ -261,7 +261,9 @@ On a `truenas` Host only. A passthrough for Host-hygiene reads and for auditing 
 configuration where no other command covers it, e.g.
 `hops truenas call pool.query '[["name","=","tank"]]' '{"order_by":["name"]}'`. Each
 `json-param` is one JSON value, passed as one positional parameter of the method; `call` never echoes it, even when it is not JSON. It fails
-closed: anything not listed here is refused (exit 2) before connecting.
+closed: anything not listed here is refused (exit 2) before connecting. A refusal states the rule and what
+is allowed, never the method, option or value refused, and every error `call` or `batch` prints has the
+configured API key scrubbed.
 
 - **Read methods only:** `*.query`, `*.get_instance`, `*.config`, plus `system.info`,
   `system.version`, `pool.dataset.details`, `alert.list`, `docker.status`, `filesystem.stat` and
@@ -1118,7 +1120,8 @@ Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-
   not touch the Host until `open()`, and has `check(method, params)` (raise UsageError to refuse, before
   connecting), `open()` (connect and authenticate once), `call(method, params)` (raise `hops.errors.CallError`
   for an API error that leaves the connection usable; any other HopsError ends a batch after that call's entry) and
-  `redact(result, method)`, and `redact_params(params)`, which masks credentials (and the API's own key) in the params `batch` echoes
+  `redact(result, method)`, and `scrub(text)`, which removes the API's own credential from every error and method the front end prints (a
+  refusal message must not echo the caller-supplied name or value it refuses), and `redact_params(params)`, which masks credentials (and the API's own key) in the params `batch` echoes
   for a sent call; the front end echoes a refused call's params only as `"[REDACTED]"`.
   An `open()` failure always ends a batch, even a CallError.
 - Raise `hops.errors.UsageError` for bad input (exit 2) and `HopsError` for failures (exit 1).
