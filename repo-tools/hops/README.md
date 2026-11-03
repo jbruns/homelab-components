@@ -14,7 +14,7 @@ doco-cd deploys after merge. `hops` never runs `docker compose`.
 ## Install
 
 ```sh
-uv tool install "git+https://github.com/jbruns/homelab-components@hops-v1.2.0#subdirectory=repo-tools/hops"
+uv tool install "git+https://github.com/jbruns/homelab-components@hops-v1.3.0#subdirectory=repo-tools/hops"
 hops --help
 ```
 
@@ -29,6 +29,9 @@ Python 3.11 or later. It brings PyYAML, websocket-client (for TrueNAS) and `home
 `hops` needs a `hosts.yaml` at the consuming repo's root ([schema](../hosts/README.md)). From it, per Host:
 
 - `stack_root`: the directory holding `<stack>/compose.yaml`. Names resolve against it.
+- `deployer`: `doco-cd`, or `none` for a Host that runs no Stacks (no `stack_root`, no `doco_cd`). Every
+  command that acts on Stacks refuses a `deployer: none` Host (exit 2); only a Host API's `call`/`batch` (e.g.
+  `truenas call` on a `truenas` Host) reach one today.
 - `capabilities`: `truenas` and `zfs` switch on the commands that need them ([Capabilities](#capabilities)).
 - `doco_cd`: where doco-cd is: its Stack (default `doco-cd`), its API key file (default
   `doco-cd/api_secret.sops.txt` under the stack root), its address (default `doco-cd:80`) and the network a
@@ -43,6 +46,16 @@ and `validate`, the command `bump` runs before it commits.
 - `--host <name>`, before or after the command (`hops --host nas status` or `hops status --host nas`).
 - Else the Host whose stack root holds the working directory (`cd nas/` then `hops status`).
 - Else the only Host, when `hosts.yaml` declares one.
+
+A command that acts on Stacks (all but `truenas call`/`batch`) considers only Hosts that run Stacks: "the only
+Host" is the only one that runs Stacks, so a repo with one `doco-cd` Host beside `deployer: none` Hosts needs no
+`--host`, and `--host` naming a `deployer: none` Host is refused before anything else (exit 2):
+`Host 'pve' has deployer none, so it runs no Stacks; Hosts with Stacks: nas (e.g. --host)`.
+
+A command on a Host API (`truenas call`/`batch`) considers only Hosts with that API's capability, whether or not
+they run Stacks, in the same way: a repo with one `truenas` Host beside a `deployer: none` Proxmox Host needs no
+`--host`, and `--host` naming a Host without the capability is refused before anything connects (exit 2):
+`Host 'pve' lacks the truenas capability this command needs; Hosts with it: nas (e.g. --host)`.
 
 With several Hosts and none of these, `hops` fails before touching anything (exit 2) and lists them.
 
@@ -67,7 +80,7 @@ under `.worktrees/` have no `.env` of their own, so they use the main one. Envir
 
 A missing required key fails the command that needs it (exit 2), naming the key and the files searched; values are
 never printed. Commands that only use SSH need only the SSH keys, even on a `truenas` Host. The TrueNAS keys are
-read only when a command talks to TrueNAS: `truenas call` and `snapshot` fail without them, while `host` and
+read only when a command talks to TrueNAS: `truenas call`, `truenas batch` and `snapshot` fail without them, while `host` and
 `strays` show what they can and name the missing keys.
 
 - **SSH:** `ssh [-i $HOPS_<NAME>_SSH_KEY] $HOPS_<NAME>_SSH_USER@$HOPS_<NAME>_SSH_HOST sudo -n docker …` with
@@ -89,7 +102,7 @@ in `hosts.yaml`, and refuses (exit 2) before touching the Host without it, namin
 
 | Needs | Commands and options |
 |---|---|
-| `truenas` | `hops truenas call`; `hops host`'s pools, datasets and task sections (without it, `hops host` shows only Docker, with a note) |
+| `truenas` | `hops truenas call` and `batch`; `hops host`'s pools, datasets and task sections (without it, `hops host` shows only Docker, with a note) |
 | `truenas` and `zfs` | `hops snapshot take/list/release`; `volume move --take-snapshot`; `volume move` with a Rollback Snapshot; Rollback Snapshots in `hops host` and `hops strays` |
 | neither | everything else. `volume move` keeps a [Rollback Volume](#rollback-volumes) instead of a Rollback Snapshot, and `strays` treats `ix-` names as ordinary (only a `truenas` Host has TrueNAS Apps) |
 
@@ -152,6 +165,7 @@ Every command in this table is **read-only**. Each takes `--json`.
 | `hops deploys <run-id>` | One run in detail |
 | `hops host` | `docker system df`; on a `truenas` Host also pools, key datasets, Rollback Snapshots (`zfs`), and the last run of each periodic snapshot and Cloud Sync task (see [host](#host)) |
 | `hops truenas call <method> [json-param…]` | `truenas` Host only. The result of one allowlisted TrueNAS read method (see [truenas call](#truenas-call)), as JSON with credentials redacted. For what other commands lack. |
+| `hops truenas batch --json < calls.json` | `truenas` Host only. Many `truenas call`s over one connection and one login (see [truenas batch](#truenas-batch)). |
 
 `alerts` authenticates without sending the password to this machine. The Host pipes the monitoring Stack's Prometheus's
 Alertmanager password file (`/run/secrets/prometheus_password`) from the prometheus container
@@ -246,8 +260,11 @@ unchanged.
 On a `truenas` Host only. A passthrough for Host-hygiene reads and for auditing the Host's
 configuration where no other command covers it, e.g.
 `hops truenas call pool.query '[["name","=","tank"]]' '{"order_by":["name"]}'`. Each
-`json-param` is one JSON value, passed as one positional parameter of the method. It fails
-closed: anything not listed here is refused (exit 2) before connecting.
+`json-param` is one JSON value, passed as one positional parameter of the method; `call` never echoes it, even when it is not JSON. It fails
+closed: anything not listed here is refused (exit 2) before connecting. A refusal states the rule and what
+is allowed, never the method, option or value refused, and every error `call` or `batch` prints has the
+configured API key scrubbed. The key to scrub is read straight from `HOPS_<NAME>_TRUENAS_API_KEY`, so an
+invalid or missing URL cannot switch scrubbing off.
 
 - **Read methods only:** `*.query`, `*.get_instance`, `*.config`, plus `system.info`,
   `system.version`, `pool.dataset.details`, `alert.list`, `docker.status`, `filesystem.stat` and
@@ -298,6 +315,39 @@ closed: anything not listed here is refused (exit 2) before connecting.
   `cloudsync.query` or `replication.query`) keeps only `id`, `method`, `state`,
   `progress.percent`, `time_started` and `time_finished`; its other keys (`logs_excerpt`, `error`,
   `exception`, `result`, `arguments`, …) are dropped, since they can echo what a script printed.
+
+### truenas batch
+
+`hops truenas call` logs in once per call, and TrueNAS refuses logins after about 20 in a short window. A
+check making many reads sends them as one batch instead:
+
+```sh
+echo '[{"method": "system.info"}, {"method": "pool.query", "params": [[["name", "=", "tank"]]]}]' |
+  hops truenas batch --json
+```
+
+- **Input:** a JSON list on stdin of `{"method": <string>, "params": [<json value>, …]}`; `params` is optional
+  (default `[]`) and holds what `call` takes as `json-param`s. Any other shape, or another key, is refused
+  (exit 2) before connecting.
+- **One connection, one login,** opened before the first call that is sent (a batch of only refused calls
+  never connects), with `call`'s `EBUSY` backoff. Calls run in order.
+- **Per call:** the same allowlist and query-option checks as `call`, then the same redaction for that call's
+  method. A refused call is not sent; it and a method error (e.g. `ENOENT`) become that call's `error`, and the
+  batch goes on.
+- **Output:** a JSON list, one entry per call in order: `{"method", "params", "result"}`, where `result` is
+  exactly what `hops truenas call --json` prints, or `{"method", "params", "error"}`, where `error` is the
+  message `call` would print (credentials redacted). A refused call's `params` print only as `"[REDACTED]"`,
+  since they may be anything (e.g. a raw key). A sent call's `params` print with credentials masked: a
+  credential-named field (as in results), the value of a query filter on one
+  (`[["password", "=", "[REDACTED]"]]`), at any depth, and the configured API key wherever it appears in a
+  string. The call itself is sent with the params as given.
+- **Exit:** 0 when every call ran, whatever their errors. A failed login (any login error, `EACCES` included,
+  or `EBUSY` after one backoff sequence) or a lost connection ends the batch without logging in again: stdout holds the entries for the calls before it, then an entry with the `error`
+  for the call it failed (later calls get none), and `hops` exits non-zero with the error on stderr, so a
+  caller keeps the reads that completed.
+
+`call` and `batch` are a shared front end (`hops/apicall.py`) over a per-API backend; see
+[Adding a command](#adding-a-command).
 - Output is the method's result as JSON, with or without `--json`.
 
 ### exec and db
@@ -1062,6 +1112,19 @@ Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-
   object, build the record from named fields, as `hops/hygiene.py` does, rather than filtering it. On a Host
   without the `truenas` capability, using `ctx.truenas` raises a ConfigError; on one with it, a missing TrueNAS
   key already fails `ctx.runner` too.
+- A command acts on Stacks unless its parser sets `stacks=False` (`set_defaults(func=run, stacks=False)`);
+  then `ctx.host` may be a `deployer: none` Host, which has no `stack_root`, `doco_cd` or `ctx.declared`.
+- A Host API's read-only `call`/`batch` pair comes from `hops.apicall.register(sub, Backend, ...)`. The front end
+  owns parsing, the refusal checks' place, the output schema and exit codes. The backend class (TrueNAS's is in
+  `hops/commands/truenas.py`) has `api` (the command group) and `capability`, by which both commands pick their
+  Host (as `stacks=False` and `capability=` on the parser; `ctx.host` then has it); an instance, `Backend(ctx)`, must
+  not touch the Host until `open()`, and has `check(method, params)` (raise UsageError to refuse, before
+  connecting), `open()` (connect and authenticate once), `call(method, params)` (raise `hops.errors.CallError`
+  for an API error that leaves the connection usable; any other HopsError ends a batch after that call's entry) and
+  `redact(result, method)`, and `scrub(text)`, which removes the API's own credential from every error and method the front end prints (a
+  refusal message must not echo the caller-supplied name or value it refuses), and `redact_params(params)`, which masks credentials (and the API's own key) in the params `batch` echoes
+  for a sent call; the front end echoes a refused call's params only as `"[REDACTED]"`.
+  An `open()` failure always ends a batch, even a CallError.
 - Raise `hops.errors.UsageError` for bad input (exit 2) and `HopsError` for failures (exit 1).
 
 ## Test
@@ -1077,7 +1140,8 @@ HOPS_CONSUMER_REPO=~/src/<repo> HOPS_CONSUMER_HOST=<host> .venv/bin/pytest -m li
 The `fake_host` fixture (`tests/conftest.py`) replaces the ssh process. It records each argv and
 answers with canned `docker` output. The `hops` fixture runs the CLI against a fixture repo.
 `hops_fakes.FakeTrueNAS` stands in for the TrueNAS WebSocket: pass its `connect` to
-`truenas.Client(..., connect=)` and its `methods` answer each JSON-RPC call.
+`truenas.Client(..., connect=)` and its `methods` answer each JSON-RPC call. `test_hops_apicall.py` drives the
+`call`/`batch` front end with a fake backend.
 `hops_fakes.FakeSnapshots` builds on it with an in-memory set of snapshots; pass its `client` as
 `hops(..., truenas=)`. Tests fix today's date by patching `hops.snapshots.now`. The fixture repo declares
 one Host, `host-a` (stack root `tn`, capabilities `truenas` and `zfs`); `hops_fakes.hosts_yaml()` and the

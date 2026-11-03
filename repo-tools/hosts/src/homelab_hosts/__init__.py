@@ -14,24 +14,29 @@ __all__ = [
     "CAPABILITIES",
     "DEPLOYERS",
     "HOSTS_FILE",
+    "NO_DEPLOYER",
     "DocoCd",
     "Host",
     "HostSettings",
     "Hosts",
     "HostsError",
+    "ProxmoxSettings",
     "SshSettings",
     "TrueNasSettings",
     "env_prefix",
     "find_repo_root",
     "host_settings",
     "load_hosts",
+    "proxmox_settings",
     "ssh_settings",
     "truenas_settings",
 ]
 
 HOSTS_FILE = "hosts.yaml"
-CAPABILITIES = frozenset({"truenas", "zfs"})
-DEPLOYERS = frozenset({"doco-cd"})
+CAPABILITIES = frozenset({"proxmox", "truenas", "zfs"})
+DEPLOYERS = frozenset({"doco-cd", "none"})
+NO_DEPLOYER = "none"
+"""The deployer of a Host that runs no Stacks: it has no stack root and no doco_cd."""
 
 _HOST_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 _STACK_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
@@ -69,13 +74,20 @@ class DocoCd:
 @dataclass(frozen=True)
 class Host:
     name: str
-    stack_root: str
-    """As written in hosts.yaml: a directory relative to the repo root, holding `<stack>/compose.yaml`."""
-    path: Path
-    """The stack root: absolute, with symlinks resolved, always inside the repo root."""
+    stack_root: str | None
+    """As written in hosts.yaml: a directory relative to the repo root, holding `<stack>/compose.yaml`. None for
+    a Host with deployer none."""
+    path: Path | None
+    """The stack root: absolute, with symlinks resolved, always inside the repo root. None for deployer none."""
     deployer: str
     capabilities: frozenset[str]
-    doco_cd: DocoCd
+    doco_cd: DocoCd | None
+    """None for a Host with deployer none."""
+
+    @property
+    def runs_stacks(self) -> bool:
+        """Whether the Host runs Stacks: it has a deployer, a stack root and doco_cd settings."""
+        return self.deployer != NO_DEPLOYER
 
     def has(self, capability: str) -> bool:
         """Whether the Host declares `capability`. An unknown capability name raises HostsError (catches typos)."""
@@ -105,21 +117,56 @@ class Hosts(Mapping[str, Host]):
     def __len__(self) -> int:
         return len(self.hosts)
 
-    def pick(self, name: str | None = None, path: str | Path | None = None) -> Host:
+    def pick(
+        self,
+        name: str | None = None,
+        path: str | Path | None = None,
+        *,
+        stacks: bool = False,
+        capability: str | None = None,
+    ) -> Host:
         """The Host a command targets: `name` if given (e.g. --host), else the Host whose stack root contains
-        `path`, else the only Host. Otherwise HostsError, listing the Hosts."""
+        `path`, else the only Host. Otherwise HostsError, listing the Hosts.
+
+        Only the Hosts a command can use count: with `stacks` (a command that works on Stacks) those that run
+        Stacks, with `capability` (e.g. a command calling a Host API) those that have it. `name` must be one of
+        them, and "the only Host" means the only one of them."""
+        candidates = {
+            n: h
+            for n, h in self.hosts.items()
+            if (h.runs_stacks or not stacks) and (capability is None or h.has(capability))
+        }
         if name is not None:
             if name not in self.hosts:
                 raise HostsError(f"no Host {name!r} in {HOSTS_FILE}; Hosts: {', '.join(self.hosts)}")
-            return self.hosts[name]
+            host = self.hosts[name]
+            if stacks and not host.runs_stacks:
+                raise HostsError(
+                    f"Host {name!r} has deployer {NO_DEPLOYER}, so it runs no Stacks; "
+                    + (f"Hosts with Stacks: {', '.join(candidates)} (e.g. --host)" if candidates else "no Host does")
+                )
+            if capability is not None and not host.has(capability):
+                raise HostsError(
+                    f"Host {name!r} lacks the {capability} capability this command needs; "
+                    + (f"Hosts with it: {', '.join(candidates)} (e.g. --host)" if candidates else "no Host has it")
+                )
+            return host
+        if not candidates:
+            if not stacks:
+                raise HostsError(f"no Host in {HOSTS_FILE} has the {capability} capability this command needs")
+            if capability is None:
+                raise HostsError(f"no Host in {HOSTS_FILE} runs Stacks; every Host has deployer {NO_DEPLOYER}")
+            raise HostsError(
+                f"no Host in {HOSTS_FILE} runs Stacks and has the {capability} capability this command needs"
+            )
         if path is not None:
-            for host in self.hosts.values():
-                if _is_within(path, host.path):
+            for host in candidates.values():
+                if host.path is not None and _is_within(path, host.path):
                     return host
-        if len(self.hosts) == 1:
-            return next(iter(self.hosts.values()))
+        if len(candidates) == 1:
+            return next(iter(candidates.values()))
         where = f" contains {str(path)!r}" if path is not None else ""
-        raise HostsError(f"no Host's stack root{where}; pick one of: {', '.join(self.hosts)} (e.g. --host)")
+        raise HostsError(f"no Host's stack root{where}; pick one of: {', '.join(candidates)} (e.g. --host)")
 
 
 @dataclass(frozen=True)
@@ -139,10 +186,20 @@ class TrueNasSettings:
 
 
 @dataclass(frozen=True)
+class ProxmoxSettings:
+    url: str
+    token_id: str
+    token_secret: str
+    insecure: bool
+
+
+@dataclass(frozen=True)
 class HostSettings:
     ssh: SshSettings
     truenas: TrueNasSettings | None
     """Set exactly when the Host has the `truenas` capability."""
+    proxmox: ProxmoxSettings | None = None
+    """Set exactly when the Host has the `proxmox` capability."""
 
 
 def find_repo_root(start: str | Path | None = None) -> Path:
@@ -195,6 +252,8 @@ def load_hosts(root: str | Path | None = None) -> Hosts:
         if host is None:
             continue
         for other in hosts.values():
+            if host.path is None or other.path is None:
+                continue
             if os.path.samefile(host.path, other.path):
                 problems.append(
                     f"hosts.{name}.stack_root: {host.stack_root!r} is already the stack root of Host {other.name!r}"
@@ -227,10 +286,18 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
         return None
     before = len(problems)
     _unknown_keys(raw, _HOST_KEYS, where, problems)
+    deployer = raw.get("deployer")
+    no_stacks = deployer == NO_DEPLOYER
 
     stack_root = raw.get("stack_root")
     path = None
-    if stack_root is None:
+    if no_stacks:
+        for key in ("stack_root", "doco_cd"):
+            if key in raw:
+                problems.append(
+                    f"{where}{key}: must be absent with deployer {NO_DEPLOYER} (a Host that runs no Stacks)"
+                )
+    elif stack_root is None:
         problems.append(f"{where}stack_root: missing")
     elif not isinstance(stack_root, str) or not stack_root.strip("/"):
         problems.append(f"{where}stack_root: must be a directory relative to the repo root, not {stack_root!r}")
@@ -250,7 +317,6 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
             problems.append(f"{where}stack_root: {stack_root!r} is not a directory under {root}")
             path = None
 
-    deployer = raw.get("deployer")
     if deployer is None:
         problems.append(f"{where}deployer: missing; supported: {', '.join(sorted(DEPLOYERS))}")
     elif not isinstance(deployer, str) or deployer not in DEPLOYERS:
@@ -271,7 +337,9 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
 
     raw_doco_cd = raw.get("doco_cd", {})
     doco_cd = dict(_DOCO_CD_DEFAULTS)
-    if not isinstance(raw_doco_cd, dict):
+    if no_stacks:
+        pass
+    elif not isinstance(raw_doco_cd, dict):
         problems.append(f"{where}doco_cd: must be a mapping of {', '.join(sorted(_DOCO_CD_DEFAULTS))}")
     else:
         _unknown_keys(raw_doco_cd, set(_DOCO_CD_DEFAULTS), f"{where}doco_cd.", problems)
@@ -282,17 +350,18 @@ def _host(root: Path, name: object, raw: object, problems: list[str]) -> Host | 
                 else:
                     problems.append(f"{where}doco_cd.{key}: must be a non-empty string, not {value!r}")
                     doco_cd[key] = None
-    _check_doco_cd(path, doco_cd, f"{where}doco_cd.", problems)
+    if not no_stacks:
+        _check_doco_cd(path, doco_cd, f"{where}doco_cd.", problems)
 
     if len(problems) > before:
         return None
     return Host(
         name=name,
-        stack_root=stack_root,
+        stack_root=None if no_stacks else stack_root,
         path=path,
         deployer=deployer,
         capabilities=frozenset(capabilities),
-        doco_cd=DocoCd(**doco_cd),
+        doco_cd=None if no_stacks else DocoCd(**doco_cd),
     )
 
 
@@ -361,16 +430,30 @@ def truenas_settings(env: Mapping[str, str], host: Host) -> TrueNasSettings:
     return settings
 
 
+def proxmox_settings(env: Mapping[str, str], host: Host) -> ProxmoxSettings:
+    """The Host's Proxmox VE API settings, from `env`. Needs only the Proxmox keys. Raises HostsError for a Host
+    without the proxmox capability, or naming each missing or invalid key; never includes values."""
+    if not host.has("proxmox"):
+        raise HostsError(f"Host {host.name!r} does not have the proxmox capability")
+    problems: list[str] = []
+    settings = _proxmox(env, host, problems)
+    if problems:
+        raise HostsError(problems)
+    return settings
+
+
 def host_settings(env: Mapping[str, str], host: Host) -> HostSettings:
     """All of a Host's settings from `env` (the caller's parsed .env and/or os.environ; this never reads a
-    file): ssh_settings, plus truenas_settings for a truenas Host. Raises HostsError naming every required key
-    that is missing or empty; never includes values. A tool that needs only one part should call that part."""
+    file): ssh_settings, plus truenas_settings for a truenas Host and proxmox_settings for a proxmox Host.
+    Raises HostsError naming every required key that is missing or empty; never includes values. A tool that
+    needs only one part should call that part."""
     problems: list[str] = []
     ssh = _ssh(env, host, problems)
     truenas = _truenas(env, host, problems) if host.has("truenas") else None
+    proxmox = _proxmox(env, host, problems) if host.has("proxmox") else None
     if problems:
         raise HostsError(problems)
-    return HostSettings(ssh=ssh, truenas=truenas)
+    return HostSettings(ssh=ssh, truenas=truenas, proxmox=proxmox)
 
 
 def _getter(env: Mapping[str, str], host: Host):
@@ -388,10 +471,28 @@ def _ssh(env: Mapping[str, str], host: Host, problems: list[str]) -> SshSettings
     return SshSettings(host=get("SSH_HOST"), user=get("SSH_USER"), key=get("SSH_KEY"))
 
 
+def _insecure(env: Mapping[str, str], key: str, problems: list[str]) -> bool:
+    raw = (env.get(key) or "").strip().lower()
+    if raw not in _TRUTHY | _FALSY:
+        problems.append(f"{key} must be 1/0, true/false, yes/no or on/off")
+    return raw in _TRUTHY
+
+
 def _truenas(env: Mapping[str, str], host: Host, problems: list[str]) -> TrueNasSettings:
     prefix, get = _getter(env, host)
     problems += _missing(prefix, host, [k for k in ("TRUENAS_URL", "TRUENAS_API_KEY") if get(k) is None])
-    raw = (env.get(prefix + "TRUENAS_INSECURE") or "").strip().lower()
-    if raw not in _TRUTHY | _FALSY:
-        problems.append(f"{prefix}TRUENAS_INSECURE must be 1/0, true/false, yes/no or on/off")
-    return TrueNasSettings(url=get("TRUENAS_URL"), api_key=get("TRUENAS_API_KEY"), insecure=raw in _TRUTHY)
+    insecure = _insecure(env, prefix + "TRUENAS_INSECURE", problems)
+    return TrueNasSettings(url=get("TRUENAS_URL"), api_key=get("TRUENAS_API_KEY"), insecure=insecure)
+
+
+def _proxmox(env: Mapping[str, str], host: Host, problems: list[str]) -> ProxmoxSettings:
+    prefix, get = _getter(env, host)
+    keys = ("PROXMOX_URL", "PROXMOX_TOKEN_ID", "PROXMOX_TOKEN_SECRET")
+    problems += _missing(prefix, host, [k for k in keys if get(k) is None])
+    insecure = _insecure(env, prefix + "PROXMOX_INSECURE", problems)
+    return ProxmoxSettings(
+        url=get("PROXMOX_URL"),
+        token_id=get("PROXMOX_TOKEN_ID"),
+        token_secret=get("PROXMOX_TOKEN_SECRET"),
+        insecure=insecure,
+    )

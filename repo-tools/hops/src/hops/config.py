@@ -3,7 +3,8 @@
 Every site-specific value comes from the consuming repo, read through homelab_hosts:
 
 - repo root: the nearest directory at or above the working directory holding hosts.yaml.
-- Host: `--host <name>`; else the Host whose stack root holds the working directory; else the only Host.
+- Host: `--host <name>`; else the Host whose stack root holds the working directory; else the only Host. A
+  command that works on Stacks considers only Hosts that run them (not `deployer: none`).
 - `.env`: the repo root's, else the main worktree's (agent worktrees under `.worktrees/` have none).
   Keys are per Host: `HOPS_<NAME>_SSH_HOST` and so on (homelab_hosts.env_prefix).
 - environment variables override `.env`.
@@ -51,10 +52,13 @@ def load_hosts(repo_root: Path) -> Hosts:
         raise ConfigError(str(exc)) from None
 
 
-def pick_host(hosts: Hosts, name: str | None, cwd: Path | None = None) -> Host:
-    """`name` (--host) if given, else the Host whose stack root holds `cwd`, else the only Host."""
+def pick_host(
+    hosts: Hosts, name: str | None, cwd: Path | None = None, *, stacks: bool = True, capability: str | None = None
+) -> Host:
+    """`name` (--host) if given, else the Host whose stack root holds `cwd`, else the only Host. With `stacks`,
+    only Hosts that run Stacks count; with `capability`, only Hosts that have it. Naming another is refused."""
     try:
-        return hosts.pick(name, path=Path.cwd() if cwd is None else cwd)
+        return hosts.pick(name, path=Path.cwd() if cwd is None else cwd, stacks=stacks, capability=capability)
     except HostsError as exc:
         raise ConfigError(str(exc)) from None
 

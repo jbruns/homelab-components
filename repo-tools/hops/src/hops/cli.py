@@ -20,7 +20,7 @@ Ops and diagnostics for a repo's doco-cd Hosts, over SSH. hops changes runtime s
 state (image tags and digests) changes only through a PR that doco-cd deploys.
 
 Host: --host <name>; else the Host whose stack root holds the working directory; else the only Host
-in hosts.yaml.
+in hosts.yaml. Commands that act on Stacks consider only Hosts that run Stacks (not deployer none).
 Targets: stack/service; a bare Service name when unique; a bare Stack name for all its Services."""
 
 
@@ -36,12 +36,18 @@ class Context:
         truenas: TrueNASClient | None = None,
         env=None,
         cwd: Path | None = None,
+        stdin=None,
         stdout=None,
         stderr=None,
+        stacks: bool = True,
+        capability: str | None = None,
     ):
         self.env = os.environ if env is None else env
         self.host_name = host
+        self.stacks = stacks  # whether the command works on Stacks: then only a Host that runs them is picked
+        self.capability = capability  # a capability the command needs to pick a Host by (e.g. an API's)
         self.cwd = cwd
+        self.stdin = stdin or sys.stdin
         self.stdout = stdout or sys.stdout
         self.stderr = stderr or sys.stderr
         if repo_root is not None:
@@ -61,8 +67,9 @@ class Context:
 
     @cached_property
     def host(self) -> Host:
-        """The Host this command targets (--host, the working directory, or the only Host)."""
-        return config.pick_host(self.hosts, self.host_name, self.cwd)
+        """The Host this command targets (--host, the working directory, or the only Host; for a command on
+        Stacks, the only Host that runs them; for a command on a Host API, the only Host with its capability)."""
+        return config.pick_host(self.hosts, self.host_name, self.cwd, stacks=self.stacks, capability=self.capability)
 
     @property
     def stack_root(self) -> str:
@@ -102,7 +109,7 @@ class Context:
 
 HOST_HELP = (
     "the Host to act on (a name in hosts.yaml); default: the Host whose stack root holds the working "
-    "directory, else the only Host"
+    "directory, else the only Host (that runs Stacks, for a command on Stacks)"
 )
 
 
@@ -134,7 +141,11 @@ def main(argv: list[str] | None = None, *, ctx: Context | None = None) -> int:
     ctx = ctx or Context()
     if args.host is not None:
         ctx.host_name = args.host
+    ctx.stacks = getattr(args, "stacks", True)  # a command that needs no Stacks sets stacks=False
+    ctx.capability = getattr(args, "capability", None)  # a command on a Host API picks a Host with it
     try:
+        if ctx.capability is not None or (ctx.stacks and ctx.host_name is not None):
+            _ = ctx.host  # refuse a Host the command cannot use before it reads or touches anything
         return args.func(args, ctx)
     except HopsError as exc:
         ctx.stderr.write(f"hops: error: {exc}\n")

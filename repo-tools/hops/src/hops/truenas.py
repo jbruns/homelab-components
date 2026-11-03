@@ -9,7 +9,7 @@ on the Host.
   commands that need one fail with a ConfigError (Unavailable).
 - `Client(cfg).call(method, *params)` returns the method's result; `Client(cfg).job(...)` calls a
   method that starts a job and waits for the job's result. The client connects and logs in on first
-  use; `close()` ends the connection. TrueNAS rate-limits logins (EBUSY), so a refused login is
+  use (or `open()`); `close()` ends the connection. TrueNAS rate-limits logins (EBUSY), so a refused login is
   retried on a new connection after each of LOGIN_BACKOFF's pauses before the error is raised.
 - The API key travels only inside the login message: never in an argv or a log, and it is replaced
   by [REDACTED] in every error hops raises.
@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 from homelab_hosts import Host, env_prefix
 
 from hops import config
-from hops.errors import ConfigError, HopsError, HostTimeout
+from hops.errors import CallError, ConfigError, HopsError, HostTimeout
 
 REDACTED = "[REDACTED]"
 TIMEOUT = 30.0
@@ -81,7 +81,7 @@ class Transport(Protocol):
 Connect = Callable[..., Transport]  # connect(url, *, verify: bool, timeout: float) -> Transport
 
 
-class TrueNASError(HopsError):
+class TrueNASError(CallError):
     """A TrueNAS method returned an error."""
 
     def __init__(self, message: str, errname: str | None = None, method: str | None = None):
@@ -111,9 +111,13 @@ class Client:
             ws, self._ws = self._ws, None
             ws.close()
 
-    def call(self, method: str, *params):
+    def open(self) -> None:
+        """Connect and log in, unless connected already."""
         if self._ws is None:
             self._open()
+
+    def call(self, method: str, *params):
+        self.open()
         return self._rpc(method, list(params))
 
     def job(self, method: str, *params, timeout: float | None = None):
@@ -265,6 +269,43 @@ def job_status(job: dict) -> dict:
 URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s?#]*@")
 # Fields holding a cloud credential's settings (cloudsync.credentials.*): all but `type` may be secret.
 PROVIDER_FIELDS = ("attributes", "provider")
+
+
+def scrub_strings(data, keys: list[str]):
+    """A copy of `data` with each of `keys` replaced by [REDACTED] in every string, object keys included."""
+
+    def walk(x):
+        if isinstance(x, str):
+            for key in keys:
+                x = x.replace(key, REDACTED)
+            return x
+        if isinstance(x, list):
+            return [walk(v) for v in x]
+        if isinstance(x, dict):
+            return {walk(k): walk(v) for k, v in x.items()}
+        return x
+
+    return walk(data)
+
+
+def redact_params(params: list) -> list:
+    """A copy of a call's params for echoing: credential fields masked as in `redact`, at any depth, and the
+    value of a query filter `[field, operator, value]` on such a field (e.g. `["password", "=", ...]`)."""
+
+    def secret(field) -> bool:
+        name = field.lower()
+        return any(s in name for s in SECRET_NAMES) or name.rsplit(".", 1)[-1] in FREE_TEXT
+
+    def walk(x):
+        if isinstance(x, dict):
+            return {k: walk(v) for k, v in x.items()}
+        if not isinstance(x, list):
+            return x
+        if len(x) == 3 and isinstance(x[0], str) and isinstance(x[1], str) and secret(x[0]):
+            return [x[0], x[1], x[2] if x[2] is None or isinstance(x[2], bool) else REDACTED]
+        return [walk(v) for v in x]
+
+    return redact(walk(params))
 
 
 def redact(data, method: str = ""):

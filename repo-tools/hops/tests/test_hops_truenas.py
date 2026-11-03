@@ -1,6 +1,7 @@
 """TrueNAS: the JSON-RPC client (hops.truenas) and `hops truenas call`, against FakeTrueNAS."""
 
 import hashlib
+import io
 import json
 
 import pytest
@@ -30,10 +31,11 @@ def client(server, sleeps):
 
 @pytest.fixture
 def hops_tn(repo, client, capsys):
-    """Run the CLI with the fake TrueNAS: hops_tn("truenas", "call", "system.info")."""
+    """Run the CLI with the fake TrueNAS: hops_tn("truenas", "call", "system.info"); `stdin` feeds a batch."""
 
-    def run(*argv):
-        code = cli.main(list(argv), ctx=cli.Context(repo_root=repo, truenas=client))
+    def run(*argv, stdin=""):
+        ctx = cli.Context(repo_root=repo, truenas=client, stdin=io.StringIO(stdin))
+        code = cli.main(list(argv), ctx=ctx)
         captured = capsys.readouterr()
         return code, captured.out, captured.err
 
@@ -384,8 +386,222 @@ def test_call_on_a_host_without_the_truenas_capability_is_refused(plain_host, ca
     ctx = cli.Context(repo_root=plain_host, env={"HOME": "/h"})
     assert cli.main(["truenas", "call", "system.info"], ctx=ctx) == 2
     assert capsys.readouterr().err == (
-        "hops: error: hops truenas call needs a Host with the truenas capability; Host 'host-a' has none (hosts.yaml)\n"
+        "hops: error: no Host in hosts.yaml has the truenas capability this command needs\n"
     )
+
+
+# hops truenas batch
+
+
+def batch(hops_tn, *calls):
+    code, out, err = hops_tn("truenas", "batch", "--json", stdin=json.dumps(list(calls)))
+    return code, (json.loads(out) if out else None), err
+
+
+def test_batch_logs_in_once_for_every_call(hops_tn, server):
+    server.methods["pool.query"] = lambda *params: [{"name": "tank"}]
+    code, out, err = batch(
+        hops_tn,
+        {"method": "system.info", "params": []},
+        {"method": "pool.query", "params": [[["name", "=", "tank"]]]},
+        {"method": "system.info"},
+    )
+    assert (code, err) == (0, "")
+    assert out == [
+        {"method": "system.info", "params": [], "result": {"version": "25.10.4", "hostname": "tn"}},
+        {"method": "pool.query", "params": [[["name", "=", "tank"]]], "result": [{"name": "tank"}]},
+        {"method": "system.info", "params": [], "result": {"version": "25.10.4", "hostname": "tn"}},
+    ]
+    assert len(server.connects) == 1
+    assert server.called() == ["auth.login_with_api_key", "system.info", "pool.query", "system.info"]
+
+
+def test_batch_refuses_a_disallowed_call_and_runs_the_rest(hops_tn, server):
+    code, out, _ = batch(
+        hops_tn,
+        {"method": "system.info", "params": []},
+        {"method": "pool.snapshot.create", "params": [{"dataset": "tank/a", "name": "s"}]},
+        {"method": "app.query", "params": []},
+        {"method": "disk.query", "params": [[], {"extra": {"passwords": True}}]},
+        {"method": "system.info", "params": []},
+    )
+    assert code == 0
+    assert [sorted(r) for r in out] == [["method", "params", "result"]] + [["error", "method", "params"]] * 3 + [
+        ["method", "params", "result"]
+    ]
+    assert "not a read method" in out[1]["error"]
+    assert "allowlist" in out[2]["error"]
+    assert "a query option is refused" in out[3]["error"]
+    assert server.called() == ["auth.login_with_api_key", "system.info", "system.info"]
+
+
+def test_batch_redacts_each_result_for_its_own_method(hops_tn, server):
+    server.methods["cronjob.query"] = lambda: [{"id": 1, "command": "backup.sh"}]
+    server.methods["ups.config"] = lambda: {"monuser": "upsmon", "monpwd": "pw"}
+    _, out, _ = batch(hops_tn, {"method": "cronjob.query"}, {"method": "ups.config"})
+    fingerprint = hashlib.sha256(b"backup.sh").hexdigest()[:12]
+    assert out[0]["result"] == [{"id": 1, "command": f"[REDACTED sha256:{fingerprint}]"}]
+    assert out[1]["result"] == {"monuser": "upsmon", "monpwd": "[REDACTED]"}
+
+
+def test_a_method_error_in_a_batch_is_reported_and_the_batch_goes_on(hops_tn, server):
+    def missing(*params):
+        raise FakeTrueNASError("ENOENT", f"no such pool (key {KEY})")
+
+    server.methods["pool.get_instance"] = missing
+    code, out, _ = batch(hops_tn, {"method": "pool.get_instance", "params": [9]}, {"method": "system.info"})
+    assert code == 0
+    assert out[0] == {
+        "method": "pool.get_instance",
+        "params": [9],
+        "error": "TrueNAS pool.get_instance: ENOENT: no such pool (key [REDACTED])",
+    }
+    assert out[1]["result"]["hostname"] == "tn"
+
+
+def test_batch_results_match_call_output(hops_tn, server):
+    server.methods["cloudsync.query"] = lambda: [{"id": 1, "encryption_password": "pw", "attributes": {"b": 1}}]
+    _, called, _ = hops_tn("truenas", "call", "cloudsync.query", "--json")
+    _, out, _ = batch(hops_tn, {"method": "cloudsync.query"})
+    assert out[0]["result"] == json.loads(called)
+
+
+def test_batch_retries_a_rate_limited_login_then_logs_in_once(hops_tn, server, sleeps):
+    server.methods["auth.login_with_api_key"] = rate_limited(2)
+    code, out, _ = batch(hops_tn, {"method": "system.info"}, {"method": "system.info"})
+    assert code == 0 and len(out) == 2
+    assert sleeps == list(truenas.LOGIN_BACKOFF[:2])
+    assert server.called() == ["auth.login_with_api_key"] * 3 + ["system.info"] * 2
+
+
+def test_a_batch_whose_login_fails_reports_it_for_the_first_call_and_exits_non_zero(hops_tn, server):
+    server.methods["auth.login_with_api_key"] = lambda key: False
+    code, out, err = batch(hops_tn, {"method": "system.info"}, {"method": "pool.query"})
+    assert code == 1
+    assert out == [
+        {
+            "method": "system.info",
+            "params": [],
+            "error": "TrueNAS at wss://tn.example/api/current rejected HOPS_HOST_A_TRUENAS_API_KEY",
+        }
+    ]
+    assert "rejected HOPS_HOST_A_TRUENAS_API_KEY" in err and KEY not in err
+
+
+def test_a_connection_lost_mid_batch_prints_what_ran_then_the_failed_call(hops_tn, server):
+    def drop(*params):
+        raise HopsError("connection reset")
+
+    server.methods["pool.query"] = drop
+    code, out, err = batch(hops_tn, {"method": "system.info"}, {"method": "pool.query"}, {"method": "system.info"})
+    assert code == 1
+    assert out == [
+        {"method": "system.info", "params": [], "result": {"version": "25.10.4", "hostname": "tn"}},
+        {"method": "pool.query", "params": [], "error": "pool.query: connection reset"},
+    ]
+    assert err == "hops: error: pool.query: connection reset\n"
+    assert server.called() == ["auth.login_with_api_key", "system.info", "pool.query"]
+
+
+def test_batch_never_echoes_a_secret_in_params(hops_tn, server):
+    server.methods["pool.query"] = lambda *params: []
+    code, out, _ = batch(
+        hops_tn,
+        {"method": "user.update", "params": [1, {"password": "FAKE-SECRET"}]},
+        {"method": "pool.query", "params": [[["password", "=", "FAKE-SECRET"], ["name", "=", "tank"]]]},
+        {"method": "pool.query", "params": [[["OR", [["api_key", "=", "FAKE-SECRET"], ["id", "=", 1]]]]]},
+    )
+    assert code == 0
+    assert "FAKE-SECRET" not in json.dumps(out)
+    assert out[0]["params"] == "[REDACTED]" and "error" in out[0]
+    assert out[1]["params"] == [[["password", "=", "[REDACTED]"], ["name", "=", "tank"]]]
+    assert out[2]["params"] == [[["OR", [["api_key", "=", "[REDACTED]"], ["id", "=", 1]]]]]
+    assert server.requests[1]["params"] == [[["password", "=", "FAKE-SECRET"], ["name", "=", "tank"]]]
+
+
+def test_batch_never_echoes_the_api_key_in_params(hops_tn, server):
+    server.methods["pool.query"] = lambda *params: []
+    code, out, _ = batch(
+        hops_tn,
+        {"method": "auth.login_with_api_key", "params": [KEY]},
+        {"method": "pool.query", "params": [[["name", "=", f"x-{KEY}-y"]], {"order_by": [KEY]}]},
+    )
+    assert code == 0 and KEY not in json.dumps(out)
+    assert out[0]["params"] == "[REDACTED]"
+    assert out[1]["params"] == [[["name", "=", "x-[REDACTED]-y"]], {"order_by": ["[REDACTED]"]}]
+
+
+def test_refusals_never_echo_caller_supplied_names(hops_tn, server):
+    code, out, err = batch(
+        hops_tn,
+        {"method": "pool.query", "params": [[], {"fake-option": True}]},
+        {"method": "pool.fake-method.create"},
+        {"method": "fakens.query"},
+    )
+    assert code == 0 and "fake-option" not in json.dumps(out)
+    assert out[0]["error"].startswith("a query option is refused; allowed: count, get, limit, offset, order_by")
+    for entry in out:
+        assert "fake-method" not in entry["error"] and "fakens" not in entry["error"]
+    assert server.connects == []
+
+
+def test_call_errors_scrub_the_api_key(hops_tn, server):
+    code, _, err = hops_tn("truenas", "call", f"{KEY}.update")
+    assert code == 2 and KEY not in err
+    code, out, err = batch(hops_tn, {"method": "pool.query", "params": [[], {KEY: True}]}, {"method": KEY})
+    assert code == 0 and KEY not in json.dumps(out) + err
+
+
+def test_the_api_key_is_scrubbed_even_when_the_truenas_config_is_invalid(repo, capsys):
+    env = {"HOME": "/h", "HOPS_HOST_A_TRUENAS_API_KEY": "fake-api-key"}  # no URL: the client cannot be built
+    calls = [
+        {"method": "pool.query", "params": [[["name", "=", "fake-api-key"]]]},
+        {"method": "pool.query", "params": [[], {"fake-api-key": True}]},
+    ]
+    ctx = cli.Context(repo_root=repo, env=env, stdin=io.StringIO(json.dumps(calls)))
+    assert cli.main(["truenas", "batch", "--json"], ctx=ctx) == 2
+    captured = capsys.readouterr()
+    assert "TRUENAS_URL is not set" in captured.err
+    assert "fake-api-key" not in captured.out + captured.err
+    assert json.loads(captured.out)[0]["params"] == [[["name", "=", "[REDACTED]"]]]
+
+    ctx = cli.Context(repo_root=repo, env=env)
+    assert cli.main(["truenas", "call", "fake-api-key.update"], ctx=ctx) == 2
+    assert "fake-api-key" not in capsys.readouterr().err
+
+
+def test_a_batch_whose_login_is_refused_with_eaccess_stops_after_one_login(hops_tn, server):
+    def refuse(key):
+        raise FakeTrueNASError("EACCES", "not authorized")
+
+    server.methods["auth.login_with_api_key"] = refuse
+    code, out, err = batch(hops_tn, {"method": "system.info"}, {"method": "system.info"})
+    assert code == 1
+    assert out == [
+        {"method": "system.info", "params": [], "error": "TrueNAS auth.login_with_api_key: EACCES: not authorized"}
+    ]
+    assert server.called() == ["auth.login_with_api_key"]
+    assert "EACCES" in err
+
+
+def test_a_batch_whose_login_stays_busy_backs_off_once_then_stops(hops_tn, server, sleeps):
+    server.methods["auth.login_with_api_key"] = rate_limited(100)
+    code, out, _ = batch(hops_tn, {"method": "system.info"}, {"method": "system.info"})
+    assert code == 1 and len(out) == 1 and "EBUSY" in out[0]["error"]
+    assert sleeps == list(truenas.LOGIN_BACKOFF)
+    assert server.called() == ["auth.login_with_api_key"] * (len(truenas.LOGIN_BACKOFF) + 1)
+
+
+def test_malformed_batch_input_is_refused_before_connecting(hops_tn, server):
+    code, out, err = hops_tn("truenas", "batch", "--json", stdin='{"method": "system.info"}')
+    assert (code, out) == (2, "") and "a JSON list" in err
+    assert server.connects == []
+
+
+def test_batch_on_a_host_without_the_truenas_capability_is_refused(plain_host, capsys):
+    ctx = cli.Context(repo_root=plain_host, env={"HOME": "/h"}, stdin=io.StringIO("[]"))
+    assert cli.main(["truenas", "batch", "--json"], ctx=ctx) == 2
+    assert "no Host in hosts.yaml has the truenas capability this command needs" in capsys.readouterr().err
 
 
 # redact: defense in depth behind the allowlist
@@ -596,3 +812,11 @@ def test_call_reduces_embedded_jobs_to_their_status(hops_tn, server):
         "time_finished": {"$date": 2},
     }
     assert json.loads(out) == [{"id": 1, "job": status, "nested": [{"job": status}]}]
+
+
+def test_redact_params_masks_secret_filters_inside_options_too():
+    params = [{"filters": [["attributes.pass", "~", "FAKE-SECRET"]], "count": True}, ["enabled", "=", True]]
+    assert truenas.redact_params(params) == [
+        {"filters": [["attributes.pass", "~", "[REDACTED]"]], "count": True},
+        ["enabled", "=", True],
+    ]

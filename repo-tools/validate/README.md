@@ -1,13 +1,13 @@
 # homelab-validate
 
 Shared Repo Tooling: the repository checks a consuming repo runs in CI on every PR and in its pre-commit hook,
-for **every Host** its `hosts.yaml` declares. It reads the Hosts and their stack roots through
+for **every Host** its `hosts.yaml` declares that runs Stacks (a Host with `deployer: none` is skipped). It reads the Hosts and their stack roots through
 [`homelab_hosts`](../hosts/README.md), never runs on a Host, and needs no decryption key, production credential
 or Host access. Its messages state the rule each check enforces.
 
 | Check | What it enforces, for each Host |
 |---|---|
-| `secrets` | Sensitive files are tracked only SOPS-encrypted as `*.sops.*`, with no plaintext twin; Stack layout (`<stack root>/<stack>/compose.yaml`, each included file `<service>/service.yaml` and included by some Stack); at least one doco-cd deploy config (`.doco-cd*.y(a)ml`, anywhere) is tracked and every one keeps `auto_discovery.depth: 1` |
+| `secrets` | Sensitive files are tracked only SOPS-encrypted as `*.sops.*`, with no plaintext twin; Stack layout (`<stack root>/<stack>/compose.yaml`, each included file `<service>/service.yaml` and included by some Stack); at least one doco-cd deploy config (`.doco-cd*.y(a)ml`, anywhere) is tracked when some Host runs Stacks, and every one keeps `auto_discovery.depth: 1` |
 | `env` | Every `${VAR}` a Stack uses is in its `env.template` and `.sops.env`; when the Host uses [dependency rendering](#dependency-rendering), its `dependencies.yml` exists and its placeholders reach `dependencies-render` |
 | `compose` | `docker compose config` renders every Stack, and every `templates/<name>/` as a Stack of each Host; startup-order, logging, restart and Probe rules; no `env_file` `format` (doco-cd supports only the default); the [Baseline](#the-baseline); [volume names](#volumes) |
 | `monitoring` | Full Prometheus config and rule checks, behavioral rule suites, amtool/Loki/Alloy config checks, dashboard generation and query checks, declared-containers freshness, and Grafana provisioning boots, using the images the Host deploys; see [Monitoring checks](#monitoring-checks) |
@@ -46,13 +46,13 @@ homelab-validate --host host-a monitoring        # one Host
 ```
 
 With no check named, every check runs, including `isolation`. Exit status is 1 if any check failed, or if
-`hosts.yaml` is invalid or `--host` names no Host.
+`hosts.yaml` is invalid or `--host` names no Host or a Host with `deployer: none`.
 
 ## Configuration
 
 - `--root DIR`: the repository to check (default: the one containing the working directory, found by its
   `hosts.yaml`).
-- `--host NAME`: check only this Host (default: every Host).
+- `--host NAME`: check only this Host (default: every Host that runs Stacks).
 - `--path NAME=PATH`: move one [input](#inputs), relative to `--root` or absolute, for every selected Host. It must
   exist (a directory or file, as the input needs) for every selected Host, or each check that reads it fails. Repeat
   it for several. To move an input differently per Host, run once per Host with `--host`.

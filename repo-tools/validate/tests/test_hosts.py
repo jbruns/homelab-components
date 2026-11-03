@@ -208,3 +208,42 @@ def test_secrets_fails_without_a_doco_cd_config(repo):
     commit(repo)
     r = run_cli("--root", str(repo), "secrets")
     assert r.returncode == 1 and ".doco-cd" in r.stdout
+
+
+# --- a Host with deployer none runs no Stacks -------------------------------------------------
+
+
+@pytest.fixture
+def with_pve(repo):
+    """The fixture repo plus a Host that runs no Stacks."""
+    write(repo, {"hosts.yaml": HOSTS_YAML + "\n      pve:\n        deployer: none\n        capabilities: [proxmox]\n"})
+    commit(repo, "a Host without Stacks")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    return repo
+
+
+def test_stack_checks_skip_a_host_without_stacks(with_pve):
+    r = run_cli("--root", str(with_pve), "secrets", "env", "cloudflare", "isolation")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "pve" not in r.stdout + r.stderr
+
+
+def test_naming_a_host_without_stacks_is_refused(with_pve):
+    r = run_cli("--root", str(with_pve), "--host", "pve", "secrets")
+    assert r.returncode == 1 and "Host 'pve' has deployer none, so it runs no Stacks" in r.stderr
+
+
+def test_a_repo_whose_hosts_run_no_stacks_needs_no_doco_cd_config(tmp_path):
+    root = tmp_path / "guests"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    write(root, {"hosts.yaml": "version: 1\nhosts:\n  pve: {deployer: none, capabilities: [proxmox]}\n"})
+    commit(root, "base")
+    r = run_cli("--root", str(root), "secrets")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "secrets ok" in r.stdout
+
+    write(root, {"guests/app.env": "TOKEN=x\n"})
+    commit(root, "a plaintext env file")
+    r = run_cli("--root", str(root), "secrets")
+    assert r.returncode == 1 and "plaintext .env file is tracked" in r.stdout

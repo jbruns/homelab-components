@@ -23,3 +23,7 @@ class ResolveError(UsageError):
 
 class HostTimeout(HopsError):
     """A Host call ran past its deadline; the ssh process was ended."""
+
+
+class CallError(HopsError):
+    """An API answered one call with an error. The connection is still usable, so a batch goes on."""

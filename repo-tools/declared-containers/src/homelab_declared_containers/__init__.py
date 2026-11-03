@@ -91,17 +91,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--check", action="store_true", help="fail if an output file is stale")
     parser.add_argument("--root", type=Path, help="repository root (default: the one holding hosts.yaml above here)")
-    parser.add_argument("--host", help="only this Host (default: every Host in hosts.yaml)")
+    parser.add_argument("--host", help="only this Host (default: every Host in hosts.yaml that runs Stacks)")
     parser.add_argument("--out", type=Path, help=f"output file for --host (default: <stack root>/{OUT})")
     args = parser.parse_args(argv)
     try:
         hosts = load_hosts(args.root or find_repo_root())
-        selected = [hosts.pick(args.host)] if args.host else list(hosts.values())
+        selected = [hosts.pick(args.host, stacks=True)] if args.host else [h for h in hosts.values() if h.runs_stacks]
     except HostsError as exc:
         print(exc)
         return 1
     if args.out and len(selected) > 1:
-        parser.error("--out needs --host when hosts.yaml declares more than one Host")
+        parser.error("--out needs --host when hosts.yaml declares more than one Host that runs Stacks")
     stale = False
     for host in selected:
         out = args.out or host.path / OUT

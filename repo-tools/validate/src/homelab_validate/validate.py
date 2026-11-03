@@ -152,15 +152,17 @@ def configure(
     legacy_volumes: set[str] | None = None,
     legacy_stacks: set[str] | None = None,
 ) -> None:
-    """Point every check at a repository root and the Hosts its hosts.yaml declares (only `host`, if given),
+    """Point every check at a repository root and the Hosts that run Stacks in its hosts.yaml (only `host`, if
+    given; a Host with deployer none runs no Stacks, so it is never checked),
     override entries of PATHS (relative to `root` or absolute) and set the LEGACY_VOLUMES and LEGACY_STACKS."""
     global ROOT, HOSTS, EVERY_HOST, DEFAULT_BRANCH, LEGACY_VOLUMES, LEGACY_STACKS
     if unknown := set(paths or {}) - set(PATHS):
         raise KeyError(f"unknown path {sorted(unknown)[0]!r}; choose from {', '.join(PATHS)}")
     ROOT = root.resolve()
     hosts = load_hosts(ROOT)
-    HOSTS = [hosts.pick(host)] if host else list(hosts.values())
-    EVERY_HOST = len(HOSTS) == len(hosts)
+    stack_hosts = [h for h in hosts.values() if h.runs_stacks]
+    HOSTS = [hosts.pick(host, stacks=True)] if host else stack_hosts
+    EVERY_HOST = len(HOSTS) == len(stack_hosts)
     DEFAULT_BRANCH = hosts.default_branch
     OVERRIDES.clear()
     OVERRIDES.update(paths or {})
@@ -307,8 +309,9 @@ def check_layout(tracked: set[Path]) -> None:
     # internal/config/deploy/auto_discovery.go). It only looks for compose.yaml, so service.yaml is
     # never discovered; this is defence in depth: at depth 0 (unlimited) a compose.yaml in a Service
     # folder would become a Stack, and delete: true would remove it when it disappears.
+    # A repo whose Hosts all have deployer none runs no doco-cd, so it needs no deploy config.
     configs = sorted(f for f in tracked if DOCO_CD_CONFIG_RE.fullmatch(f.name))
-    if not configs:
+    if not configs and HOSTS:
         fail("no doco-cd deploy config (.doco-cd.yml) is tracked")
     for config in configs:
         depth = ((yaml.safe_load(config.read_text()) or {}).get("auto_discovery") or {}).get("depth")
