@@ -6,11 +6,13 @@ import pytest
 from homelab_hosts import (
     DocoCd,
     HostsError,
+    ProxmoxSettings,
     SshSettings,
     TrueNasSettings,
     find_repo_root,
     host_settings,
     load_hosts,
+    proxmox_settings,
     ssh_settings,
     truenas_settings,
 )
@@ -483,3 +485,133 @@ def test_a_missing_api_secret_under_a_symlinked_intermediate_dir_out_of_the_stac
     (repo / "host-b" / "doco-cd" / "keys").symlink_to(outside, target_is_directory=True)
 
     assert "doco_cd.api_secret: 'doco-cd/keys/api.txt' resolves outside the stack root" in load_problems(repo)
+
+
+# deployer: none, and the proxmox capability
+
+STACK_HOST_AND_PVE = """\
+    version: 1
+    hosts:
+      host-a:
+        stack_root: tn
+        deployer: doco-cd
+        capabilities: [truenas, zfs]
+      pve:
+        deployer: none
+        capabilities: [proxmox]
+"""
+
+
+@pytest.fixture
+def stack_host_and_pve(tmp_path):
+    return load_hosts(write_repo(tmp_path, STACK_HOST_AND_PVE, stack_roots=["tn"]))
+
+
+def test_a_host_with_deployer_none_has_no_stack_root_and_no_doco_cd(stack_host_and_pve):
+    pve = stack_host_and_pve["pve"]
+
+    assert (pve.deployer, pve.stack_root, pve.path, pve.doco_cd) == ("none", None, None, None)
+    assert pve.has("proxmox") and not pve.runs_stacks
+    assert stack_host_and_pve["host-a"].runs_stacks
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        (host_entry(deployer="none"), "hosts.host-b.stack_root: must be absent with deployer none"),
+        (
+            host_entry(deployer="none", stack_root=None, doco_cd="{network: x}"),
+            "hosts.host-b.doco_cd: must be absent with deployer none",
+        ),
+        (host_entry(deployer="none", stack_root=None, capabilities=None), "hosts.host-b.capabilities: missing"),
+    ],
+    ids=["stack_root", "doco_cd", "no capabilities"],
+)
+def test_a_host_with_deployer_none_rejects_stack_settings(tmp_path, entry, expected):
+    write_repo(tmp_path, "version: 1\nhosts:\n  host-b:\n" + entry)
+
+    assert expected in load_problems(tmp_path)
+
+
+def test_a_doco_cd_host_still_needs_a_stack_root(tmp_path):
+    write_repo(tmp_path, "version: 1\nhosts:\n  host-b:\n" + host_entry(stack_root=None))
+
+    assert "hosts.host-b.stack_root: missing" in load_problems(tmp_path)
+
+
+def test_a_path_never_picks_a_host_without_stacks(stack_host_and_pve):
+    root = stack_host_and_pve.root
+    assert stack_host_and_pve.pick(path=root / "tn" / "plex").name == "host-a"
+    with pytest.raises(HostsError, match="host-a, pve"):
+        stack_host_and_pve.pick(path=root / "docs")
+
+
+def test_picking_for_stacks_considers_only_hosts_that_run_them(stack_host_and_pve):
+    root = stack_host_and_pve.root
+    assert stack_host_and_pve.pick(stacks=True).name == "host-a"
+    assert stack_host_and_pve.pick(path=root / "docs", stacks=True).name == "host-a"
+    assert stack_host_and_pve.pick("pve").name == "pve"
+
+
+def test_picking_a_host_without_stacks_for_stacks_is_refused_stating_the_rule(stack_host_and_pve):
+    with pytest.raises(HostsError) as e:
+        stack_host_and_pve.pick("pve", stacks=True)
+
+    assert str(e.value) == (
+        "Host 'pve' has deployer none, so it runs no Stacks; Hosts with Stacks: host-a (e.g. --host)"
+    )
+
+
+def test_picking_for_stacks_with_no_host_that_runs_them_is_an_error(tmp_path):
+    hosts = load_hosts(write_repo(tmp_path, "version: 1\nhosts:\n  pve:\n    deployer: none\n    capabilities: []\n"))
+
+    assert hosts.pick().name == "pve"
+    with pytest.raises(HostsError, match="no Host in hosts.yaml runs Stacks"):
+        hosts.pick(stacks=True)
+
+
+def test_proxmox_settings_come_from_the_proxmox_keys(stack_host_and_pve):
+    env = {
+        "HOPS_PVE_PROXMOX_URL": "https://pve.example:8006",
+        "HOPS_PVE_PROXMOX_TOKEN_ID": "auditor@pve!hops",
+        "HOPS_PVE_PROXMOX_TOKEN_SECRET": "fake-proxmox-token",
+        "HOPS_PVE_PROXMOX_INSECURE": "yes",
+    }
+
+    assert proxmox_settings(env, stack_host_and_pve["pve"]) == ProxmoxSettings(
+        url="https://pve.example:8006", token_id="auditor@pve!hops", token_secret="fake-proxmox-token", insecure=True
+    )
+    settings = host_settings({"HOPS_PVE_SSH_HOST": "pve.example", **env}, stack_host_and_pve["pve"])
+    assert settings.proxmox.token_id == "auditor@pve!hops" and settings.truenas is None
+
+
+def test_missing_proxmox_settings_are_named_by_key_without_revealing_values(stack_host_and_pve):
+    env = {"HOPS_PVE_PROXMOX_TOKEN_SECRET": "fake-proxmox-token", "HOPS_PVE_PROXMOX_INSECURE": "maybe"}
+
+    with pytest.raises(HostsError) as e:
+        proxmox_settings(env, stack_host_and_pve["pve"])
+
+    assert e.value.problems == [
+        "HOPS_PVE_PROXMOX_URL is not set (needed for Host 'pve')",
+        "HOPS_PVE_PROXMOX_TOKEN_ID is not set (needed for Host 'pve')",
+        "HOPS_PVE_PROXMOX_INSECURE must be 1/0, true/false, yes/no or on/off",
+    ]
+
+
+def test_proxmox_keys_are_needed_only_when_a_tool_asks(stack_host_and_pve):
+    pve = stack_host_and_pve["pve"]
+    assert ssh_settings({"HOPS_PVE_SSH_HOST": "pve.example"}, pve).host == "pve.example"
+    with pytest.raises(HostsError, match="HOPS_PVE_PROXMOX_URL is not set"):
+        host_settings({"HOPS_PVE_SSH_HOST": "pve.example"}, pve)
+    with pytest.raises(HostsError, match="does not have the proxmox capability"):
+        proxmox_settings({}, stack_host_and_pve["host-a"])
+
+
+def test_the_cli_lists_a_host_without_stacks(stack_host_and_pve, monkeypatch, capsys):
+    monkeypatch.chdir(stack_host_and_pve.root)
+
+    assert main(["--json"]) == 0
+    pve = json.loads(capsys.readouterr().out)["hosts"][1]
+    assert pve == {"name": "pve", "stack_root": None, "deployer": "none", "capabilities": ["proxmox"], "doco_cd": None}
+    assert main([]) == 0
+    assert capsys.readouterr().out.splitlines()[1] == "pve\t-\tnone\tproxmox"

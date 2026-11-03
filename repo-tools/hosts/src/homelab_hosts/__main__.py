@@ -24,14 +24,14 @@ def main(argv=None):
                 "stack_root": h.stack_root,
                 "deployer": h.deployer,
                 "capabilities": sorted(h.capabilities),
-                "doco_cd": vars(h.doco_cd),
+                "doco_cd": vars(h.doco_cd) if h.doco_cd else None,
             }
             for h in hosts.values()
         ]
         print(json.dumps({"default_branch": hosts.default_branch, "hosts": rows}, indent=2))
     else:
         for h in hosts.values():
-            print(f"{h.name}\t{h.stack_root}\t{h.deployer}\t{','.join(sorted(h.capabilities)) or '-'}")
+            print(f"{h.name}\t{h.stack_root or '-'}\t{h.deployer}\t{','.join(sorted(h.capabilities)) or '-'}")
     return 0
 
 
