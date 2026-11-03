@@ -298,8 +298,9 @@ def show(report: dict, out) -> None:
 
 def run_guests(args, ctx) -> int:
     record = _guests.record(args, ctx)
-    report = guests.host_report(
-        ctx.proxmox, ctx.host.name, record, upgradable=lambda: guests.apt_upgradable(ctx.runner)
+    report = _guests.scrub(
+        guests.host_report(ctx.proxmox, ctx.host.name, record, upgradable=lambda: guests.apt_upgradable(ctx.runner)),
+        ctx,
     )
     if args.json:
         output.print_json(report, ctx.stdout)

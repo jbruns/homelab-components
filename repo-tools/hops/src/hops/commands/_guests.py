@@ -1,6 +1,6 @@
 """What `hops host` and `hops strays` share for a Proxmox VE Host that runs no Stacks: its Guests."""
 
-from hops import guests, output
+from hops import config, guests, output, proxmox
 from hops.errors import UsageError
 
 RECORD_HELP = (
@@ -24,6 +24,15 @@ def on_guests_host(args, ctx, what: str) -> bool:
         return False
     ctx.require("proxmox", what=f"{what} on a Host that runs no Stacks")
     return True
+
+
+def scrub(report: dict, ctx) -> dict:
+    """The report with the token secret removed from every string: read straight from the settings, as
+    `hops proxmox call` does, so nothing the API or a connection error echoes can print it."""
+    secrets = {config.host_setting(ctx.repo_root, ctx.host, "PROXMOX_TOKEN_SECRET", ctx.env)}
+    if "proxmox" in vars(ctx):
+        secrets.add(ctx.proxmox.cfg.token_secret)
+    return proxmox.scrub_strings(report, sorted((s for s in secrets if s), key=len, reverse=True))
 
 
 def record(args, ctx) -> guests.Record:

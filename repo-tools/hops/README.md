@@ -111,7 +111,9 @@ needed only where `hops host` falls back to SSH for pending updates (below); the
   answers nothing: `host` and `strays` then report the Host as off (exit 0), while `proxmox call`/`batch`
   fail (exit 1, "off or unreachable"). A read times out after 30 s. A `401` (the token rejected) is fatal and
   names the two token keys. TLS is verified against the default CA bundle unless `PROXMOX_INSECURE` says
-  otherwise; a failed verification names that key.
+  otherwise; a failed verification names that key. Only a connection that is refused, times out, has no route
+  or whose name does not resolve means off; any other TLS failure (e.g. a plain-HTTP port) is fatal (exit 1).
+  A `PROXMOX_URL` that does not parse fails (exit 2) without echoing it.
 
 ### Capabilities
 
@@ -380,7 +382,8 @@ e.g. `hops proxmox call nodes/pve/storage '{"content": "backup"}'`. The method i
 `/api2/json` (leading and trailing `/` ignored); the one optional `json-param` is an object of query
 parameters (a boolean is sent as `1`/`0`). Only `GET` is sent. It fails closed: a path or query parameter not
 listed here is refused (exit 2) before connecting. A refusal states the rule and what is allowed, never the
-path, name or value refused, and every error `call` or `batch` prints has the configured token secret scrubbed.
+path, name or value refused, and every result and error `call` or `batch` prints has the configured token secret
+scrubbed, in keys and values alike.
 The secret to scrub is read straight from `HOPS_<NAME>_PROXMOX_TOKEN_SECRET`, so an invalid URL or token ID
 cannot switch scrubbing off. An API error (e.g. `403 Permission check failed`, `500`) prints the status and
 Proxmox VE's reason, plus the names (never the values) of any parameters it rejected.
@@ -1142,7 +1145,8 @@ A Kept Guest tagged `scratch` stays Kept, with a note; a Guest whose type differ
 Kept Guest, with a note.
 
 The Host is often off by design. When nothing answers on the API port, both commands print `Host <name>: off`
-(`"state": "off"`) and exit 0.
+(`"state": "off"`) and exit 0. Both scrub the configured token secret from every string they print, text or
+`--json`.
 
 ### The record
 
@@ -1186,9 +1190,11 @@ tag outside 1–4094, two networks on the same bridge and tag) fails the command
 - **Guests** (`cluster/resources?type=vm`): ID, name, type, kind, state, node, and:
   - the newest vzdump archive and its age, from every active storage holding backups
     (`nodes/{node}/storage?content=backup&enabled=1`, then `…/storage/{storage}/content?content=backup`;
-    a shared storage is read once, an inactive one is skipped with a note);
+    a shared storage is read once, from the first node where it is active and its content read succeeds; an
+    inactive one is skipped with a note);
   - dual-homing, when the record declares exclusive networks: the exclusive networks the Guest has an
-    interface on (each `netN`'s `bridge` and `tag` in its `config`), and whether that is more than one.
+    interface on (each `netN`'s `bridge`, plus its `tag` or each VLAN in its `trunks`, in its `config`), and
+    whether that is more than one.
     The text output shows `yes`, `yes (allowed)` (the Guest is in `may_join_several`), `no`, or `-` when not
     checked.
 - **Missing:** the Kept Guests the Host does not have.

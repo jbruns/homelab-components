@@ -422,3 +422,66 @@ def test_a_guest_of_the_other_type_is_not_the_kept_one(tmp_path):
 def test_interfaces_reads_bridge_and_tag():
     config = {"net0": "virtio=AA,bridge=vmbr0,tag=20,firewall=1", "net1": "virtio=BB,bridge=vmbr1", "net2": "x=1"}
     assert guests.interfaces(config) == [("vmbr0", 20), ("vmbr1", None)]
+
+
+# Review follow-ups
+
+
+def test_trunk_vlans_count_as_network_membership():
+    config = {"net0": "virtio=AA,bridge=vmbr0,trunks=10;20-21", "net1": "virtio=BB,bridge=vmbr1,tag=5,trunks=7"}
+    assert guests.interfaces(config) == [
+        ("vmbr0", None),
+        ("vmbr0", 10),
+        ("vmbr0", 20),
+        ("vmbr0", 21),
+        ("vmbr1", 5),
+        ("vmbr1", 7),
+    ]
+
+
+def test_a_trunked_guest_is_dual_homed(run, server):
+    server.routes["nodes/pve/lxc/300/config"] = {"net0": "name=eth0,bridge=vmbr0,tag=10,trunks=20"}
+    by_id = {g["id"]: g for g in host_json(run)["guests"]}
+    assert (by_id[300]["exclusive_networks"], by_id[300]["dual_homed"]) == (["lan", "iot"], True)
+
+
+def test_the_guest_reports_are_scrubbed_of_the_secret(run, server):
+    secret = FakeProxmox.SECRET
+    server.routes["cluster/resources"] = [
+        {"vmid": 300, "name": f"x-{secret}", "type": "lxc", "node": "pve", "status": "running", "tags": secret}
+    ]
+    for argv in (("host",), ("host", "--json"), ("strays",), ("strays", "--json")):
+        code, out, err = run(*argv[:1], "--host", "pve", *argv[1:])
+        assert code == 0 and secret not in out + err
+        assert "[REDACTED]" in out
+
+
+def test_a_host_off_on_the_first_read_is_scrubbed_in_the_report(run, server):
+    secret = FakeProxmox.SECRET
+
+    def leaky(target, headers):
+        raise proxmox.HostOff(f"Proxmox VE is off or unreachable ({secret})")
+
+    server.get = leaky
+    for argv in (("host",), ("host", "--json"), ("strays",), ("strays", "--json")):
+        code, out, err = run(*argv[:1], "--host", "pve", *argv[1:])
+        assert code == 0 and secret not in out + err
+        assert "off" in out
+
+
+def test_a_shared_storage_is_read_on_the_next_node_when_it_failed_or_was_inactive(run, server):
+    server.routes["nodes"] = [{"node": "pve", "status": "online"}, {"node": "pve2", "status": "online"}]
+    server.routes["nodes/pve2/version"] = {"version": "9.1.4"}
+    server.routes["nodes/pve2/apt/update"] = []
+    server.routes["nodes/pve/storage/nas/content"] = (500, "storage 'nas' is not online")
+    server.routes["nodes/pve2/storage"] = [
+        {"storage": "nas", "active": 1, "shared": 1},
+        {"storage": "usb", "active": 1, "shared": 1},
+    ]
+    server.routes["nodes/pve2/storage/nas/content"] = routes()["nodes/pve/storage/nas/content"]
+    server.routes["nodes/pve2/storage/usb/content"] = [
+        {"volid": "usb:backup/vzdump-lxc-300.tar.zst", "vmid": 300, "ctime": NOW_S - DAY}
+    ]
+    by_id = {g["id"]: g for g in host_json(run)["guests"]}
+    assert by_id[100]["backup"]["volid"] == "nas:backup/vzdump-qemu-100-new.vma.zst"
+    assert by_id[300]["backup"]["volid"] == "usb:backup/vzdump-lxc-300.tar.zst"

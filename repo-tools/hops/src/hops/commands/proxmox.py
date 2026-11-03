@@ -143,7 +143,7 @@ class Backend:
         return self.ctx.proxmox.get(normalize(method), params[0] if params else None)
 
     def redact(self, result, method: str):
-        return proxmox.redact(result, normalize(method))
+        return proxmox.scrub_strings(proxmox.redact(result, normalize(method)), self._secrets())
 
     def _secrets(self) -> list[str]:
         """The token secrets to scrub: the configured one, read straight from the settings so that an invalid URL

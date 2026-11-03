@@ -259,7 +259,7 @@ def run_guests(args, ctx) -> int:
     if args.apply:
         raise UsageError("--apply applies only to a Host that runs Stacks: hops lists Stray Guests, never removes them")
     record = _guests.record(args, ctx)
-    report = guests.strays_report(ctx.proxmox, ctx.host.name, record)
+    report = _guests.scrub(guests.strays_report(ctx.proxmox, ctx.host.name, record), ctx)
     if args.json:
         output.print_json(report, ctx.stdout)
         return 0

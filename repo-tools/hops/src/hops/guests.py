@@ -149,7 +149,9 @@ def _exclusive(path: Path, data) -> tuple[tuple[Network, ...], frozenset[int]]:
 
 
 def interfaces(config: dict) -> list[tuple[str, int | None]]:
-    """Each network interface's (bridge, VLAN tag) from a Guest's config (`net0: virtio=…,bridge=vmbr0,tag=20`)."""
+    """Each (bridge, VLAN) a Guest's network interfaces reach, from its config (`net0: virtio=…,bridge=vmbr0,tag=20`):
+    the interface's `tag` (None: the bridge's untagged traffic), then each VLAN its `trunks` passes
+    (`trunks=10;20-21`)."""
     found = []
     for key, value in sorted(config.items()):
         if not NET_KEY.fullmatch(str(key)) or not isinstance(value, str):
@@ -158,7 +160,17 @@ def interfaces(config: dict) -> list[tuple[str, int | None]]:
         if props.get("bridge"):
             tag = props.get("tag")
             found.append((props["bridge"], int(tag) if tag and tag.isdigit() else None))
+            found += [(props["bridge"], vlan) for vlan in trunk_vlans(props.get("trunks") or "")]
     return found
+
+
+def trunk_vlans(text: str) -> list[int]:
+    vlans = []
+    for part in text.split(";"):
+        low, _, high = part.strip().partition("-")
+        if low.isdigit() and (not high or high.isdigit()):
+            vlans += range(int(low), int(high or low) + 1)
+    return vlans
 
 
 def joined(config: dict, networks: tuple[Network, ...]) -> list[str]:
@@ -383,7 +395,8 @@ def apt_upgradable(runner) -> list[dict]:
 
 
 def backups(reads: Reads, nodes: list[str]) -> dict[int, dict]:
-    """The newest vzdump archive of each Guest, on every active storage holding backups (a shared one read once)."""
+    """The newest vzdump archive of each Guest, on every active storage holding backups (a shared one read once,
+    from the first node that reads it)."""
     newest: dict[int, dict] = {}
     shared: set[str] = set()
     for node in nodes:
@@ -394,13 +407,16 @@ def backups(reads: Reads, nodes: list[str]) -> dict[int, dict]:
             name = s.get("storage")
             if not name or name in shared:
                 continue
-            if s.get("shared"):
-                shared.add(name)
             if not s.get("active"):
                 reads.notes.append(f"backups on storage {name} not read: it is not active on node {node}")
                 continue
             path = f"nodes/{node}/storage/{name}/content"
-            for item in reads.get(f"backups on storage {name}", path, {"content": "backup"}, []) or []:
+            content = reads.get(f"backups on storage {name}", path, {"content": "backup"}, None)
+            if content is None:
+                continue  # failed: another node may still read a shared storage
+            if s.get("shared"):
+                shared.add(name)  # read once it has been read
+            for item in content:
                 vmid, ctime = item.get("vmid"), item.get("ctime")
                 if isinstance(vmid, int) and isinstance(ctime, int) and ctime > newest.get(vmid, {}).get("ctime", -1):
                     newest[vmid] = {"volid": item.get("volid"), "ctime": ctime}

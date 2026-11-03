@@ -64,6 +64,10 @@ class Untrusted(HopsError):
     """The Host's TLS certificate failed verification."""
 
 
+class TLSFailed(HopsError):
+    """The Host answered, but TLS failed for another reason (e.g. the port does not speak TLS): never "off"."""
+
+
 class ProxmoxError(CallError):
     """The API answered one GET with an error status; the connection is still usable."""
 
@@ -79,9 +83,14 @@ def load_config(repo_root: Path, host: Host, env=None) -> ProxmoxConfig:
         raise Unavailable(f"Host {host.name!r} has no Proxmox VE: hosts.yaml does not give it the proxmox capability")
     settings = config.proxmox_settings(repo_root, host, env)
     prefix = env_prefix(host)
-    url = urlsplit(settings.url)
-    if url.scheme != "https" or not url.netloc or url.path not in ("", "/") or url.query or url.fragment:
-        raise ConfigError(f"{prefix}PROXMOX_URL must be an https:// URL with no path, e.g. https://pve.example:8006")
+    shape = f"{prefix}PROXMOX_URL must be an https:// URL with no path, e.g. https://pve.example:8006"
+    try:  # urlsplit and .port raise ValueError quoting the URL, which may hold anything: echo none of it
+        url = urlsplit(settings.url)
+        _ = url.port, url.hostname
+    except ValueError:
+        raise ConfigError(shape) from None
+    if url.scheme != "https" or not url.hostname or url.path not in ("", "/") or url.query or url.fragment:
+        raise ConfigError(shape)
     if "@" in url.netloc:
         raise ConfigError(
             f"{prefix}PROXMOX_URL must not contain a user name or password; hops authenticates with "
@@ -138,10 +147,10 @@ class Client:
         self.open()
         try:
             status, reason, body = self._conn.get(target, headers)
-        except HostOff:
+        except HostOff as exc:
             self.close()
             if not reused:
-                raise
+                raise HostOff(self._scrub(str(exc))) from None
             # A kept-alive connection the server has since closed: GET is idempotent, so try once more.
             self.open()
             try:
@@ -212,7 +221,10 @@ def https_connect(netloc: str, *, verify: bool, connect_timeout: float, timeout:
     except ssl.SSLCertVerificationError as exc:
         conn.close()
         raise Untrusted(f"Proxmox VE at https://{netloc}: TLS certificate not trusted ({exc.verify_message})") from None
-    except (OSError, http.client.HTTPException) as exc:
+    except ssl.SSLError as exc:  # an OSError, but the Host answered: not off
+        conn.close()
+        raise TLSFailed(f"Proxmox VE at https://{netloc}: TLS failed ({tls_reason(exc)})") from None
+    except OSError as exc:  # refused, timed out, no route, DNS: the Host is off or off the network
         conn.close()
         raise HostOff(f"Proxmox VE at https://{netloc} is off or unreachable ({describe(exc)})") from None
     conn.sock.settimeout(timeout)
@@ -225,6 +237,8 @@ def https_connect(netloc: str, *, verify: bool, connect_timeout: float, timeout:
                 return response.status, response.reason, response.read()
             except TimeoutError:
                 raise HostTimeout(f"no answer from Proxmox VE at https://{netloc} within {timeout:g}s") from None
+            except ssl.SSLError as exc:
+                raise TLSFailed(f"Proxmox VE at https://{netloc}: TLS failed ({tls_reason(exc)})") from None
             except (OSError, http.client.HTTPException) as exc:
                 raise HostOff(f"lost the connection to Proxmox VE at https://{netloc} ({describe(exc)})") from None
 
@@ -232,6 +246,10 @@ def https_connect(netloc: str, *, verify: bool, connect_timeout: float, timeout:
             conn.close()
 
     return _Https()
+
+
+def tls_reason(exc: ssl.SSLError) -> str:
+    return getattr(exc, "reason", None) or type(exc).__name__
 
 
 def describe(exc: Exception) -> str:

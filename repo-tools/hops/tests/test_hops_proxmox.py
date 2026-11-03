@@ -377,3 +377,82 @@ def test_scrub_reads_the_secret_even_when_the_config_is_invalid(pve_repo):
         backend.open()
     assert backend.scrub(f"echoed {SECRET}") == "echoed [REDACTED]"
     assert backend.redact_params([{"content": SECRET}]) == [{"content": "[REDACTED]"}]
+
+
+# Review follow-ups
+
+
+def test_call_and_batch_scrub_the_secret_from_results(hops_px, server):
+    server.routes["nodes/pve/version"] = {"version": f"9.1 {SECRET}", SECRET: "x"}
+    code, out, _ = hops_px("proxmox", "call", "nodes/pve/version")
+    assert code == 0 and SECRET not in out
+    # The key names a secret, so field-name redaction masks its value too; the scrub removes it from the key.
+    assert json.loads(out) == {"version": "9.1 [REDACTED]", "[REDACTED]": "[REDACTED]"}
+    code, out, _ = batch(hops_px, {"method": "nodes/pve/version"})
+    assert code == 0 and SECRET not in json.dumps(out)
+
+
+@pytest.mark.parametrize("url", [f"https://pve.example.com:{SECRET}", f"https://[{SECRET}]", "https://pve:99999"])
+def test_an_unparseable_url_is_a_config_error_that_echoes_nothing(pve_repo, url):
+    with pytest.raises(ConfigError) as exc:
+        config_for(pve_repo, HOPS_PVE_PROXMOX_URL=url)
+    assert "HOPS_PVE_PROXMOX_URL" in str(exc.value)
+    assert SECRET not in str(exc.value) and url not in str(exc.value)
+
+
+def test_a_first_request_host_off_is_scrubbed(server):
+    def leaky(target, headers):
+        raise proxmox.HostOff(f"lost {SECRET}")
+
+    server.get = leaky
+    with pytest.raises(proxmox.HostOff) as exc:
+        proxmox.Client(CFG, connect=server.connect).get("nodes")
+    assert SECRET not in str(exc.value)
+
+
+class FakeConnection:
+    """http.client.HTTPSConnection whose connect raises `error`."""
+
+    error: Exception
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def connect(self):
+        raise self.error
+
+    def close(self):
+        pass
+
+
+def connect_failing(monkeypatch, error):
+    import http.client
+
+    monkeypatch.setattr(http.client, "HTTPSConnection", type("C", (FakeConnection,), {"error": error}))
+    return proxmox.https_connect("pve.example.com:8006", verify=True, connect_timeout=5, timeout=30)
+
+
+def test_a_tls_failure_that_is_not_the_certificate_is_fatal_not_off(monkeypatch):
+    import ssl
+
+    with pytest.raises(HopsError) as exc:
+        connect_failing(monkeypatch, ssl.SSLError(1, "[SSL: WRONG_VERSION_NUMBER] wrong version number"))
+    assert not isinstance(exc.value, proxmox.HostOff)
+    assert "TLS" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ConnectionRefusedError(61, "refused"), TimeoutError(), OSError(65, "No route to host")],
+    ids=["refused", "timeout", "no-route"],
+)
+def test_unreachable_is_host_off(monkeypatch, error):
+    with pytest.raises(proxmox.HostOff):
+        connect_failing(monkeypatch, error)
+
+
+def test_dns_failure_is_host_off(monkeypatch):
+    import socket
+
+    with pytest.raises(proxmox.HostOff):
+        connect_failing(monkeypatch, socket.gaierror(8, "nodename nor servname provided"))
