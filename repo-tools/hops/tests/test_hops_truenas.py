@@ -386,7 +386,7 @@ def test_call_on_a_host_without_the_truenas_capability_is_refused(plain_host, ca
     ctx = cli.Context(repo_root=plain_host, env={"HOME": "/h"})
     assert cli.main(["truenas", "call", "system.info"], ctx=ctx) == 2
     assert capsys.readouterr().err == (
-        "hops: error: hops truenas call needs a Host with the truenas capability; Host 'host-a' has none (hosts.yaml)\n"
+        "hops: error: no Host in hosts.yaml has the truenas capability this command needs\n"
     )
 
 
@@ -474,11 +474,33 @@ def test_batch_retries_a_rate_limited_login_then_logs_in_once(hops_tn, server, s
     assert server.called() == ["auth.login_with_api_key"] * 3 + ["system.info"] * 2
 
 
-def test_a_batch_whose_login_fails_exits_non_zero_and_prints_nothing(hops_tn, server):
+def test_a_batch_whose_login_fails_reports_it_for_the_first_call_and_exits_non_zero(hops_tn, server):
     server.methods["auth.login_with_api_key"] = lambda key: False
-    code, out, err = batch(hops_tn, {"method": "system.info"})
-    assert code == 1 and out is None
+    code, out, err = batch(hops_tn, {"method": "system.info"}, {"method": "pool.query"})
+    assert code == 1
+    assert out == [
+        {
+            "method": "system.info",
+            "params": [],
+            "error": "TrueNAS at wss://tn.example/api/current rejected HOPS_HOST_A_TRUENAS_API_KEY",
+        }
+    ]
     assert "rejected HOPS_HOST_A_TRUENAS_API_KEY" in err and KEY not in err
+
+
+def test_a_connection_lost_mid_batch_prints_what_ran_then_the_failed_call(hops_tn, server):
+    def drop(*params):
+        raise HopsError("connection reset")
+
+    server.methods["pool.query"] = drop
+    code, out, err = batch(hops_tn, {"method": "system.info"}, {"method": "pool.query"}, {"method": "system.info"})
+    assert code == 1
+    assert out == [
+        {"method": "system.info", "params": [], "result": {"version": "25.10.4", "hostname": "tn"}},
+        {"method": "pool.query", "params": [], "error": "pool.query: connection reset"},
+    ]
+    assert err == "hops: error: pool.query: connection reset\n"
+    assert server.called() == ["auth.login_with_api_key", "system.info", "pool.query"]
 
 
 def test_malformed_batch_input_is_refused_before_connecting(hops_tn, server):
@@ -490,7 +512,7 @@ def test_malformed_batch_input_is_refused_before_connecting(hops_tn, server):
 def test_batch_on_a_host_without_the_truenas_capability_is_refused(plain_host, capsys):
     ctx = cli.Context(repo_root=plain_host, env={"HOME": "/h"}, stdin=io.StringIO("[]"))
     assert cli.main(["truenas", "batch", "--json"], ctx=ctx) == 2
-    assert "hops truenas batch needs a Host with the truenas capability" in capsys.readouterr().err
+    assert "no Host in hosts.yaml has the truenas capability this command needs" in capsys.readouterr().err
 
 
 # redact: defense in depth behind the allowlist

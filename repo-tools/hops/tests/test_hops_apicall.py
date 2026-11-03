@@ -55,7 +55,8 @@ def test_call_refuses_before_connecting():
 
 def test_batch_opens_once_and_redacts_each_result():
     backend = FakeBackend({"a.read": {"secret": "fake-a"}, "b.read": {"name": "b", "secret": "fake-b"}})
-    results = apicall.batch(backend, [("a.read", []), ("b.read", [["id", "=", 1]]), ("a.read", [])])
+    results, error = apicall.batch(backend, [("a.read", []), ("b.read", [["id", "=", 1]]), ("a.read", [])])
+    assert error is None
     assert results == [
         {"method": "a.read", "params": [], "result": {"secret": "[REDACTED]"}},
         {"method": "b.read", "params": [["id", "=", 1]], "result": {"name": "b", "secret": "[REDACTED]"}},
@@ -66,7 +67,7 @@ def test_batch_opens_once_and_redacts_each_result():
 
 def test_a_refused_call_inside_a_valid_batch_is_reported_and_never_sent():
     backend = FakeBackend({"a.read": {"name": "a"}})
-    results = apicall.batch(backend, [("a.read", []), ("write.it", [{"x": 1}]), ("a.read", [])])
+    results, _ = apicall.batch(backend, [("a.read", []), ("write.it", [{"x": 1}]), ("a.read", [])])
     assert results[1] == {"method": "write.it", "params": [{"x": 1}], "error": "write.it is not a read method"}
     assert [r.get("result") for r in results] == [{"name": "a"}, None, {"name": "a"}]
     assert backend.sent == [("a.read", []), ("a.read", [])]
@@ -74,7 +75,8 @@ def test_a_refused_call_inside_a_valid_batch_is_reported_and_never_sent():
 
 def test_a_per_call_error_does_not_abort_the_batch():
     backend = FakeBackend({"a.read": CallError("fake a.read: ENOENT: no such thing"), "b.read": {"name": "b"}})
-    results = apicall.batch(backend, [("a.read", []), ("b.read", [])])
+    results, error = apicall.batch(backend, [("a.read", []), ("b.read", [])])
+    assert error is None
     assert results == [
         {"method": "a.read", "params": [], "error": "fake a.read: ENOENT: no such thing"},
         {"method": "b.read", "params": [], "result": {"name": "b"}},
@@ -83,21 +85,31 @@ def test_a_per_call_error_does_not_abort_the_batch():
 
 def test_a_batch_of_only_refused_calls_never_connects():
     backend = FakeBackend()
-    assert apicall.batch(backend, [("write.it", [])])[0]["error"] == "write.it is not a read method"
+    assert apicall.batch(backend, [("write.it", [])])[0][0]["error"] == "write.it is not a read method"
     assert backend.opens == 0
 
 
-def test_a_failed_login_aborts_the_batch():
-    backend = FakeBackend({"a.read": {}}, open_error=HopsError("fake rejected the key"))
-    with pytest.raises(HopsError, match="rejected the key"):
-        apicall.batch(backend, [("a.read", [])])
+def test_a_failed_login_ends_the_batch_at_the_call_that_needed_it():
+    failure = HopsError("fake rejected the key")
+    backend = FakeBackend({"a.read": {}}, open_error=failure)
+    results, error = apicall.batch(backend, [("write.it", []), ("a.read", [1]), ("a.read", [])])
+    assert results == [
+        {"method": "write.it", "params": [], "error": "write.it is not a read method"},
+        {"method": "a.read", "params": [1], "error": "fake rejected the key"},
+    ]
+    assert error is failure and backend.sent == []
 
 
-def test_a_lost_connection_aborts_the_batch_instead_of_logging_in_again():
-    backend = FakeBackend({"a.read": HopsError("cannot reach fake"), "b.read": {}})
-    with pytest.raises(HopsError, match="cannot reach fake"):
-        apicall.batch(backend, [("a.read", []), ("b.read", [])])
-    assert backend.opens == 1 and backend.sent == [("a.read", [])]
+def test_a_lost_connection_keeps_the_results_so_far_and_ends_the_batch():
+    failure = HopsError("cannot reach fake")
+    backend = FakeBackend({"a.read": {"secret": "fake-a"}, "b.read": failure, "c.read": {}})
+    results, error = apicall.batch(backend, [("a.read", []), ("b.read", [2]), ("c.read", [])])
+    assert results == [
+        {"method": "a.read", "params": [], "result": {"secret": "[REDACTED]"}},
+        {"method": "b.read", "params": [2], "error": "cannot reach fake"},
+    ]
+    assert error is failure
+    assert backend.opens == 1 and backend.sent == [("a.read", []), ("b.read", [2])]
 
 
 @pytest.mark.parametrize(

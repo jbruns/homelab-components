@@ -15,7 +15,10 @@ redaction, behind `Backend`:
 `call` prints one redacted result. `batch` reads `[{"method": ..., "params": [...]}, ...]` from stdin, opens one
 connection with one login, and runs each call in order: a refused call or a CallError becomes that call's
 `error`, and the batch goes on. It prints `[{"method", "params", "result"} | {"method", "params", "error"}, ...]`
-and exits 0 when every call ran; a failed login or a lost connection ends it with a non-zero exit and no output.
+and exits 0 when every call ran. A failed login or a lost connection ends the batch: it prints the entries so
+far, then the failed call's entry, and exits non-zero.
+
+Both commands target only Hosts with the backend's `capability` (see `register`).
 """
 
 import json
@@ -23,7 +26,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from hops import output
-from hops.errors import CallError, UsageError
+from hops.errors import CallError, HopsError, UsageError
 
 CALL_KEYS = {"method", "params"}
 
@@ -47,8 +50,10 @@ def call(backend: Backend, method: str, params: list) -> Any:
     return backend.redact(backend.call(method, params), method)
 
 
-def batch(backend: Backend, calls: list[tuple[str, list]]) -> list[dict]:
-    """Each call's redacted result or error, in order, over one connection opened before the first call sent."""
+def batch(backend: Backend, calls: list[tuple[str, list]]) -> tuple[list[dict], HopsError | None]:
+    """Each call's redacted result or error, in order, over one connection opened before the first call sent,
+    and the failure that ended the batch early (None when every call ran). A failed login or lost connection
+    stops the batch after an entry for the call it failed; the connection is not opened again."""
     results: list[dict] = []
     opened = False
     for method, params in calls:
@@ -58,16 +63,19 @@ def batch(backend: Backend, calls: list[tuple[str, list]]) -> list[dict]:
         except UsageError as exc:
             results.append({**entry, "error": str(exc)})
             continue
-        if not opened:
-            backend.open()
-            opened = True
         try:
+            if not opened:
+                opened = True
+                backend.open()
             result = backend.call(method, params)
         except CallError as exc:
             results.append({**entry, "error": str(exc)})
             continue
+        except HopsError as exc:
+            results.append({**entry, "error": str(exc)})
+            return results, exc
         results.append({**entry, "result": backend.redact(result, method)})
-    return results
+    return results, None
 
 
 def parse_calls(text: str) -> list[tuple[str, list]]:
@@ -114,21 +122,19 @@ def register(
 ) -> None:
     """Add `call` and `batch` under an API's subcommand parser `sub`. `backend` is the backend class: its `api`
     and `capability` are read here, and `backend(ctx)` builds one, which must not touch the Host until
-    `open()`."""
+    `open()`. Both commands need no Stacks and pick only among Hosts with `capability`: the only such Host
+    needs no --host, and --host naming a Host without it is refused (exit 2)."""
     api, capability = backend.api, backend.capability
 
-    def require(ctx, command: str) -> Backend:
-        ctx.require(capability, what=f"hops {api} {command}")
-        return backend(ctx)
-
     def run_call(args, ctx) -> int:
-        backend = require(ctx, "call")
-        output.print_json(call(backend, args.method, parse_params(args.params)), ctx.stdout)
+        output.print_json(call(backend(ctx), args.method, parse_params(args.params)), ctx.stdout)
         return 0
 
     def run_batch(args, ctx) -> int:
-        backend = require(ctx, "batch")
-        output.print_json(batch(backend, parse_calls(ctx.stdin.read())), ctx.stdout)
+        results, failure = batch(backend(ctx), parse_calls(ctx.stdin.read()))
+        output.print_json(results, ctx.stdout)
+        if failure is not None:
+            raise failure
         return 0
 
     p = sub.add_parser(
@@ -139,7 +145,7 @@ def register(
     p.add_argument("method", help=method_help)
     p.add_argument("params", nargs="*", metavar="json-param", help=param_help)
     output.add_json_flag(p)
-    p.set_defaults(func=run_call, stacks=False)
+    p.set_defaults(func=run_call, stacks=False, capability=capability)
 
     p = sub.add_parser(
         "batch",
@@ -147,7 +153,8 @@ def register(
         description=f'Read [{{"method": ..., "params": [...]}}, ...] from stdin and run each call as `hops '
         f"{api} call` would, in order, over one connection with one login. A refused call or a method error "
         "becomes that call's error and the batch goes on. Prints a JSON list of {method, params, result} or "
-        "{method, params, error}; exits 0 when every call ran, non-zero when the login or connection failed.",
+        "{method, params, error}; exits 0 when every call ran. A failed login or lost connection ends the batch "
+        "after the failed call's entry, with a non-zero exit.",
     )
     output.add_json_flag(p)
-    p.set_defaults(func=run_batch, stacks=False)
+    p.set_defaults(func=run_batch, stacks=False, capability=capability)

@@ -30,8 +30,8 @@ Python 3.11 or later. It brings PyYAML, websocket-client (for TrueNAS) and `home
 
 - `stack_root`: the directory holding `<stack>/compose.yaml`. Names resolve against it.
 - `deployer`: `doco-cd`, or `none` for a Host that runs no Stacks (no `stack_root`, no `doco_cd`). Every
-  command that acts on Stacks refuses a `deployer: none` Host (exit 2); only `truenas call`/`batch` (on a
-  `truenas` Host) reach one today.
+  command that acts on Stacks refuses a `deployer: none` Host (exit 2); only a Host API's `call`/`batch` (e.g.
+  `truenas call` on a `truenas` Host) reach one today.
 - `capabilities`: `truenas` and `zfs` switch on the commands that need them ([Capabilities](#capabilities)).
 - `doco_cd`: where doco-cd is: its Stack (default `doco-cd`), its API key file (default
   `doco-cd/api_secret.sops.txt` under the stack root), its address (default `doco-cd:80`) and the network a
@@ -51,6 +51,11 @@ A command that acts on Stacks (all but `truenas call`/`batch`) considers only Ho
 Host" is the only one that runs Stacks, so a repo with one `doco-cd` Host beside `deployer: none` Hosts needs no
 `--host`, and `--host` naming a `deployer: none` Host is refused before anything else (exit 2):
 `Host 'pve' has deployer none, so it runs no Stacks; Hosts with Stacks: nas (e.g. --host)`.
+
+A command on a Host API (`truenas call`/`batch`) considers only Hosts with that API's capability, whether or not
+they run Stacks, in the same way: a repo with one `truenas` Host beside a `deployer: none` Proxmox Host needs no
+`--host`, and `--host` naming a Host without the capability is refused before anything connects (exit 2):
+`Host 'pve' lacks the truenas capability this command needs; Hosts with it: nas (e.g. --host)`.
 
 With several Hosts and none of these, `hops` fails before touching anything (exit 2) and lists them.
 
@@ -329,8 +334,10 @@ echo '[{"method": "system.info"}, {"method": "pool.query", "params": [[["name", 
 - **Output:** a JSON list, one entry per call in order: `{"method", "params", "result"}`, where `result` is
   exactly what `hops truenas call --json` prints, or `{"method", "params", "error"}`, where `error` is the
   message `call` would print (credentials redacted).
-- **Exit:** 0 when every call ran, whatever their errors; non-zero with nothing on stdout when the login or the
-  connection fails (a lost connection ends the batch rather than logging in again).
+- **Exit:** 0 when every call ran, whatever their errors. A failed login or a lost connection ends the batch
+  without logging in again: stdout holds the entries for the calls before it, then an entry with the `error`
+  for the call it failed (later calls get none), and `hops` exits non-zero with the error on stderr, so a
+  caller keeps the reads that completed.
 
 `call` and `batch` are a shared front end (`hops/apicall.py`) over a per-API backend; see
 [Adding a command](#adding-a-command).
@@ -1102,10 +1109,11 @@ Tests replay recorded registry exchanges from `tests/fixtures/registry/`. To re-
   then `ctx.host` may be a `deployer: none` Host, which has no `stack_root`, `doco_cd` or `ctx.declared`.
 - A Host API's read-only `call`/`batch` pair comes from `hops.apicall.register(sub, Backend, ...)`. The front end
   owns parsing, the refusal checks' place, the output schema and exit codes. The backend class (TrueNAS's is in
-  `hops/commands/truenas.py`) has `api` (the command group) and `capability`; an instance, `Backend(ctx)`, must
+  `hops/commands/truenas.py`) has `api` (the command group) and `capability`, by which both commands pick their
+  Host (as `stacks=False` and `capability=` on the parser; `ctx.host` then has it); an instance, `Backend(ctx)`, must
   not touch the Host until `open()`, and has `check(method, params)` (raise UsageError to refuse, before
   connecting), `open()` (connect and authenticate once), `call(method, params)` (raise `hops.errors.CallError`
-  for an API error that leaves the connection usable; any other HopsError ends a batch) and
+  for an API error that leaves the connection usable; any other HopsError ends a batch after that call's entry) and
   `redact(result, method)`.
 - Raise `hops.errors.UsageError` for bad input (exit 2) and `HopsError` for failures (exit 1).
 

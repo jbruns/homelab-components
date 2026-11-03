@@ -1,6 +1,7 @@
 """Host selection: --host (before or after the command), else the working directory, else the only Host;
 and the capability gates on commands a Host cannot serve."""
 
+import io
 import json
 
 import pytest
@@ -68,7 +69,6 @@ def test_truenas_call_runs_on_the_host_with_truenas(run, two_hosts):
 @pytest.mark.parametrize(
     "argv, what",
     [
-        (["truenas", "call", "system.info"], "hops truenas call needs a Host with the truenas capability"),
         (["snapshot", "list"], "hops snapshot (Rollback Snapshots) needs a Host with the truenas and zfs capabilities"),
         (
             ["snapshot", "take", "--issue", "638"],
@@ -91,6 +91,15 @@ def test_truenas_and_zfs_commands_are_refused_on_a_host_without_them(run, fake_h
     assert fake_host.calls == []
 
 
+def test_truenas_call_refuses_a_named_host_without_truenas(run, fake_host):
+    code, _, err, _ = run("truenas", "call", "system.info", "--host", "nas-2")
+    assert code == 2
+    assert err == (
+        "hops: error: Host 'nas-2' lacks the truenas capability this command needs; "
+        "Hosts with it: host-a (e.g. --host)\n"
+    )
+
+
 # A Host with deployer none runs no Stacks
 
 
@@ -102,8 +111,8 @@ def with_pve(repo, runner, capsys):
         {"hosts.yaml": hosts_yaml(extra="\n      pve:\n        deployer: none\n        capabilities: [proxmox]\n")},
     )
 
-    def run(*argv, client=None):
-        ctx = cli.Context(repo_root=repo, runner=runner, truenas=client, env={}, cwd=repo)
+    def run(*argv, client=None, stdin=""):
+        ctx = cli.Context(repo_root=repo, runner=runner, truenas=client, env={}, cwd=repo, stdin=io.StringIO(stdin))
         code = cli.main(list(argv), ctx=ctx)
         captured = capsys.readouterr()
         return code, captured.out, captured.err, ctx
@@ -144,8 +153,28 @@ def test_commands_that_need_stacks_pick_the_only_host_that_runs_them(with_pve, f
     assert ctx.host.name == "host-a"
 
 
-def test_truenas_call_considers_every_host(with_pve):
-    code, _, err, _ = with_pve("truenas", "call", "system.info")
-    assert code == 2 and "pick one of: host-a, pve (e.g. --host)" in err
-    code, _, err, _ = with_pve("truenas", "call", "system.info", "--host", "pve")
-    assert code == 2 and "needs a Host with the truenas capability; Host 'pve' has proxmox" in err
+@pytest.mark.parametrize("command", ["call", "batch"])
+def test_truenas_api_commands_pick_the_only_host_with_truenas(with_pve, command):
+    server = FakeTrueNAS({"system.info": lambda: {"hostname": "tn"}})
+    client = truenas.Client(
+        truenas.TrueNASConfig(url="wss://tn.example/api/current", api_key=FakeTrueNAS.KEY), connect=server.connect
+    )
+    argv = ["truenas", "call", "system.info", "--json"] if command == "call" else ["truenas", "batch", "--json"]
+    code, out, err, ctx = with_pve(*argv, client=client, stdin='[{"method": "system.info"}]')
+    assert (code, err) == (0, "")
+    assert ctx.host.name == "host-a" and "tn" in out
+
+
+@pytest.mark.parametrize("command", ["call", "batch"])
+def test_truenas_api_commands_refuse_a_named_host_without_truenas(with_pve, command):
+    server = FakeTrueNAS()
+    client = truenas.Client(
+        truenas.TrueNASConfig(url="wss://tn.example/api/current", api_key=FakeTrueNAS.KEY), connect=server.connect
+    )
+    argv = ["truenas", command, *(["system.info"] if command == "call" else []), "--host", "pve"]
+    code, out, err, _ = with_pve(*argv, client=client, stdin='[{"method": "system.info"}]')
+    assert (code, out) == (2, "")
+    assert err == (
+        "hops: error: Host 'pve' lacks the truenas capability this command needs; Hosts with it: host-a (e.g. --host)\n"
+    )
+    assert server.connects == []

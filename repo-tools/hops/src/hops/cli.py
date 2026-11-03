@@ -40,10 +40,12 @@ class Context:
         stdout=None,
         stderr=None,
         stacks: bool = True,
+        capability: str | None = None,
     ):
         self.env = os.environ if env is None else env
         self.host_name = host
         self.stacks = stacks  # whether the command works on Stacks: then only a Host that runs them is picked
+        self.capability = capability  # a capability the command needs to pick a Host by (e.g. an API's)
         self.cwd = cwd
         self.stdin = stdin or sys.stdin
         self.stdout = stdout or sys.stdout
@@ -66,8 +68,8 @@ class Context:
     @cached_property
     def host(self) -> Host:
         """The Host this command targets (--host, the working directory, or the only Host; for a command on
-        Stacks, the only Host that runs them)."""
-        return config.pick_host(self.hosts, self.host_name, self.cwd, stacks=self.stacks)
+        Stacks, the only Host that runs them; for a command on a Host API, the only Host with its capability)."""
+        return config.pick_host(self.hosts, self.host_name, self.cwd, stacks=self.stacks, capability=self.capability)
 
     @property
     def stack_root(self) -> str:
@@ -140,9 +142,10 @@ def main(argv: list[str] | None = None, *, ctx: Context | None = None) -> int:
     if args.host is not None:
         ctx.host_name = args.host
     ctx.stacks = getattr(args, "stacks", True)  # a command that needs no Stacks sets stacks=False
+    ctx.capability = getattr(args, "capability", None)  # a command on a Host API picks a Host with it
     try:
-        if ctx.stacks and ctx.host_name is not None:
-            _ = ctx.host  # refuse a named Host that runs no Stacks before the command reads or touches anything
+        if ctx.capability is not None or (ctx.stacks and ctx.host_name is not None):
+            _ = ctx.host  # refuse a Host the command cannot use before it reads or touches anything
         return args.func(args, ctx)
     except HopsError as exc:
         ctx.stderr.write(f"hops: error: {exc}\n")
