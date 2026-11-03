@@ -11,6 +11,8 @@ from homelab_hosts import Host, Hosts
 from hops import commands, config
 from hops.declared import Declared
 from hops.errors import HopsError, UsageError
+from hops.proxmox import Client as ProxmoxClient
+from hops.proxmox import load_config as load_proxmox
 from hops.runner import Runner
 from hops.truenas import Client as TrueNASClient
 from hops.truenas import load_config as load_truenas
@@ -34,6 +36,7 @@ class Context:
         host: str | None = None,
         runner: Runner | None = None,
         truenas: TrueNASClient | None = None,
+        proxmox: ProxmoxClient | None = None,
         env=None,
         cwd: Path | None = None,
         stdin=None,
@@ -56,6 +59,8 @@ class Context:
             self.runner = runner
         if truenas is not None:
             self.truenas = truenas
+        if proxmox is not None:
+            self.proxmox = proxmox
 
     @cached_property
     def repo_root(self) -> Path:
@@ -101,10 +106,16 @@ class Context:
         """The Host's TrueNAS middleware; a ConfigError when this Host has none."""
         return TrueNASClient(load_truenas(self.repo_root, self.host, self.env))
 
+    @cached_property
+    def proxmox(self) -> ProxmoxClient:
+        """The Host's Proxmox VE API; a ConfigError when this Host has none."""
+        return ProxmoxClient(load_proxmox(self.repo_root, self.host, self.env))
+
     def close(self) -> None:
         """End connections a command opened."""
-        if "truenas" in vars(self):  # built (cached_property stores it on the instance)
-            self.truenas.close()
+        for client in ("truenas", "proxmox"):
+            if client in vars(self):  # built (cached_property stores it on the instance)
+                getattr(self, client).close()
 
 
 HOST_HELP = (
@@ -142,6 +153,8 @@ def main(argv: list[str] | None = None, *, ctx: Context | None = None) -> int:
     if args.host is not None:
         ctx.host_name = args.host
     ctx.stacks = getattr(args, "stacks", True)  # a command that needs no Stacks sets stacks=False
+    if getattr(args, "any_named_host", False) and ctx.host_name is not None:
+        ctx.stacks = False  # e.g. hops host: Stacks by default, and any Host --host names
     ctx.capability = getattr(args, "capability", None)  # a command on a Host API picks a Host with it
     try:
         if ctx.capability is not None or (ctx.stacks and ctx.host_name is not None):

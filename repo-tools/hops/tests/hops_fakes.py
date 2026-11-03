@@ -394,3 +394,51 @@ class FakeSnapshots:
 
 def rollback(name, issue="637", expires="2026-10-30", **kw):
     return snap(name, **{"homeops:issue": prop(issue), "homeops:expires": prop(expires)}, **kw)
+
+
+class FakeProxmox:
+    """Stands in for the Proxmox VE API: `connect` is a proxmox.Connect. `routes` map an API path (no /api2/json/,
+    no query) to its `data`, to (status, reason) for an error answer, or to a function of the query dict returning
+    either. Every request's (path, query) is recorded; `off=True` makes connecting fail as a switched-off Host does.
+    An unrouted path answers 501, as Proxmox VE answers a path it lacks."""
+
+    SECRET = "fake-proxmox-secret"
+    TOKEN = "hops-reader@pve!hops"
+
+    def __init__(self, routes: dict | None = None, *, off: bool = False):
+        self.routes = dict(routes or {})
+        self.off = off
+        self.connects: list[dict] = []
+        self.requests: list[tuple[str, dict]] = []
+        self.headers: list[dict] = []
+
+    def connect(self, netloc, *, verify, connect_timeout, timeout):
+        from hops.proxmox import HostOff
+
+        self.connects.append({"netloc": netloc, "verify": verify})
+        if self.off:
+            raise HostOff(f"Proxmox VE at https://{netloc} is off or unreachable (no route to host)")
+        return self
+
+    def get(self, target: str, headers: dict) -> tuple[int, str, bytes]:
+        import json
+        from urllib.parse import parse_qsl, urlsplit
+
+        parts = urlsplit(target)
+        path = parts.path.removeprefix("/api2/json/")
+        query = dict(parse_qsl(parts.query))
+        self.requests.append((path, query))
+        self.headers.append(headers)
+        if path not in self.routes:
+            return 501, f"Method 'GET /{path}' not implemented", b'{"data":null}'
+        answer = self.routes[path]
+        answer = answer(query) if callable(answer) else answer
+        if isinstance(answer, tuple):
+            return answer[0], answer[1], b'{"data":null}'
+        return 200, "OK", json.dumps({"data": answer}).encode()
+
+    def close(self) -> None:
+        pass
+
+    def paths(self) -> list[str]:
+        return [p for p, _ in self.requests]
